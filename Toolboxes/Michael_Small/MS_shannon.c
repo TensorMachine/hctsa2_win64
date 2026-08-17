@@ -23,7 +23,23 @@
 int compare(const void *arg1, const void *arg2)
      /* compare two doubles and return arg1-arg2 */
 {
-  return( *(int *)arg1 - *(int *)arg2 );
+  /* FIXED: the original body was
+   *     return( *(int *)arg1 - *(int *)arg2 );
+   * which reinterprets the first 4 bytes of each 8-byte double as a signed int.
+   * qsort is told the elements are sizeof(double), so this compares mantissa
+   * bits as integers and does NOT sort the array at all -- verified: the
+   * "sorted" output comes back in essentially arbitrary order. The percentile
+   * thresholds derived from it are therefore not percentiles, and the symbol
+   * encoding built on them is wrong.
+   *
+   * The subtraction is also undefined on overflow, so the specific wrong answer
+   * depends on the compiler and the qsort implementation. That is why this
+   * feature does not reproduce between an MSVC-built reference and a MinGW
+   * build: both are wrong, but differently wrong.
+   *
+   * The comment above states the intent; this is what it should have been. */
+  double a = *(const double *)arg1, b = *(const double *)arg2;
+  return (a > b) - (a < b);
 }
 
 void entropy(double	*data,

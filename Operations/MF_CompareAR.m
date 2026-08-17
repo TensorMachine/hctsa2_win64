@@ -1,20 +1,20 @@
-function out = MF_CompareAR(y, orders, testHow)
+function out = MF_CompareAR(y,orders,testHow)
 % MF_CompareAR  Compares model fits of various orders to a time series.
 %
 % Uses functions from Matlab's System Identification Toolbox: iddata, arxstruc,
 % and selstruc
 %
-% ---INPUTS:
+%---INPUTS:
 % y, vector of time-series data
 % orders, a vector of possible model orders
 % testHow, specify a fraction, or provide a string 'all' to train and test on
 %            all the data
 %
-% ---OUTPUTS: statistics on the loss at each model order, which are obtained by
+%---OUTPUTS: statistics on the loss at each model order, which are obtained by
 % applying the model trained on the training data to the testing data.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -45,7 +45,6 @@ function out = MF_CompareAR(y, orders, testHow)
 % ------------------------------------------------------------------------------
 %% Check that a System Identification Toolbox license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('identification_toolbox');
 
 % Preliminaries
 doPlot = false; % set to true to plot outputs
@@ -54,21 +53,21 @@ N = length(y); % length of time series, N
 %% Check Inputs
 % (1) Time series, y
 % Convert y to time series object
-y = iddata(y, [], 1);
+y = BF_iddata(y,[],1);
 
 % (2) Model orders:
 if nargin < 2 || isempty(orders)
-	orders = (1:10)';
+    orders = (1:10)';
 end
-if size(orders, 1) == 1
-	orders = orders'; % make sure a column vector
+if size(orders,1) == 1
+   orders = orders'; % make sure a column vector
 end
 
 % (3) testHow -- either all (trains and tests on the whole time series);
 % or a proportion of the time series to train on; will test on the
 % remaining portion.
 if nargin < 3 || isempty(testHow)
-	testHow = 'all';
+    testHow = 'all';
 end
 
 % ------------------------------------------------------------------------------
@@ -80,72 +79,72 @@ end
 % MF_StateSpaceCompOrder, or MF_StateSpace_n4sid...
 
 if ischar(testHow)
-	if strcmp(testHow, 'all')
-		yTrain = y;
-		yTest = y;
-	else
-		error('Unknown testing set specifier ''%s''', testHow);
-	end
+    if strcmp(testHow,'all')
+        yTrain = y;
+        yTest = y;
+    else
+        error('Unknown testing set specifier ''%s''',testHow);
+    end
 else
-	% use first <proportion> to train, rest to test
-	co = floor(N * testHow); % cutoff
-	yTrain = y(1:co);
-	yTest = y(co + 1:end);
+    % use first <proportion> to train, rest to test
+    co = floor(N*testHow); % cutoff
+    yTrain = y(1:co);
+    yTest = y(co+1:end);
 end
 
-V = arxstruc(yTrain, yTest, orders);
+V = BF_arxstruc(yTrain,yTest,orders);
 
 % ------------------------------------------------------------------------------
 %% Output
 % ------------------------------------------------------------------------------
 % Statistics on V, which contains loss functions at each order (normalized sum of
 % squared prediction errors)
-v = V(1, 1:end - 1); % the loss function vector over the range of orders
+v = V(1,1:end-1); % the loss function vector over the range of orders
 
 out.maxv = max(v);
 out.minv = min(v);
 out.meanv = mean(v);
 out.medianv = median(v);
-out.firstonmin = v(1) / min(v);
-out.maxonmed = max(v) / median(v);
+out.firstonmin = v(1)/min(v);
+out.maxonmed = max(v)/median(v);
 out.meandiff = mean(diff(v));
 out.stddiff = std(diff(v));
 out.maxdiff = max(abs(diff(v)));
 out.meddiff = median(diff(v));
 
 % where does it steady off?
-stdfromi = zeros(length(v), 1);
+stdfromi = zeros(length(v),1);
 for i = 1:length(stdfromi)
-	stdfromi(i) = std(v(i:end)) / sqrt(length(v) - i + 1);
+    stdfromi(i) = std(v(i:end))/sqrt(length(v)-i+1);
 end
 out.minstdfromi = min(stdfromi(stdfromi > 0));
 if isempty(out.minstdfromi), out.minstdfromi = NaN; end
-out.where01max = find(stdfromi < max(stdfromi) * 0.1, 1, 'first');
+out.where01max = find(stdfromi<max(stdfromi)*0.1,1,'first');
 if isempty(out.where01max), out.where01max = NaN; end
-out.whereen4 = find(stdfromi < 1e-4, 1, 'first');
+out.whereen4 = find(stdfromi < 1e-4,1,'first');
 if isempty(out.whereen4), out.whereen4 = NaN; end
 
 % ------------------------------------------------------------------------------
 %% Plotting
 % ------------------------------------------------------------------------------
 if doPlot
-	plot(v);
-	plot(stdfromi, 'r');
+    plot(v);
+    plot(stdfromi,'r');
 end
 
 % ------------------------------------------------------------------------------
 %% Use selstruc function to obtain 'best' order measures
 % ------------------------------------------------------------------------------
 % Get specific 'best' measures
-[nn, vmod0] = selstruc(V, 0); % minimizes squared prediction errors
+[nn, vmod0] = BF_selstruc(V,0); % minimizes squared prediction errors
 out.best_n = nn;
 
-[nn, vmodaic] = selstruc(V, 'aic'); % minimize Akaike's Information Criterion (AIC)
+[nn, vmodaic] = BF_selstruc(V,'aic'); % minimize Akaike's Information Criterion (AIC)
 out.aic_n = nn; % optimum model order minimizing AIC in the range given
 out.bestaic = vmodaic(nn == min(nn));
 
 % Using minimum description length is basically the same as using AIC:
-% [nn, vmodmdl] = selstruc(V,'mdl'); % minimize Rissanen's Minimum Description Length (MDL)
+% [nn, vmodmdl] = BF_selstruc(V,'mdl'); % minimize Rissanen's Minimum Description Length (MDL)
 % out.mdl_n = nn; % optimal model order minimizing MDL in the range given
 % out.bestmdl = vmodmdl(nn == min(nn));
 

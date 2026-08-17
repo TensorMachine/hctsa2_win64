@@ -5,7 +5,7 @@ function out = CP_wavelet_varchg(y, wName, level, maxnchpts, minDelay)
 % including the primary function wvarchg, which estimates the change points in
 % the time series.
 %
-% ---INPUTS:
+%---INPUTS:
 %
 % y, the input time series
 %
@@ -22,11 +22,11 @@ function out = CP_wavelet_varchg(y, wName, level, maxnchpts, minDelay)
 %           time-series length)
 %
 %
-% ---OUTPUT:
+%---OUTPUT:
 % The optimal number of change points.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -54,8 +54,6 @@ function out = CP_wavelet_varchg(y, wName, level, maxnchpts, minDelay)
 % this program. If not, see <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
 
-% Check that a Wavelet Toolbox license is available:
-BF_CheckToolbox('wavelet_toolbox');
 
 % ------------------------------------------------------------------------------
 %% Check Inputs
@@ -63,29 +61,29 @@ BF_CheckToolbox('wavelet_toolbox');
 N = length(y); % time-series length
 
 if nargin < 2 || isempty(wName)
-	wName = 'db3'; % default wavelet
+    wName = 'db3'; % default wavelet
 end
 
 if nargin < 3 || isempty(level)
-	level = 3; % level of wavelet decomposition
+   level = 3; % level of wavelet decomposition
 end
-if strcmp(level, 'max')
-	level = wmaxlev(N, wName);
+if strcmp(level,'max')
+    level = BF_wmaxlev(N,wName);
 end
 
 if nargin < 4 || isempty(maxnchpts)
-	maxnchpts = 5; % maximum number of change points
+   maxnchpts = 5; % maximum number of change points
 end
 
 if nargin < 5 || isempty(minDelay)
-	minDelay = 0.01; % 1% of the time series length
+     minDelay = 0.01; % 1% of the time series length
 end
 if (minDelay > 0) && (minDelay < 1)
-	minDelay = ceil(minDelay * N);
+   minDelay = ceil(minDelay*N);
 end
 
-if wmaxlev(N, wName) < level
-	error('Chosen level, %u, is too large for this wavelet on this signal. Sorry.', level);
+if BF_wmaxlev(N, wName) < level
+    error('Chosen level, %u, is too large for this wavelet on this signal. Sorry.', level);
 end
 
 % The aim of this example is to recover the change points in signal y.
@@ -97,28 +95,28 @@ end
 % ------------------------------------------------------------------------------
 
 % Perform a single-level wavelet decomposition :
-[c, l] = wavedec(y, level, wName);
+[c, l] = BF_wavedec(y,level,wName);
 
 % Reconstruct detail at the same level.
-det = wrcoef('d', c, l, wName, level);
+det = BF_wrcoef('d',c,l,wName,level);
 
 % ------------------------------------------------------------------------------
 % 2. Replace 2% of the greatest (absolute) values by the mean
 % ------------------------------------------------------------------------------
 % % in order to remove almost all the signal.
 x = sort(abs(det));
-v2p100 = x(fix(length(x) * 0.98));
+v2p100 = x(fix(length(x)*0.98));
 det(abs(det) > v2p100) = mean(det);
 
 % ------------------------------------------------------------------------------
 % 3. Use wvarchg to estimate the change points
 % ------------------------------------------------------------------------------
 try
-	[~, kopt, ~] = wvarchg(det, maxnchpts, minDelay);
+    [~, kopt, ~] = BF_wvarchg(det, maxnchpts, minDelay);
 catch emsg
-	if strcmp(emsg.identifier, 'MATLAB:nomem')
-		error('Not enough memory.');
-	end
+    if strcmp(emsg.identifier,'MATLAB:nomem')
+       error('Not enough memory.');
+    end
 end
 
 % Return the number of change points found

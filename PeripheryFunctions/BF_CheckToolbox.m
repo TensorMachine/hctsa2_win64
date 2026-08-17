@@ -17,7 +17,7 @@ function [outFlag,theName] = BF_CheckToolbox(theToolbox,infoMode,doInstallCheck)
 % theName, text of the toolbox name
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -84,39 +84,14 @@ end
 %% Now do the checks:
 %-------------------------------------------------------------------------------
 % 1. Check the toolbox exists in the current Matlab environment:
-%
-% matlab.addons.installedAddons and license('test',...) are read-only
-% queries whose answer can't change over the course of a single hctsa run
-% (unlike license('checkout',...) below, which actually reserves a license
-% seat -- a real side effect, so that one is left uncached/unchanged). Cache
-% them here since this function is called by ~42 operations, each of which
-% would otherwise repeat the same (surprisingly slow -- ~0.3s in profiling)
-% installedAddons query on every single call. installedAddOns itself doesn't
-% depend on theToolbox, so one cached copy covers every toolbox this
-% function is ever asked to check.
-persistent cachedInstalledAddOns cachedLicenseTestNames cachedLicenseTestResults
-if isempty(cachedLicenseTestNames)
-    cachedLicenseTestNames = {};
-    cachedLicenseTestResults = [];
-end
-
 outFlag = false;
 if doInstallCheck
-    if isempty(cachedInstalledAddOns)
-        cachedInstalledAddOns = matlab.addons.installedAddons;
-    end
+    installedAddOns = matlab.addons.installedAddons;
     % have toolbox installed
-    haveToolbox = any(ismember(cachedInstalledAddOns.Name,theName));
+    haveToolbox = any(ismember(installedAddOns.Name,theName));
 else
     % have toolbox license
-    idx = find(strcmp(theToolbox,cachedLicenseTestNames),1);
-    if isempty(idx)
-        haveToolbox = license('test',theToolbox);
-        cachedLicenseTestNames{end+1} = theToolbox;
-        cachedLicenseTestResults(end+1) = haveToolbox;
-    else
-        haveToolbox = cachedLicenseTestResults(idx);
-    end
+    haveToolbox = license('test',theToolbox);
 end
 if infoMode
     % Just checking availability for info (e.g., during installation)

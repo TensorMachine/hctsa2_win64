@@ -1,14 +1,14 @@
-function p = HT_HypothesisTest(x, theTest)
+function p = HT_HypothesisTest(x,theTest)
 % HT_HypothesisTest     Statistical hypothesis test applied to a time series.
 %
 % Tests are implemented as functions in Matlab's Statistics Toolbox.
 % (except Ljung-Box Q-test, which uses the Econometrics Toolbox)
 %
-% ---INPUTS:
+%---INPUTS:
 % x, the input time series
 %
 % theTest, the hypothesis test to perform:
-%           (i) sign test ('signtest'), nonparametric test for the median of a population
+%           (i) sign test ('signtest'),
 %           (ii) runs test ('runstest'),
 %           (iii) variance test ('vartest'),
 %           (iv) Z-test ('ztest'),
@@ -16,11 +16,11 @@ function p = HT_HypothesisTest(x, theTest)
 %           (vi) Jarque-Bera test of composite normality ('jbtest').
 %           (vii) Ljung-Box Q-test for residual autocorrelation ('lbq')
 %
-% ---OUTPUT:
+%---OUTPUT:
 % p-value from the specified statistical test
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -49,38 +49,36 @@ function p = HT_HypothesisTest(x, theTest)
 % ------------------------------------------------------------------------------
 
 switch theTest
-	case 'signtest' % Statistics Toolbox
-		[p, ~] = signtest(x);
-		% for some reason this one has p-value as the first output
+    case 'signtest' % Statistics Toolbox
+        [p, ~] = signtest(x);
+        % for some reason this one has p-value as the first output
 
-	case 'runstest' % Statistics Toolbox
-		[~, p] = runstest(x);
+    case 'runstest' % Statistics Toolbox
+        [~, p] = runstest(x);
 
-	case 'vartest' % Statistics Toolbox
-		[~, p] = vartest(x, 1); % normal distribution of variance 1
+    case 'vartest' % Statistics Toolbox
+        [~, p] = vartest(x,1); % normal distribution of variance 1
 
-	case 'ztest' % Statistics Toolbox
-		[~, p] = ztest(x, 0, 1);
+    case 'ztest' % Statistics Toolbox
+        [~, p] = ztest(x,0,1);
 
-	case 'signrank' % Statistics Toolbox
-		[p, ~] = signrank(x);
+    case 'signrank' % Statistics Toolbox
+        [p, ~] = signrank(x);
 
-	case 'jbtest' % Statistics Toolbox
-		warning('off', 'stats:jbtest:PTooBig'); % suspend this warning
-		warning('off', 'stats:jbtest:PTooSmall'); % suspend this warning
-		[~, p] = jbtest(x);
-		warning('on', 'stats:jbtest:PTooBig'); % resume this warning
-		warning('on', 'stats:jbtest:PTooSmall'); % resume this warning
+    case 'jbtest' % Statistics Toolbox
+        warning('off','stats:jbtest:PTooBig'); % suspend this warning
+        warning('off','stats:jbtest:PTooSmall'); % suspend this warning
+        [~, p] = jbtest(x);
+        warning('on','stats:jbtest:PTooBig'); % resume this warning
+        warning('on','stats:jbtest:PTooSmall'); % resume this warning
 
-	case 'lbq'
-		% Check that an Econometrics Toolbox license is available:
-		BF_CheckToolbox('econometrics_toolbox');
+    case 'lbq'
 
-		% Perform the test
-		[~, p] = lbqtest(x);
+        % Perform the test
+        [~, p] = BF_lbqtest(x);
 
-	otherwise
-		error('Unknown hypothesis test ''%s''', theTest);
+    otherwise
+        error('Unknown hypothesis test ''%s''',theTest);
 end
 
 end

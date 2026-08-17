@@ -99,8 +99,8 @@ filePath = BF_WriteTempFile(y);
 %% Run the TISEAN code, boxcount (Q=0.0), for the box-counting dimension (D0)
 % ------------------------------------------------------------------------------
 outFilePath = [filePath '.box'];
-[~, res] = system(sprintf('boxcount -M1,%u -d%u -Q0.0 -#%u -o %s %s', ...
-						  M, tau, numBins, outFilePath, filePath));
+[~, res] = BF_RunTisean(sprintf('boxcount -M1,%u -d%u -Q0.0 -#%u -o %s %s', ...
+						  M, tau, numBins, outFilePath, filePath), true);
 if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
 	if exist(outFilePath, 'file'), delete(outFilePath); end
 	error('Call to TISEAN function ''boxcount'' failed.');
@@ -165,8 +165,8 @@ end
 % zero; minEps = maxEps/10 was the first tested ratio to leave zero:
 maxEps = std(y) * sqrt(M);
 minEps = maxEps / 10;
-[~, res] = system(sprintf('d2 -d%u -M1,%u -t0 -N0 -r%g -R%g -#%u %s', ...
-						  tau, M, minEps, maxEps, numBins, filePath));
+[~, res] = BF_RunTisean(sprintf('d2 -d%u -M1,%u -t0 -N0 -r%g -R%g -#%u %s', ...
+						  tau, M, minEps, maxEps, numBins, filePath), true);
 if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
 	if exist([filePath '.c2'], 'file'), delete([filePath '.c2']); end
 	error('Call to TISEAN function ''d2'' failed.');

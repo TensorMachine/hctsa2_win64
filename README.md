@@ -1,93 +1,200 @@
-<p align="center"><img src="img/hctsa_logo_banner.png" alt="hctsa logo" height="180"/></p>
+# hctsa 2.0 (toolbox-free / Windows build)
 
-<h1 align="center"><em>hctsa</em></h1>
+A fork of [hctsa](https://github.com/benfulcher/hctsa) that removes five MATLAB
+toolbox dependencies and makes the whole library build and run on Windows from
+source alone.
 
-<p align="center">
- 	<a href="https://zenodo.org/badge/latestdoi/10790340"><img src="https://zenodo.org/badge/10790340.svg" height="20"/></a>
- 	<a href="https://twitter.com/compTimeSeries"><img src="https://img.shields.io/twitter/url/https/twitter.com/compTimeSeries.svg?style=social&label=Follow%20%40compTimeSeries" height="20"/></a>
-    <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/"><img src="https://img.shields.io/badge/License-CC_BY--NC--SA_4.0-lightgrey.svg" height="20"/></a>
-    <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" height="20"/></a>
-</p>
+Upstream's own README is preserved as `README_upstream_hctsa.md`.
 
-_hctsa_ is a Matlab software package for running highly comparative time-series analysis.
-It extracts thousands of time-series features from a collection of univariate time series and includes a range of tools for visualizing and analyzing the resulting time-series feature matrix, including:
+---
 
-1. Normalizing and clustering time-series data;
-2. Producing low-dimensional representations of time-series data;
-3. Identifying and interpreting discriminating features between different classes of time series; and
-4. Fitting and evaluating multivariate classification models.
+## A note on authorship
 
-__Feel free to [email me](mailto:ben.d.fulcher@gmail.com) for advice on applications__ of _hctsa_ :nerd_face:
+This fork was written collaboratively with Claude (Anthropic). The toolbox
+replacements, the build tooling, the validation harnesses and this documentation
+were produced in that collaboration, with every numerical claim checked against
+real MATLAB output rather than assumed.
 
-## Installation :arrow_down:
+## Why this fork exists
 
-For users _familiar with git_ (recommended), please [make a fork](https://help.github.com/articles/fork-a-repo/) of the repo and then clone it to your local machine.
-To update, after setting an upstream remote (`git remote add upstream git://github.com/benfulcher/hctsa.git`) you can use `git pull upstream main`.
-To obtain the latest toolboxes (like the optimized _catch22_ faeture set) you should then run `git submodule update --init`.
+Stock hctsa extracts ~7,700 time-series features, but a large fraction of them
+are gated behind toolbox licences, and parts of it do not build on Windows. This
+fork solves both problems:
 
-Users _unfamiliar with git_ can instead download the repository by clicking the green "Code" button then "Download ZIP".
+**1. Five toolboxes removed.** Curve Fitting, Wavelet, Econometrics, System
+Identification and Financial are no longer required. Every function hctsa used
+from them was reimplemented as a `BF_*` replacement — 93 of them — matching
+MathWorks' behaviour, including undocumented conventions, rather than merely
+producing something plausible.
 
-Once downloaded, you can install _hctsa_ by running the `install.m` script (see [docs](https://time-series-features.gitbook.io/hctsa-manual/) for details).
+Only **Statistics and Machine Learning** and **Signal Processing** are still
+needed. (Parallel Computing is optional and used only for parallel extraction.)
 
-<!-- We recommend working outside of the repository so that incremental updates can be pulled from the upstream repository. -->
+**2. It builds on Windows.** All compiled components — the TISEAN executables and
+every MEX file — are built from bundled source with the free compiler that ships
+with MATLAB (MinGW-w64). Nothing is distributed as a prebuilt binary, which matters 
+if your environment does not allow importing executables.
 
-## Documentation &#x1F4D6;
+**3. Merged with upstream v2.0.0**, so it also carries upstream's TSTOOL removal,
+fixes and cleanups.
 
-__Comprehensive documentation__ for _hctsa_, from getting started through to more advanced analyses is on [GitBook](https://time-series-features.gitbook.io/hctsa-manual/).
+The library is currently **1,080 master operations producing 7,693 features**.
+Ask `HCTSA2_CheckInstall.m` for the number in your installation rather than
+trusting any figure written down.
 
-There is also alot of additional information in these docs, including:
+---
 
-- :point_right: Information about alternative feature sets (including the much faster [catch22](https://github.com/DynamicsAndNeuralSystems/catch22)), and information about other time-series packages available in R, python, and Julia.
-- :wavy_dash: The accompanying time-series data archive for this project, [_CompEngine_](http://www.comp-engine.org).
-- :floppy_disk: Downloadable _hctsa_ feature matrices from time-series datasets with example workflows.
-- :computer: Resources for [distributing an _hctsa_ computation](https://github.com/benfulcher/distributed_hctsa) on a computing cluster.
-- :closed_book: A list of publications that have used _hctsa_ to address different research questions.
-- :information_desk_person: Frequently asked questions about _hctsa_ and related feature-based time-series analyses.
+## Requirements
 
-## Acknowledgement :+1:
+| | |
+|---|---|
+| MATLAB | R2018b or later (developed and validated on R2024a and R2025b) |
+| Required toolboxes | Statistics and Machine Learning, Signal Processing |
+| Compiler | **MinGW-w64**, from the MATLAB Add-On Explorer |
+| Disk | ~350 MB unpacked |
+| Admin rights | not needed |
+| Internet | not needed after the compiler is installed |
 
-If you use this software, please read and cite these open-access articles:
+### The compiler, specifically
 
-- &#x1F4D7; B.D. Fulcher and N.S. Jones. [_hctsa_: A computational framework for automated time-series phenotyping using massive feature extraction](http://www.cell.com/cell-systems/fulltext/S2405-4712\(17\)30438-6). _Cell Systems_: __5__, 527 (2017).
-- &#x1F4D7; B.D. Fulcher, M.A. Little, N.S. Jones. [Highly comparative time-series analysis: the empirical structure of time series and their methods](http://rsif.royalsocietypublishing.org/content/10/83/20130048.full). _J. Roy. Soc. Interface_: __10__, 83 (2013).
+Install **"MATLAB Support for MinGW-w64 C/C++ Compiler"** from the Add-On
+Explorer. Despite the name, MathWorks' package also includes **gfortran**, and
+you need it: four of the ten TISEAN programs are Fortran. Verified on R2025b with
+gcc/gfortran 8.1.0.
 
-Feedback, as [email](mailto:ben.d.fulcher@gmail.com), [GitHub issues](https://github.com/benfulcher/hctsa/issues) or [pull requests](https://help.github.com/articles/using-pull-requests/), is much appreciated.
+MSVC is not recommended. The bundled sources are patched for MinGW (see
+*Third-party changes* below), and MSVC has not been tested.
 
-__For commercial use of _hctsa_, including licensing and consulting, contact [Engine Analytics](http://www.engineanalytics.org/).__
+---
 
-## Licenses
+## Getting started — run these in order
 
-### Internal licenses
+```matlab
+cd <hctsa2 root>
 
-There are two licenses applied to the core parts of the repository:
+startup                   % 1. set paths (run once per MATLAB session)
+HCTSA2_ProbeToolchain     % 2. is a usable compiler present?
+HCTSA2_BuildTisean        % 3. build 10 TISEAN executables from source
+HCTSA2_BuildBinaries      % 4. build the MEX components
+startup                   % 5. discover built executables
+HCTSA2_CheckInstall       % 6. what is available
+```
 
-1. The framework for running _hctsa_ analyses and visualizations is licensed as the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](http://creativecommons.org/licenses/by-nc-sa/4.0/).
-A license for commercial use is available from [Engine Analytics](http://www.engineanalytics.org/).
+Order matters: `startup` reports whether the TISEAN executables exist, so build
+them first. Re-run `startup` in every new MATLAB session, or add the folder to
+your MATLAB startup file.
 
-2. Code for computing features from time-series data is licensed as [GNU General Public License version 3](http://www.gnu.org/licenses/gpl-3.0.en.html).
+**Step 1** compiles a test file in both C and Fortran rather than trusting a
+version string. If it reports a failure with an *empty* error message, MinGW is
+not on `PATH` — `gcc.exe` launches `cc1.exe`, `as.exe` and `ld.exe` from its own
+installation and finds them via `PATH`, so without it the driver starts and its
+subprocesses do not. The build scripts handle this themselves; the probe reports
+it.
 
-A range of external code packages are provided in the `Toolboxes` directory of the repository, and each have their own associated license (as outlined below).
+**Step 5** is the one to trust. It reports how many features are actually
+available and which components are missing. If a feature later returns `NaN`,
+this tells you whether that is a real result or an incomplete install.
 
-### External packages and dependencies
+### Then, to analyse data
 
-Many features in _hctsa_ rely on external packages and Matlab toolboxes.
-In the case that some of them are unavailable, _hctsa_ can still be used, but only a reduced set of time-series features will be computed.
+```matlab
+results = HCTSA2_Analyse('mydata.mat');
+```
 
-_hctsa_ uses the following [Matlab Add-On Toolboxes](https://au.mathworks.com/products.html): Statistics and Machine Learning, Signal Processing, Curve Fitting, System Identification, Wavelet, and Econometrics.
+Takes a `.mat` containing your time series and returns two tables:
+`FeatureTable` (one row per feature: separability, rank, per-class means) and
+`SeriesTable` (one row per series: group plus all feature values). It accepts
+long-format tables (`id, time, value, class`), wide tables, numeric matrices and
+cell arrays.
 
-The following external time-series analysis code packages are provided with the software (in the `Toolboxes` directory), and are used by our main feature-extraction algorithms to compute meaningful structural features from time series:
+`HCTSA2_TopN(results, 20)` narrows `SeriesTable` to the 20 best-separating
+features.
 
-- [_TISEAN_ package for nonlinear time-series analysis, version 3.0.1](http://www.mpipks-dresden.mpg.de/~tisean/Tisean_3.0.1/index.html) (GPL license).
-- Joseph T. Lizier's [Java Information Dynamics Toolkit (JIDT)](https://github.com/jlizier/jidt) for studying information-theoretic measures of computation in complex systems, version 1.3 (GPL license).
-- Time-series analysis code developed by [Michael Small](http://staffhome.ecm.uwa.edu.au/~00027830/code.html) (unlicensed).
-- Max Little's [Time-series analysis code](http://www.maxlittle.net/software/index.php) (GPL license).
-- Sample Entropy code from [Physionet](https://archive.physionet.org/faq.shtml#license) (GPL license).
-- [_ARFIT_ Toolbox for AR model estimation](http://climate-dynamics.org/software/#arfit) (unlicensed).
-- [_gpml_ Toolbox for Gaussian Process regression model estimation, version 3.5](http://www.gaussianprocess.org/gpml/code/matlab/doc/) (FreeBSD license).
-- Danilo P. Mandic's [delay vector variance code](http://www.commsp.ee.ic.ac.uk/~mandic/dvv.htm) (GPL license).
-- Zoubin Ghahramani's [Hidden Markov Model (HMM) code](http://mlg.eng.cam.ac.uk/zoubin/software.html) (MIT license).
-- Danny Kaplan's Code for embedding statistics (GPL license).
+---
 
-## Acknowledgements :wave:
+## What gets built
 
-Many thanks go to [Romesh Abeysuriya](https://github.com/RomeshA) for helping with the mySQL database set-up and install scripts, and [Santi Villalba](https://github.com/sdvillal) for lots of helpful feedback and advice on the software.
+### TISEAN — 10 standalone executables
+
+Built from the bundled TISEAN 3.0.1 source into `Toolboxes/Tisean_bin`. hctsa
+calls these as command-line programs, not MEX.
+
+| language | programs |
+|---|---|
+| C | `d2`, `nstat_z`, `false_nearest`, `boxcount`, `lyap_r`, `poincare` |
+| Fortran | `c1`, `c2d`, `c2g`, `c2t` |
+
+Linked with `-static`, so they carry no MinGW DLL dependencies and MinGW does not
+need to be on `PATH` at run time.
+
+`HCTSA2_BuildTisean` replaces TISEAN's `./configure && make`, which needs a POSIX
+shell that Windows does not have.
+
+### MEX components
+
+| component | features | needs |
+|---|---:|---|
+| catch22 | 240 | C |
+| Physionet `sampen` | 49 | C |
+| Michael_Small | 33 | C |
+| Max_Little | 10 | C and C++ |
+| gpml | (72) | optional — a MATLAB fallback works, the MEX is a speed-up |
+
+`HCTSA2_BuildBinaries` compiles each independently, never aborting the whole run
+because one failed, and reports what each failure costs in features.
+
+---
+
+## Third-party libraries and the changes made to them
+
+Everything below is bundled in `Toolboxes/`. The changes were needed either to
+compile under MinGW on 64-bit Windows or to fix genuine defects found while
+validating.
+
+| library | what was changed | why |
+|---|---|---|
+| **TISEAN 3.0.1** | `false_nearest.c`: applied the authors' official 2009-03-08 patch (`vemb[i] = i*delay`), plus a stricter unsigned-underflow guard | the univariate branch omitted the delay from its embedding, so every call with tau > 1 embedded at the wrong lags |
+| **gpml 4.2** | `solve_chol.c`: added MinGW to the LAPACK symbol test | MSVC exports `dpotrs`, MinGW needs `dpotrs_`; without this the build calls an undeclared symbol |
+| | `make.m`: corrected the import-library path | it built `.../win64/gnu/` from the compiler manufacturer string, but MathWorks ships MinGW libraries under `.../win64/mingw64/` |
+| **Michael_Small** | `MS_shannon.c`, `MS_complexitybs.c`: fixed the `qsort` comparator | it cast 8-byte doubles to 4-byte `int`, so the array was not sorted at all — the percentile thresholds built on it were meaningless, and the result varied by compiler |
+| **catch22** | vendored at commit `9ff9da73` instead of a git submodule; upstream test fixtures and images removed | a submodule cannot be fetched on an offline machine |
+
+---
+
+## How the toolbox removal was validated
+
+Reimplementing a toolbox function is easy to do *plausibly* and hard to do
+*correctly*. The validation was built around that distinction.
+
+**1. Against real MATLAB output.** The reference is an export of 50 time series ×
+7,702 features computed on a machine with all five toolboxes licensed. Every
+`BF_*` replacement was checked against it feature by feature, and every
+disagreement had to be explained — not merely tolerated. That process resolved
+conventions that are not documented anywhere, such as `armax`'s default initial
+conditions and `n4sid`'s horizon selection.
+
+**2. Every difference attributed.** The final state is **zero unexplained
+mismatches**. Differences that remain are each traced to a named cause:
+documented deviations where our optimiser converges and MathWorks' stops early,
+stochastic operations, chaotically sensitive operations, and operations upstream
+redefined after the reference was made.
+
+**3. Against analytically known answers.** Reference comparison cannot catch a
+feature that returns a plausible number for the wrong reason, so the library is
+also run on signals whose properties are known in closed form.
+`HCTSA2_ValidateKnownSignals` checks, among others, that an AR(1) process with
+φ = 0.8 gives autocorrelations of 0.8ᵏ, and that the logistic map's largest
+Lyapunov exponent comes back as **ln 2 = 0.693** — measured 0.692, within 0.17%.
+That single number exercises the TISEAN binary, the embedding, the scaling-range
+selection and the replacement regression all at once.
+
+**4. Stochastic features tested statistically.** Operations that draw random
+numbers cannot match exactly, so they are run repeatedly and the reference is
+scored against the resulting distribution. 95% fall within 2σ, 98% within 3σ.
+
+Three genuine bugs in hctsa itself were found along the way and fixed: the
+`false_nearest` delay embedding, a Pearson median skewness formula missing a pair
+of parentheses, and an off-by-`d` index in `CO_TranslateShape`. Where a fix makes
+a feature differ from the reference, the reference is the one that was wrong.
+
+---

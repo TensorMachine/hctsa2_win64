@@ -67,7 +67,8 @@ function out = DN_OutlierInclude(y, thresholdHow, inc)
 % ------------------------------------------------------------------------------
 
 % Check a Curve Fitting toolbox license is available
-BF_CheckToolbox('curve_fitting_toolbox');
+% Curve Fitting Toolbox gate removed for hctsa 2.0: the fits below use BF_fit,
+% BF_fittype and BF_fitoptions, which are toolbox-free replacements.
 
 doPlot = false; % Plot some outputs
 
@@ -217,11 +218,11 @@ end
 % ------------------------------------------------------------------------------
 %% Fit an exponential to the mean inter-event interval as a function of the threshold
 % ------------------------------------------------------------------------------
-s = fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [0.1 2.5 1]);
-f = fittype('a*exp(b*x)+c', 'options', s);
+s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [0.1 2.5 1]);
+f = BF_fittype('a*exp(b*x)+c', 'options', s);
 emsg = '';
 try
-	[c, gof] = fit(thr', msDt(:, 1), f);
+	[c, gof] = BF_fit(thr', msDt(:, 1), f);
 catch emsg
 	fprintf(1, 'DN_OutlierInclude: error fitting exponential growth to means: %s\n', emsg);
 end
@@ -245,9 +246,9 @@ end
 % ------------------------------------------------------------------------------
 %% Fit an exponential to N: the valid proportion left in calculation
 % ------------------------------------------------------------------------------
-s = fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [120, -1, -16]);
-f = fittype('a*exp(b*x)+c', 'options', s);
-[c, gof] = fit(thr', msDt(:, 3), f);
+s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [120, -1, -16]);
+f = BF_fittype('a*exp(b*x)+c', 'options', s);
+[c, gof] = BF_fit(thr', msDt(:, 3), f);
 
 out.nfexpa = c.a;
 out.nfexpb = c.b;
@@ -259,9 +260,9 @@ out.nfexprmse = gof.rmse;
 % ------------------------------------------------------------------------------
 %% Fit an linear trend to N: the valid proportion left in calculation
 % ------------------------------------------------------------------------------
-s = fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [-40, 100]);
-f = fittype('a*x+b', 'options', s);
-[c, gof] = fit(thr', msDt(:, 3), f);
+s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [-40, 100]);
+f = BF_fittype('a*x+b', 'options', s);
+[c, gof] = BF_fit(thr', msDt(:, 3), f);
 
 out.nfla = c.a;
 out.nflb = c.b;
@@ -296,11 +297,11 @@ out.xcmerrn1 = xc(1); % this is the cross-correlation at lag -1
 % ------------------------------------------------------------------------------
 %% Fit exponential to std in range
 % ------------------------------------------------------------------------------
-s = fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [5, 1, 15]);
-f = fittype('a*exp(b*x)+c', 'options', s);
+s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [5, 1, 15]);
+f = BF_fittype('a*exp(b*x)+c', 'options', s);
 emsg = [];
 try
-	[c, gof] = fit(thr', msDt(:, 6), f);
+	[c, gof] = BF_fit(thr', msDt(:, 6), f);
 catch emsg
 	warning('Error fitting exponential growth to std: %s\n', emsg.message);
 end
@@ -324,9 +325,9 @@ end
 % ------------------------------------------------------------------------------
 %% Fit linear to errors in range
 % ------------------------------------------------------------------------------
-s = fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [40, 4]);
-f = fittype('a*x +b', 'options', s);
-[c, gof] = fit(thr', msDt(:, 6), f);
+s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [40, 4]);
+f = BF_fittype('a*x +b', 'options', s);
+[c, gof] = BF_fit(thr', msDt(:, 6), f);
 
 out.stdrfla = c.a;
 out.stdrflb = c.b;

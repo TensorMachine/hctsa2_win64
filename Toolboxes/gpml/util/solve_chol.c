@@ -28,7 +28,17 @@
   #endif
 #endif
 
-#if !defined(_WIN32) || !defined(MEX_INFORMATION_VERSION) /* not Win32/Matlab */
+/* LAPACK symbol naming.
+   MATLAB on Windows built with MSVC exports dpotrs without a trailing
+   underscore. Everything else -- Linux, macOS, Octave, and MATLAB on Windows
+   built with MinGW/gcc (the free compiler MathWorks now recommends) -- uses
+   the gfortran-style dpotrs_. The original test omitted the MinGW case, so a
+   MinGW build called an undeclared dpotrs and failed to link.
+
+   Re-applied after the GPML 3.5 -> 4.2 upgrade: upstream's 4.2 does not carry
+   this fix. */
+#if !defined(_WIN32) || !defined(MEX_INFORMATION_VERSION) \
+    || defined(__MINGW32__) || defined(__MINGW64__)
   #define dpotrs dpotrs_
 #endif
 

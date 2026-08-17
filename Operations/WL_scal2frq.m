@@ -4,7 +4,7 @@ function out = WL_scal2frq(y, wname, amax, delta)
 % Estimates frequency components using functions from Matlab's Wavelet Toolbox,
 % including the scal2frq function.
 %
-% ---INPUTS:
+%---INPUTS:
 % y, the input time series
 %
 % wname, the name of the mother wavelet to analyze the data with: e.g., 'db3',
@@ -14,14 +14,14 @@ function out = WL_scal2frq(y, wname, amax, delta)
 %
 % delta, the sampling period
 %
-% ---OUTPUTS: the level with the highest energy coefficients, the dominant
+%---OUTPUTS: the level with the highest energy coefficients, the dominant
 % period, and the dominant pseudo-frequency.
 %
 % Adapted from example in Matlab Wavelet Toolbox documentation. It's kind of a
 % weird idea to apply the method to generic time series.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -52,7 +52,6 @@ function out = WL_scal2frq(y, wname, amax, delta)
 % ------------------------------------------------------------------------------
 %% Check that a Wavelet Toolbox license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('wavelet_toolbox');
 
 % ------------------------------------------------------------------------------
 %% Preliminaries
@@ -64,26 +63,26 @@ N = length(y); % length of the time series
 %% Check Inputs
 % ------------------------------------------------------------------------------
 if nargin < 2 || isempty(wname)
-	fprintf(1, 'Wavelet not specified -- using the default db3 wavelet\n');
-	wname = 'db3';
+    fprintf(1,'Wavelet not specified -- using the default db3 wavelet\n');
+    wname = 'db3';
 end
 
 if nargin < 3 || isempty(amax)
-	amax = 5; % maximum 'scale'
+    amax = 5; % maximum 'scale'
 end
-maxlevel = wmaxlev(N, wname); % maximum level for this time-series length
-if strcmp(amax, 'max') % set to maximum for this wavelet
-	amax = wmaxlev(N, wname);
+maxlevel = BF_wmaxlev(N,wname); % maximum level for this time-series length
+if strcmp(amax,'max') % set to maximum for this wavelet
+    amax = BF_wmaxlev(N,wname);
 end
 
 if nargin < 4 || isempty(delta)
-	delta = 1; % the sampling period
+    delta = 1; % the sampling period
 end
 
 if maxlevel < amax
-	fprintf(1, 'Chosen level (%u) is too large for this wavelet on this signal...', amax);
-	amax = maxlevel;
-	fprintf(1, ' changed to maximum level computed with wmaxlev: %u\n', amax);
+    fprintf(1,'Chosen level (%u) is too large for this wavelet on this signal...',amax);
+    amax = maxlevel;
+    fprintf(1,' changed to maximum level computed with wmaxlev: %u\n',amax);
 end
 
 % ------------------------------------------------------------------------------
@@ -103,20 +102,20 @@ scales = 1:amax;
 a = 2.^scales;
 
 % Compute associated pseudo-frequencies.
-f = scal2frq(a, wname, delta);
+f = BF_scal2frq(a, wname, delta);
 
 % Compute associated pseudo-periods.
-per = 1 ./ f;
+per = 1./f;
 
 % Decompose the time series at level specified as maximum
-[c, l] = wavedec(y, amax, wname);
+[c, l] = BF_wavedec(y, amax, wname);
 
 % Estimate standard deviation of detail coefficients.
-stdc = wnoisest(c, l, scales);
+stdc = BF_wnoisest(c,l,scales);
 
 if doplot
-	figure('color', 'w'); box('on');
-	plot(stdc, 'k') % plot them
+    figure('color','w'); box('on');
+    plot(stdc,'k') % plot them
 end
 
 % Compute identified period.

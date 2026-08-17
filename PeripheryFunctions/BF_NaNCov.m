@@ -9,7 +9,7 @@ function C = BF_NaNCov(X,makeCoeff,makeDist)
 % coefficients, specified by the second input, makeCoeff.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -58,21 +58,16 @@ if any(isnan(X(:)))
     % Indicate non-NaN values:
     goodValues = single(~isnan(X));
 
-    % Compute column means, excluding NaNs (vectorized: exact match to a
-    % per-column mean(x(~isnan(x))) loop, but without the per-column
-    % function-call overhead, which matters once numCol reaches into the
-    % thousands, e.g. feature-feature correlations over many operations):
-    colMeans = mean(X,1,'omitnan');
+    % Compute column means, excluding NaNs:
+    % Problem is with X(~isnan) -> 0
+    meanNotNan = @(x) mean(x(~isnan(x)));
+    colMeans = arrayfun(@(x)meanNotNan(X(:,x)),1:numCol);
 
     % Remove mean from each column, to make centered version:
-    Xc = X - colMeans;
+    Xc = bsxfun(@minus,X,colMeans);
 
-    % X0 copies Xc but puts zeros over NaNs. Cast to single before the
-    % O(numCol^2 * numRows) matrix multiply below, which dominates runtime
-    % for large numCol: single precision roughly halves it via BLAS, at a
-    % relative error of ~1e-6, negligible given this is already an
-    % approximate covariance estimate (see function description above).
-    X0 = single(Xc);
+    % X0 copies Xc but puts zeros over NaNs:
+    X0 = Xc;
     X0(~goodValues) = 0; % NaN -> 0
 
     % Count good points (overlapping non-NaN values)
@@ -84,7 +79,8 @@ if any(isnan(X(:)))
     % Convert to a correlation coefficient:
     if makeCoeff
         % Normalize by sample standard deviations:
-        colStds = std(X,0,1,'omitnan');
+        stdNotNan = @(x) std(x(~isnan(x)));
+        colStds = arrayfun(@(x)stdNotNan(X(:,x)),1:numCol);
         S = colStds'*colStds;
         C = C./S;
     end
@@ -94,7 +90,7 @@ else
 
     if makeCoeff
         % Normalize by sample standard deviations:
-        colStds = std(X,0,1);
+        colStds = arrayfun(@(x)std(X(:,x)),1:numCol);
         S = colStds'*colStds;
         C = C./S;
     end

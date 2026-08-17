@@ -21,6 +21,7 @@
 /*Changes:
   12/10/05: It's multivariate now
   12/16/05: Scaled <eps> and sigma(eps)
+  03/08/09: delay was missing in delay embedding of univariate case
 */
 
 #include <stdio.h>
@@ -37,7 +38,7 @@ char *infile=NULL;
 char stdo=1,dimset=0;
 char *column=NULL;
 unsigned long length=ULONG_MAX,exclude=0,theiler=0;
-unsigned int delay=1,maxdim=5,minemb=1;
+unsigned int delay=1,maxdim=6,minemb=1;
 unsigned int comp=1,maxemb=5;
 unsigned int verbosity=0xff;
 double rt=2.0;
@@ -232,7 +233,15 @@ int main(int argc,char **argv)
      smaller than the data length, those subtractions wrap around to a
      huge positive value instead of going negative, and the main loops
      then index nearest[]/series[][] far out of bounds. Fail cleanly
-     instead. */
+     instead.
+
+     This is upstream hctsa v2.0.0's guard, which is stricter than the one
+     in the official TISEAN patch of 2009-03-08. That patch tests
+     (maxemb*delay+1) >= length, which does not cover the (maxemb+1)*delay
+     subtraction the code actually performs: with maxemb=5, delay=10 and
+     length=55 the official test passes and length-(maxemb+1)*delay then
+     underflows. Both fixes are kept: this guard from upstream, and the
+     vemb[i]=i*delay correction below, which upstream does not have. */
   if ((unsigned long)(maxemb+1)*delay >= length) {
     fprintf(stderr,"false_nearest: maximal embedding dimension (%u) times "
 	    "delay (%u) is too large for the data length (%lu). Reduce -M "
@@ -273,7 +282,7 @@ int main(int argc,char **argv)
   for (i=0;i<maxdim;i++) {
     if (comp == 1) {
       vcomp[i]=0;
-      vemb[i]=i;
+      vemb[i]=i*delay;
     }
     else {
       vcomp[i]=i%comp;

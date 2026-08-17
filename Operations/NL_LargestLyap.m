@@ -75,7 +75,8 @@ function out = NL_LargestLyap(y, Nref, maxtstep, past, NNR, embedParams)
 % ------------------------------------------------------------------------------
 %% Check a curve-fitting toolbox license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('curve_fitting_toolbox');
+% Curve Fitting Toolbox gate removed for hctsa 2.0: the fit below uses BF_fit,
+% BF_fittype and BF_fitoptions, which are toolbox-free replacements.
 
 doPlot = 0; % whether to plot outputs to a figure
 
@@ -147,8 +148,8 @@ m = tm(2);
 filePath = BF_WriteTempFile(y);
 outFilePath = [filePath '.ros'];
 
-[~, res] = system(sprintf('lyap_r -d%u -m%u -t%u -s%u -o %s %s', ...
-						  tau, m, past, maxtstep, outFilePath, filePath));
+[~, res] = BF_RunTisean(sprintf('lyap_r -d%u -m%u -t%u -s%u -o %s %s', ...
+						  tau, m, past, maxtstep, outFilePath, filePath), true);
 
 if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
 	if exist(outFilePath, 'file'), delete(outFilePath); end
@@ -332,8 +333,8 @@ else
 end
 
 % Fit exponential
-s = fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [max(p) -0.5]);
-f = fittype('a*(1-exp(b*x))', 'options', s);
+s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [max(p) -0.5]);
+f = BF_fittype('a*(1-exp(b*x))', 'options', s);
 fitWorked = 1;
 try
 	% t and p are both columns here (this used to rely on TSTOOL's
@@ -341,7 +342,7 @@ try
 	% fit()'s requirement that X be a column; with t now a column already,
 	% that transpose instead turned it into a row, which fit() rejects, so
 	% it's dropped):
-	[c, gof] = fit(t, p, f);
+	[c, gof] = BF_fit(t, p, f);
 catch
 	fitWorked = 0;
 end

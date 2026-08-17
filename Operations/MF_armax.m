@@ -4,7 +4,7 @@ function out = MF_armax(y, orders, pTrain, numSteps)
 % Uses the functions iddata, armax, aic, and predict from Matlab's System
 % Identification Toolbox
 %
-% ---INPUTS:
+%---INPUTS:
 %
 % y, the input time series
 %
@@ -17,12 +17,12 @@ function out = MF_armax(y, orders, pTrain, numSteps)
 % numSteps, number of steps to predict into the future for testing the model.
 %
 %
-% ---OUTPUTS: include the fitted AR and MA coefficients, the goodness of fit in
+%---OUTPUTS: include the fitted AR and MA coefficients, the goodness of fit in
 % the training data, and statistics on the residuals from using the fitted model
 % to predict the testing data.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -53,31 +53,30 @@ function out = MF_armax(y, orders, pTrain, numSteps)
 % ------------------------------------------------------------------------------
 %% Check that a System Identification Toolbox license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('identification_toolbox');
 
 % ------------------------------------------------------------------------------
 %% Prepare Inputs
 % ------------------------------------------------------------------------------
 % (1) y, the time series as a column vector
-if size(y, 2) > size(y, 1)
-	y = y'; % ensure a column vector
+if size(y,2) > size(y,1)
+   y = y'; % ensure a column vector
 end
 N = length(y); % number of samples
 % Convert y to time series object
-y = iddata(y, [], 1);
+y = BF_iddata(y,[],1);
 
 % orders; vector specifying the AR and MA components
 if nargin < 2 || isempty(orders)
-	orders = [3, 3]; % AR3, MA3
+    orders = [3, 3]; % AR3, MA3
 end
 if nargin < 3 || isempty(pTrain)
-	pTrain = 0.8; % train on 80% of the data
+    pTrain = 0.8; % train on 80% of the data
 end
 % if nargin < 4 || isempty(trainmode)
 %     trainmode = 'first'; % trains on first pTrain proportion of the data.
 % end
 if nargin < 4 || isempty(numSteps)
-	numSteps = 1; % one-step-ahead predictions
+    numSteps = 1; % one-step-ahead predictions
 end
 
 % ------------------------------------------------------------------------------
@@ -85,7 +84,7 @@ end
 % ------------------------------------------------------------------------------
 
 % Uses the System Identification Toolbox function armax
-m = armax(y, orders);
+m = BF_armax(y, orders);
 
 % ------------------------------------------------------------------------------
 %% Statistics on model
@@ -98,25 +97,25 @@ dc = m.dc; % must uncertainties in MA coeffs
 
 % Make these outputs
 if length(c_ar) > 1
-	for i = 2:length(c_ar)
-		out.(sprintf('AR_%u', i - 1)) = c_ar(i);
-	end
+    for i = 2:length(c_ar)
+        out.(sprintf('AR_%u',i-1)) = c_ar(i);
+    end
 end
 if length(c_ma) > 1
-	for i = 2:length(c_ma)
-		out.(sprintf('MA_%u', i - 1)) = c_ma(i);
-	end
+    for i = 2:length(c_ma)
+        out.(sprintf('MA_%u',i-1)) = c_ma(i);
+    end
 end
 
 if isempty(da)
-	out.maxda = NaN;
+    out.maxda = NaN;
 else
-	out.maxda = max(da);
+    out.maxda = max(da);
 end
 if isempty(dc)
-	out.maxdc = NaN;
+    out.maxdc = NaN;
 else
-	out.maxdc = max(dc);
+    out.maxdc = max(dc);
 end
 
 % ------------------------------------------------------------------------------
@@ -132,7 +131,7 @@ out.lossfn = m.EstimationInfo.LossFcn;
 out.fpe = m.EstimationInfo.FPE; % Final prediction error of model
 
 % out.lastimprovement = m.EstimationInfo.LastImprovement; % Last improvement made in iteration
-out.aic = aic(m); % ~ log(fpe)
+out.aic = BF_aic(m); % ~ log(fpe)
 
 % ------------------------------------------------------------------------------
 %% Prediction
@@ -141,18 +140,18 @@ out.aic = aic(m); % ~ log(fpe)
 % Select first portion of data for estimation
 % This could be any portion, actually... Maybe could look at robustness of
 % model to different training sets...
-ytrain = y(1:floor(pTrain * N));
+ytrain = y(1:floor(pTrain*N));
 % ytest = y;
-ytest = y(floor(pTrain * N):end); % overlap
+ytest = y(floor(pTrain*N):end); % overlap
 
 % Train the model on just this portion
-mp = armax(ytrain, orders);
+mp = BF_armax(ytrain, orders);
 
 % Compute step-ahead predictions
 % Maybe look at trends across different prediction horizons...
-yp = predict(mp, ytest, numSteps, 'init', 'e'); % across whole dataset
+yp = BF_predict(mp, ytest, numSteps, 'init', 'e'); % across whole dataset
 
-mresiduals = ytest.y - yp.y;
+mresiduals = ytest - yp;
 
 % ------------------------------------------------------------------------------
 % Get statistics on residuals
@@ -164,7 +163,8 @@ residout = MF_ResidualAnalysis(mresiduals);
 % correlated with the stde field
 fields = fieldnames(residout);
 for k = 1:length(fields);
-	out.(fields{k}) = residout.(fields{k});
+    out.(fields{k}) = residout.(fields{k});
 end
+
 
 end

@@ -1,4 +1,4 @@
-function out = SY_TISEAN_nstat_z(y, numSeg, embedParams)
+function out = SY_TISEAN_nstat_z(y,numSeg,embedParams)
 % SY_TISEAN_nstat_z     Cross-forecast errors of zeroth-order time-series models
 %
 % Uses the nstat_z routine from the TISEAN package for nonlinear time-series
@@ -20,7 +20,7 @@ function out = SY_TISEAN_nstat_z(y, numSeg, embedParams)
 % in Matlab, and require that TISEAN is installed and compiled, and able to be
 % executed in the command line.
 %
-% ---INPUTS:
+%---INPUTS:
 %
 % y, the input time series
 %
@@ -32,12 +32,12 @@ function out = SY_TISEAN_nstat_z(y, numSeg, embedParams)
 %               {1,3} has a time-delay of 1 and embedding dimension of 3.
 %
 %
-% ---OUTPUTS: include the trace of the cross-prediction error matrix, the mean,
+%---OUTPUTS: include the trace of the cross-prediction error matrix, the mean,
 % minimum, and maximum cross-prediction error, the minimum off-diagonal
 % cross-prediction error, and eigenvalues of the cross-prediction error matrix.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -70,16 +70,16 @@ function out = SY_TISEAN_nstat_z(y, numSeg, embedParams)
 % ------------------------------------------------------------------------------
 
 if nargin < 1
-	error('Input a time series')
+    error('Input a time series')
 end
 
 if nargin < 2 || isempty(numSeg)
-	numSeg = 5; % divide the data into 5 segments by default
+    numSeg = 5; % divide the data into 5 segments by default
 end
 
 if nargin < 3
-	embedParams = {1, 3};
-	fprintf(1, 'Using default embedding using tau = 1 and m = 3\n');
+    embedParams = {1,3};
+    fprintf(1,'Using default embedding using tau = 1 and m = 3\n');
 end
 
 N = length(y); % length of the time series
@@ -93,66 +93,82 @@ filePath = BF_WriteTempFile(y);
 % fprintf(1,'Wrote temporary data file ''%s'' for TISEAN.\n',filePath)
 
 % Get embedding parameters:
-tm = BF_Embed(y, embedParams{1}, embedParams{2}, true);
+tm = BF_Embed(y,embedParams{1},embedParams{2},true);
 tau = tm(1); % time delay
 m = tm(2); % embedding dimension
 
 % ------------------------------------------------------------------------------
 % Do some preliminary checks:
 % ------------------------------------------------------------------------------
-clength = (N - (m - 1) * tau) / numSeg;
+clength = (N-(m-1)*tau)/numSeg;
 incStep = 1; % step increment (TISEAN's -s; also its causal-window default (-C) when unset, as here)
 minNeighbors = 30; % minimum number of neighbors for fit (TISEAN's -k default)
 
-% nstat_z's neighbor search grows its search radius (epsilon) without bound
-% until every reference point has >= minNeighbors neighbors, after excluding
-% a temporal window of width (2*causal + pstart - 1) around each point,
-% where pstart = (m-1)*tau is the embedding's history length and causal
-% defaults to incStep (since -C is never set here). Because nstat_z
-% internally rescales the data to [0,1], once epsilon reaches 1 every point
-% is already a neighbor of every other point, so no further growth can ever
-% produce more candidates. If the (clength-incStep-pstart) available
-% candidates minus that exclusion window is still short of minNeighbors,
-% nstat_z can never succeed for that point and loops forever: a real bug in
-% nstat_z's own upfront sanity check, which never accounts for this
-% exclusion window at all (see nstat_z.c's check just before its main
-% loop). The condition below is the exact (not heuristic) worst-case bound
-% for this to be guaranteed safe, derived from and confirmed against
-% nstat_z's source (patched separately to fail fast rather than hang, but
-% this check avoids relying on that fix and also avoids discarding
-% otherwise-computable feature values to an overly conservative margin).
+% Don't understand the c++ source code to work out exactly where the
+% find_neighbors routine is crashing, but it's definitely to do with not being
+% able to find enough neighbors and getting stuck in a while loop...
+% Try this heuristic (multiplying the actual minimum number by 1.5):
+% Upstream v2.0.0's guard, derived from what TISEAN actually needs, replaces the
+% heuristic (clength-(m-1)*tau-incStep) <= minNeighbors*1.5 that was here.
 pstart = (m - 1) * tau;
 minSafeClength = minNeighbors + 3 * incStep + 2 * pstart - 1;
 if clength < minSafeClength
-	warning('Not enough neighbors to reliably estimate prediction errors with these settings');
-	out = NaN; return
+    delete(filePath); % remove the temporary file
+    warning('Not enough neighbors to reliably estimate prediction errors with these settings');
+    out = NaN; return
 end
 
 % ------------------------------------------------------------------------------
 %% Do the calculation in the commandline
 % ------------------------------------------------------------------------------
 
-[~, res] = system(sprintf('nstat_z -# %u -d%u -m%u %s', numSeg, tau, m, filePath));
+[~, res] = BF_RunTisean(sprintf('nstat_z -# %u -d%u -m%u %s',numSeg,tau,m,filePath));
+delete(filePath) % remove the temporary file filePath
 if isempty(res), error('Call to TISEAN function ''nstat_z'' failed.'), end
 
 % ------------------------------------------------------------------------------
 %% Read the output from TISEAN
 % ------------------------------------------------------------------------------
-s = textscan(res, '%[^\n]'); s = s{1};
-wi = strmatch('Writing to stdout', s);
-if isempty(wi)
-	error('TISEAN routine ''nstat_z'' returned unexpected output...');
-end
-s = s(wi + 1:end);
+s = textscan(res,'%[^\n]'); s = s{1};
 
-xperr = zeros(numSeg); % cross prediction error from using segment i to forecast segment j
+% Strip carriage returns: the Windows TISEAN executables emit CRLF, which leaves
+% a trailing \r on every line and breaks numeric parsing.
+s = regexprep(s,'\r','');
+s = strtrim(s);
 
-for i = 1:numSeg
-	for j = 1:numSeg
-		tmp = textscan(s{(i - 1) * numSeg + j}, '%n%n%n');
-		xperr(i, j) = tmp{3};
-	end
+% Do NOT slice at a "Writing to stdout" marker. That line goes to stderr, and
+% with stderr now discarded it is not present at all; even when it was, Windows
+% buffering could place it AFTER the data, so slicing threw every row away.
+% Every line is examined instead, and the data rows are recognised by content.
+
+% Collect the data lines by CONTENT rather than by position. The original
+% indexed s{(i-1)*numSeg+j} directly, assuming exactly numSeg^2 lines follow the
+% marker; any blank line or extra banner text (which differs between TISEAN
+% builds and between platforms) then ran past the end of the array.
+vals = nan(numel(s),1);
+nGood = 0;
+for k = 1:numel(s)
+    tmp = textscan(s{k},'%n%n%n');
+    if numel(tmp) == 3 && ~isempty(tmp{3}) && isfinite(tmp{3})
+        nGood = nGood + 1;
+        vals(nGood) = tmp{3};
+    end
 end
+vals = vals(1:nGood);
+
+if nGood < numSeg^2
+    % Dump the RAW output, not the post-marker slice: if the marker is the last
+    % line the slice is empty and the message says nothing at all.
+    raw = res;
+    if numel(raw) > 1200, raw = [raw(1:1200) sprintf('\n...(truncated)')]; end
+    error(['TISEAN routine ''nstat_z'' returned %u data rows, expected %u ' ...
+           '(numSeg = %u).\n--- raw output from the executable ---\n%s\n' ...
+           '--- end raw output (%u chars total, %u lines after marker) ---'], ...
+           nGood,numSeg^2,numSeg,raw,numel(res),numel(s));
+end
+
+% cross prediction error from using segment i to forecast segment j
+xperr = reshape(vals(1:numSeg^2),numSeg,numSeg)';
 
 % pcolor(xperr)
 
@@ -175,30 +191,30 @@ out.std = std(xperr(:));
 out.range = range(xperr(:));
 
 % minimum prediction error not on diagonal
-lowertri = tril(xperr, -1); lowertri = lowertri(lowertri > 0);
-uppertri = triu(xperr, 1); uppertri = uppertri(uppertri > 0);
+lowertri = tril(xperr,-1); lowertri = lowertri(lowertri>0);
+uppertri = triu(xperr,1); uppertri = uppertri(uppertri>0);
 offdiag = [lowertri; uppertri];
 if isempty(lowertri)
-	out.minlower = NaN;
+    out.minlower = NaN;
 else
-	out.minlower = min(lowertri);
+    out.minlower = min(lowertri);
 end
 if isempty(uppertri)
-	out.minupper = NaN;
+    out.minupper = NaN;
 else
-	out.minupper = min(uppertri);
+    out.minupper = min(uppertri);
 end
 if isempty(offdiag)
-	out.minoffdiag = NaN;
-	out.iqroffdiag = NaN;
-	out.stdoffdiag = NaN;
-	out.rangeoffdiag = NaN;
+    out.minoffdiag = NaN;
+    out.iqroffdiag = NaN;
+    out.stdoffdiag = NaN;
+    out.rangeoffdiag = NaN;
 else
-	out.minoffdiag = min(offdiag);
-	% measures of spread: non-stationarity
-	out.iqroffdiag = iqr(offdiag);
-	out.stdoffdiag = std(offdiag);
-	out.rangeoffdiag = range(offdiag);
+    out.minoffdiag = min(offdiag);
+    % measures of spread: non-stationarity
+    out.iqroffdiag = iqr(offdiag);
+    out.stdoffdiag = std(offdiag);
+    out.rangeoffdiag = range(offdiag);
 end
 
 % Comparing columns/rows
@@ -222,5 +238,6 @@ out.rangeeig = range(realEigs); % range of real parts of eigenvalues
 out.stdeig = std(realEigs);
 out.mineig = min(realEigs);
 out.maxeig = max(realEigs);
+
 
 end

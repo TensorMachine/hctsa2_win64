@@ -78,7 +78,9 @@ function out = NL_FractalDimensions(y, kmin, kmax, Nref, gstart, gend, past, ste
 % ------------------------------------------------------------------------------
 % Check a curve-fitting toolbox license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('curve_fitting_toolbox');
+% Curve Fitting Toolbox gate removed for hctsa 2.0. This operation does not
+% actually use it: every fit() call in the file is commented out, so the gate
+% blocked the operation for a dependency it never exercises.
 
 % ------------------------------------------------------------------------------
 %% Preliminaries

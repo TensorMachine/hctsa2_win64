@@ -2,7 +2,7 @@ function startup()
 % STARTUP   Add all paths required for the hctsa package.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -48,6 +48,10 @@ fprintf(1,'Adding external time-series toolboxes...')
 fprintf(1,' Danny Kaplan')
 addpath(fullfile(pwd,'Toolboxes','Danny_Kaplan'));
 
+% Code by Marwan, from CRP Toolbox version 5.17  (R28.16)
+fprintf(1,', Marwan')
+addpath(fullfile(pwd,'Toolboxes','Marwan_crptool'));
+
 % Gaussian Process Toolbox, gpml, by Carl Edward Rasmussen & Hannes Nickisch:
 fprintf(1,', Gaussian Process Code\n')
 addpath(fullfile(pwd,'Toolboxes','gpml'));
@@ -62,8 +66,16 @@ fprintf(1,', ARfit toolbox')
 addpath(fullfile(pwd,'Toolboxes','ARFIT'));
 
 % Michael Small's utilities
-fprintf(1,', Michael Small\n')
+fprintf(1,', Michael Small')
 addpath(fullfile(pwd,'Toolboxes','Michael_Small'));
+
+% Code from Matlab Central
+fprintf(1,', Matlab Central code')
+addpath(fullfile(pwd,'Toolboxes','MatlabCentral'));
+
+% Rudy Moddemeijer's code
+fprintf(1,', Rudy Moddemeijer\n')
+addpath(fullfile(pwd,'Toolboxes','Rudy_Moddemeijer'));
 
 % DVV Toolbox
 fprintf(1,'DVV Toolbox')
@@ -89,9 +101,17 @@ addpath(fullfile(pwd,'Toolboxes','Max_Little','rpde'));
 fprintf(1,', nsamdf,\n');
 addpath(fullfile(pwd,'Toolboxes','nsamdf'));
 
+% Misc code
+fprintf(1,'misc')
+addpath(fullfile(pwd,'Toolboxes','Misc'));
+
 % catch22
-fprintf(1,'catch22')
+fprintf(1,', catch22')
 addpath(fullfile(pwd,'Toolboxes','catch22','wrap_Matlab'));
+
+% TSTOOL was removed in upstream v2.0.0 and its operations replaced with native
+% and TISEAN-based equivalents. Nothing adds OpenTSTOOL to the path any more --
+% the toolbox itself has been deleted from Toolboxes/.
 
 % Java information dynamics toolkit written by Joseph Lizier
 % (should be ok to re-add this every time startup is run)
@@ -99,22 +119,38 @@ fprintf(1,', Information dynamics toolkit, ')
 javaaddpath(fullfile(pwd,'Toolboxes','infodynamics-dist','infodynamics.jar'));
 
 % ------------------------------------------------------------------------------
-% Add path for TISEAN binaries (compiled locally into Toolboxes/Tisean_3.0.1/bin
-% by install.m; falls back to ~/bin for older manual installations):
+% Add path for TISEAN binaries.
 % ------------------------------------------------------------------------------
-tiseanBinaryLocation = fullfile(pwd,'Toolboxes','Tisean_3.0.1','bin');
-if ~isfolder(tiseanBinaryLocation)
-    [~,homeDir] = system('echo $HOME'); % get system home directory
-    homeDir = regexprep(homeDir,'[\s]',''); % remove whitespace
+% Platform-aware. The original assumed macOS/Linux: it read $HOME via a shell
+% echo, joined PATH with ':', and set DYLD_LIBRARY_PATH (a macOS-only variable).
+% All three are wrong on Windows, where the separator is ';' and the TISEAN
+% executables are .exe files that hctsa 2.0 expects under Toolboxes/Tisean_bin.
+if ispc
+    tiseanBinaryLocation = fullfile(pwd,'Toolboxes','Tisean_bin');
+    pathSep = ';';
+else
+    homeDir = getenv('HOME');
+    if isempty(homeDir)
+        [~,homeDir] = system('echo $HOME');
+        homeDir = regexprep(homeDir,'[\s]','');
+    end
     tiseanBinaryLocation = fullfile(homeDir,'bin');
+    pathSep = ':';
 end
-if isempty(regexp(getenv('PATH'),tiseanBinaryLocation,'once'))
-    % Prepend (not append): an older manual install may already sit in
-    % ~/bin (e.g., via a generic $HOME/bin PATH entry in .bash_profile
-    % unrelated to TISEAN), which must not shadow the locally-built version.
-    sysPath = [tiseanBinaryLocation,':',getenv('PATH')];
-    setenv('PATH', sysPath)
-    fprintf(1,'System path to TISEAN binaries: %s\n',tiseanBinaryLocation);
+if exist(tiseanBinaryLocation,'dir') == 7
+    if isempty(strfind(getenv('PATH'),tiseanBinaryLocation)) %#ok<STREMP>
+        setenv('PATH',[getenv('PATH'),pathSep,tiseanBinaryLocation]);
+    end
+    fprintf(1,'TISEAN binaries: %s\n',tiseanBinaryLocation);
+else
+    fprintf(1,'TISEAN binaries not found (%s) -- TISEAN-based features will error.\n', ...
+        tiseanBinaryLocation);
+end
+
+% DYLD_LIBRARY_PATH is macOS-specific; setting it elsewhere is harmless but
+% pointless, and on Windows it is meaningless.
+if ismac
+    setenv('DYLD_LIBRARY_PATH','/usr/local/bin');
 end
 
 % ------------------------------------------------------------------------------

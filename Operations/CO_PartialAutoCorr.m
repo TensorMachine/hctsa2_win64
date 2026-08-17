@@ -1,18 +1,18 @@
-function out = CO_PartialAutoCorr(y, maxTau, whatMethod)
+function out = CO_PartialAutoCorr(y,maxTau,whatMethod)
 % CO_PartialAutoCorr   Compute the partial autocorrelation of an input time series
 %
-% ---INPUTS:
+%---INPUTS:
 % y, a scalar time series column vector.
 %
 % maxTau, the maximum time-delay. Returns for lags up to this maximum.
 %
 % whatMethod, the method used to compute: 'ols' or 'yule_walker'
 %
-% ---OUTPUT: the partial autocorrelations across the set of time lags.
+%---OUTPUT: the partial autocorrelations across the set of time lags.
 %
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -44,36 +44,36 @@ function out = CO_PartialAutoCorr(y, maxTau, whatMethod)
 %% Check inputs and set defaults:
 % ------------------------------------------------------------------------------
 if nargin < 2
-	% Use a maximum lag of 10 by default
-	maxTau = 10;
+    % Use a maximum lag of 10 by default
+    maxTau = 10;
 end
 
 if nargin < 3 || isempty(whatMethod)
-	% ordinary least square by default
-	whatMethod = 'ols';
+    % ordinary least square by default
+    whatMethod = 'ols';
 end
 
-% -------------------------------------------------------------------------------
+%-------------------------------------------------------------------------------
 %% Initial checks on maxTau
-% -------------------------------------------------------------------------------
+%-------------------------------------------------------------------------------
 N = length(y); % time-series length
 
 assert(maxTau > 0)
 
 if maxTau < 0
-	error('Negative time lags not applicable')
+    error('Negative time lags not applicable')
 end
 
 % ------------------------------------------------------------------------------
 %% Do the computation
 % ------------------------------------------------------------------------------
 
-pacf = parcorr(y, 'NumLags', maxTau, 'Method', whatMethod);
+pacf = BF_parcorr(y,'NumLags',maxTau,'Method',whatMethod);
 
 % Zero lag is the first entry in the PACF (and should always be 1)
 
 for i = 1:maxTau
-	out.(sprintf('pac_%u', i)) = pacf(i + 1);
+    out.(sprintf('pac_%u',i)) = pacf(i+1);
 end
 
 end

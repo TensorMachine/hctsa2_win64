@@ -1,4 +1,4 @@
-function out = SY_KPSStest(y, lags)
+function out = SY_KPSStest(y,lags)
 % SY_KPSStest   The KPSS stationarity test.
 %
 % The KPSS stationarity test, of Kwiatkowski, Phillips, Schmidt, and Shin:
@@ -15,13 +15,13 @@ function out = SY_KPSStest(y, lags)
 % of change in p-values and test statistics will be outputted if the input is a
 % vector of time lags.
 %
-% ---INPUTS:
+%---INPUTS:
 % y, the input time series
 % lags, can be either a scalar (returns basic test statistic and p-value), or
 %                   vector (returns statistics on changes across these time lags)
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -52,40 +52,39 @@ function out = SY_KPSStest(y, lags)
 % ------------------------------------------------------------------------------
 %% Check that an Econometrics license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('econometrics_toolbox');
 
-% -------------------------------------------------------------------------------
+%-------------------------------------------------------------------------------
 % Check inputs
-% -------------------------------------------------------------------------------
+%-------------------------------------------------------------------------------
 if nargin < 2 || isempty(lags)
-	lags = 0;
+    lags = 0;
 end
 
 % ------------------------------------------------------------------------------
 %% (1) Perform the test(s)
 % ------------------------------------------------------------------------------
 % Temporarily turn off warnings for the test statistic being too big or small
-warning('off', 'econ:kpsstest:StatTooSmall')
-warning('off', 'econ:kpsstest:StatTooBig')
-[~, pValue, stat] = kpsstest(y, 'lags', lags);
-warning('on', 'econ:kpsstest:StatTooSmall')
-warning('on', 'econ:kpsstest:StatTooBig')
+warning('off','econ:kpsstest:StatTooSmall')
+warning('off','econ:kpsstest:StatTooBig')
+[~, pValue, stat] = BF_kpsstest(y,'lags',lags);
+warning('on','econ:kpsstest:StatTooSmall')
+warning('on','econ:kpsstest:StatTooBig')
 
 % ------------------------------------------------------------------------------
 %% (2) Return statistics on outputs of test(s)
 % ------------------------------------------------------------------------------
 if length(lags) > 1
-	% Return statistics on outputs
-	out.maxpValue = max(pValue);
-	out.minpValue = min(pValue);
-	out.maxstat = max(stat);
-	out.minstat = min(stat);
-	out.lagmaxstat = lags(stat == max(stat)); % lag at max test statistic
-	out.lagminstat = lags(stat == min(stat));
+    % Return statistics on outputs
+    out.maxpValue = max(pValue);
+    out.minpValue = min(pValue);
+    out.maxstat = max(stat);
+    out.minstat = min(stat);
+    out.lagmaxstat = lags(stat == max(stat)); % lag at max test statistic
+    out.lagminstat = lags(stat == min(stat));
 else
-	% return the statistic and pvalue
-	out.stat = stat;
-	out.pValue = pValue;
+    % return the statistic and pvalue
+    out.stat = stat;
+    out.pValue = pValue;
 end
 
 end

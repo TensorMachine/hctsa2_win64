@@ -129,7 +129,7 @@ end
 % picked out afterwards. The swept range of length scales is left at d2's
 % default (spans the full data interval, so comfortably covers the
 % rad-standard-deviations cutoff used below):
-[~, res] = system(sprintf('d2 -d%u -M1,%u -t%u -N%u %s', tau, m, past, NrefTISEAN, filePath));
+[~, res] = BF_RunTisean(sprintf('d2 -d%u -M1,%u -t%u -N%u %s', tau, m, past, NrefTISEAN, filePath), true);
 if exist([filePath '.stat'], 'file'), delete([filePath '.stat']); end
 if exist([filePath '.d2'], 'file'), delete([filePath '.d2']); end
 if exist([filePath '.h2'], 'file'), delete([filePath '.h2']); end
@@ -139,7 +139,7 @@ if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
 	error('Call to TISEAN function ''d2'' failed.');
 end
 
-[~, res] = system(sprintf('c2t %s.c2', filePath));
+[~, res] = BF_RunTisean(sprintf('c2t %s.c2', filePath));
 delete([filePath '.c2']);
 
 if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
@@ -150,11 +150,19 @@ end
 %% Parse the c2t output and read off the estimate at rad standard deviations
 % ------------------------------------------------------------------------------
 s = textscan(res, '%[^\n]'); s = s{1};
+% Windows TISEAN executables emit CRLF; strip the CR before parsing.
+s = strtrim(regexprep(s,'\r',''));
+
+% Do NOT slice at a "writing to stdout" marker. That line is stderr output,
+% which BF_RunTisean now discards -- and even when it was captured, Windows
+% buffering could place it AFTER the data, so slicing threw every row away.
+% This is the same failure that was diagnosed and fixed in NL_TISEAN_d2, where
+% the identical pattern discarded a complete c2 curve. The '#m=' blocks below
+% are genuine stdout content and locate the data on their own.
 wi = strmatch('writing to stdout', s);
-if isempty(wi)
-	error('TISEAN routine ''c2t'' returned unexpected output.');
+if ~isempty(wi)
+	s = s(wi + 1:end);
 end
-s = s(wi + 1:end);
 
 % There should be one '#m=' block per embedding dimension 1:m; take the
 % last one (dimension m, the one actually requested):

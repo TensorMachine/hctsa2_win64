@@ -1,4 +1,4 @@
-function out = PP_ModelFit(y, model, order, randomSeed)
+function out = PP_ModelFit(y,model,order,randomSeed)
 % PP_ModelFit   Investigates whether AR model fit improves with different preprocessings.
 %
 % After performing the range of transformations to the time series, returns the
@@ -17,7 +17,7 @@ function out = PP_ModelFit(y, model, order, randomSeed)
 % (iii) removal of piece-wise polynomial trends, and
 % (iv) rank mapping the values of the time series to a Gaussian distribution.
 %
-% ---INPUTS:
+%---INPUTS:
 %
 % y, the input time series
 % model, the time-series model to fit to the transformed time series (currently
@@ -28,7 +28,7 @@ function out = PP_ModelFit(y, model, order, randomSeed)
 % randomSeed, whether (and how) to reset the random seed, using BF_ResetSeed
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -66,23 +66,23 @@ N = length(y); % length of the time series
 % ------------------------------------------------------------------------------
 % Model: the model to fit preprocessed time series to
 if nargin < 2 || isempty(model)
-	model = 'ar';
+    model = 'ar';
 end
 
 % order: the order of model to fit
 if nargin < 3 || isempty(order)
-	order = 2;
+    order = 2;
 end
 
 % randomSeed: how to treat the randomization
 if nargin < 4
-	randomSeed = []; % default
+    randomSeed = []; % default
 end
 
 % ------------------------------------------------------------------------------
 %% Apply a range of preprocessings
 % ------------------------------------------------------------------------------
-yp = PP_PreProcess(y, '', [], [], [], randomSeed);
+yp = PP_PreProcess(y,'',[],[],[],randomSeed);
 % Returns a structure, yp, with a range of time series in it, each a different
 % transformation of the original, y.
 %% ____________________FIT MODEL TO ALL:_______________________ %%
@@ -92,30 +92,28 @@ numFields = length(fields);
 % statstore = struct('fpes',{});
 
 for i = 1:numFields
-	% for each preprocessing, fit the model
-	data = yp.(fields{i});
-	% data is the current preprocessed data
+    % for each preprocessing, fit the model
+    data = yp.(fields{i});
+    % data is the current preprocessed data
 
-	switch model % SO MANY OPTIONS! ;-)
-		case 'ar'
-			%% Check that a System Identification Toolbox license is available
-			BF_CheckToolbox('identification_toolbox');
+    switch model % SO MANY OPTIONS! ;-)
+        case 'ar'
 
-			data = zscore(data); % zscore the data from this preprocessing
-			m = ar(data, order); % fit the model
+            data = zscore(data); % zscore the data from this preprocessing
+            m = BF_ar(data,order); % fit the model
 
-			% Get statistics on fit
-			%     () FPE
-			statstore.fpe(i) = m.EstimationInfo.FPE;
-			%     () in-sample prediction error
-			e = pe(m, data);
-			statstore.rmserr(i) = sqrt(mean(e.^2));
-			statstore.mabserr(i) = mean(abs(e));
-			statstore.ac1(i) = CO_AutoCorr(e, 1, 'Fourier');
+            % Get statistics on fit
+            %     () FPE
+            statstore.fpe(i) = m.EstimationInfo.FPE;
+            %     () in-sample prediction error
+            e = BF_pe(m,data);
+            statstore.rmserr(i) = sqrt(mean(e.^2));
+            statstore.mabserr(i) = mean(abs(e));
+            statstore.ac1(i) = CO_AutoCorr(e,1,'Fourier');
 
-		otherwise
-			error('Unknown model ''%s''', model);
-	end
+        otherwise
+            error('Unknown model ''%s''',model);
+    end
 end
 
 % ------------------------------------------------------------------------------
@@ -133,7 +131,7 @@ end
 
 % No, I'll just do in-sample rms error, for a single model no point fpeing
 for i = 2:numFields
-	out.(sprintf('rmserrrat_%s', fields{i})) = statstore.rmserr(i) / statstore.rmserr(1);
+    out.(sprintf('rmserrrat_%s',fields{i})) = statstore.rmserr(i)/statstore.rmserr(1);
 end
 % In fact, greater error in this case means a better detrending in some
 % sense -- it's remobed more of the 'obvious' linear structure (assuming
@@ -206,5 +204,6 @@ end
 % %         plot(y,'b'); hold on; plot(ydt,'r');
 % %         input('here we are')
 %     end
+
 
 end

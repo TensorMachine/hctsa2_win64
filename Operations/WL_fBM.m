@@ -3,13 +3,13 @@ function out = WL_fBM(y)
 %
 % Uses the wfbmesti function from Matlab's Wavelet Toolbox
 %
-% ---INPUT:
+%---INPUT:
 % y, the time series to analyze.
 %
-% ---OUTPUTS: All three outputs of wfbmesti are returned from this function.
+%---OUTPUTS: All three outputs of wfbmesti are returned from this function.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -40,10 +40,9 @@ function out = WL_fBM(y)
 % ------------------------------------------------------------------------------
 %% Check that a Wavelet Toolbox license is available:
 % ------------------------------------------------------------------------------
-BF_CheckToolbox('wavelet_toolbox');
 
 % Parameter estimation of fractional Brownian motion
-hest = wfbmesti(y);
+hest = BF_wfbmesti(y);
 out.p1 = hest(1);
 out.p2 = hest(2);
 out.p3 = hest(3);
