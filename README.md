@@ -1,4 +1,4 @@
-# hctsa 2.0 (toolbox-free / Windows build)
+# hctsa2_win64 (Fewer Toolbox Dependencies / Windows build)
 
 A fork of [hctsa](https://github.com/benfulcher/hctsa) that removes five MATLAB
 toolbox dependencies and makes the whole library build and run on Windows from
