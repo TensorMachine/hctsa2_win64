@@ -24,7 +24,7 @@ c   Utilities for usage message
 c   author T. Schreiber (1998)
 c===========================================================================
       subroutine whatido(text,iverb)
-      character*72 progname
+      character*512 progname
       character*(*) text
 
       call getarg(0,progname)
@@ -43,7 +43,7 @@ c===========================================================================
       end
 
       subroutine whatineed(text)
-      character*72 progname
+      character*512 progname
       character*(*) text
 
       call getarg(0,progname)

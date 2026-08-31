@@ -313,6 +313,16 @@ int main(int argc,char **argv)
   else
     EPSFAKTOR=1.0;
 
+  /* hctsa 2.0 guard. length is unsigned long and (maxembed-1)*DELAY is
+     unsigned int: an embedding window longer than the series wrapped this to
+     ~2^64 and start_box then ran off the end of series[]. Measured:
+     -M1,10 -d5 on 10 points segfaults. */
+  if ((unsigned long)LENGTH <= (unsigned long)(maxembed-1)*(unsigned long)DELAY) {
+    fprintf(stderr,"boxcount: embedding window (%u-1) x delay (%u) is too "
+	    "large for the data length (%lu). Reduce -M or -d, or supply more "
+	    "data.\n",maxembed,DELAY,LENGTH);
+    exit(BOXCOUNT_NOT_ENOUGH_POINTS);
+  }
   length=LENGTH-(maxembed-1)*DELAY;
 
   heps=EPSMAX*EPSFAKTOR;

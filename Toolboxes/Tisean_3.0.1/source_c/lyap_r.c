@@ -102,13 +102,21 @@ void scan_options(int n,char **argv)
 void put_in_boxes(void)
 {
   int i,j,x,y,del;
+  long lim;
   
   for (i=0;i<NMAX;i++)
     for (j=0;j<NMAX;j++)
       box[i][j]= -1;
 
   del=delay*(dim-1);
-  for (i=0;i<length-del-steps;i++) {
+  /* length is unsigned long, del and steps are unsigned int: on a series
+     shorter than del+steps the subtraction wrapped to ~2^64 and the loop ran
+     off the end of list[], which is the segmentation fault seen with
+     -m10 -t10 -s20 on 20 points. The bound is computed signed and clamped;
+     main() also refuses such an input outright, so this is belt and braces. */
+  lim=(long)length-(long)del-(long)steps;
+  if (lim < 0) lim=0;
+  for (i=0;i<lim;i++) {
     x=(int)(series[i]*epsinv)&nmax;
     y=(int)(series[i+del]*epsinv)&nmax;
     list[i]=box[x][y];
@@ -178,7 +186,7 @@ int main(int argc,char **argv)
   int i;
   long n;
   long maxlength;
-  double min,max;
+  double min,max,epscap;
   FILE *file;
   
   if (scan_help(argc,argv))
@@ -208,6 +216,23 @@ int main(int argc,char **argv)
   test_outfile(outfile);
 
   series=(double*)get_series(infile,&length,exclude,column,verbosity);
+
+  /* The embedding window plus the prediction horizon has to fit inside the
+     series, or put_in_boxes' unsigned `length-del-steps` wraps to ~2^64 and it
+     runs off the end of list[] -- the segmentation fault seen with
+     -m10 -t10 -s20 on 20 points. Deliberately NOT the stronger condition
+     maxlength >= 0: a negative maxlength merely leaves the scan empty, which
+     is what the executable has always done and what NL_LargestLyap already
+     handles as a zero-byte output file. Guarding only the crash keeps every
+     input that works today working identically. */
+  if (length <= (unsigned long)delay*(unsigned long)(dim-1)
+                + (unsigned long)steps) {
+    fprintf(stderr,"lyap_r: delay (%u) x (dim-1) (%u) + steps (%u) is too "
+            "large for the data length (%lu). Reduce -m, -d or -s, or supply "
+            "more data.\n",delay,dim-1,steps,length);
+    exit(LYAP_R_NOT_ENOUGH_POINTS);
+  }
+
   rescale_data(series,length,&min,&max);
 
   if (epsset)
@@ -230,6 +255,13 @@ int main(int argc,char **argv)
   file=fopen(outfile,"w");
   if (verbosity&VER_INPUT)
     fprintf(stderr,"Opened %s for writing\n",outfile);
+  /* rescale_data put the series in [0,1], so the largest possible distance in
+     dim dimensions is sqrt(dim). Past that every pair is a neighbour and a
+     point that is still not done never will be -- it has no candidate outside
+     the Theiler window. The original loop had no exit for that case and spun
+     forever; measured with hctsa's defaults (-m10 -t40) on 100 points. The
+     test is after the body, so any run that converges is untouched. */
+  epscap=2.0*sqrt((double)dim);
   for (eps=eps0;!alldone;eps*=1.1) {
     epsinv=1.0/eps;
     put_in_boxes();
@@ -241,6 +273,12 @@ int main(int argc,char **argv)
     }
     if (verbosity&VER_USR1)
       fprintf(stderr,"epsilon: %e already found: %ld\n",eps*max,found[0]);
+    if (!alldone && eps >= epscap) {
+      if (verbosity&VER_INPUT)
+	fprintf(stderr,"lyap_r: epsilon reached the data diameter with points "
+		"still unmatched; stopping the scan.\n");
+      break;
+    }
   } 
   for (i=0;i<=steps;i++)
     if (found[i])

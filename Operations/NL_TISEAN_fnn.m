@@ -138,7 +138,11 @@ if isempty(escapeFactor)
 else
 	tisean_command = sprintf('false_nearest -d%u -m1 -M1,%u -t%u -f%g -V0 %s', tau, maxm, theilerWin, escapeFactor, filePath);
 end
-[~, res] = system(tisean_command);
+% Routed through BF_RunTisean rather than system(): it dispatches to the MEX
+% build when present, and on the executable path it keeps stderr out of the
+% capture, which is what makes the textscan below safe on Windows. -V0 already
+% suppresses the banner, so the data is all that is parsed either way.
+[~, res] = BF_RunTisean(tisean_command);
 
 % first column: the embedding dimension
 % second column: the fraction of false nearest neighbors

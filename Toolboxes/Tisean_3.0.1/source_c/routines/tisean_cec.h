@@ -68,6 +68,15 @@
 #define MAKENOISE__FLAGS_REQUIRED 70
 #define ZEROTH__STEP_TOO_LARGE 71
 #define LYAP_K__MAXITER_TOO_LARGE 72
+
+/* hctsa 2.0 additions. Three programs had no length check of their own: an
+   embedding window larger than the series underflowed an unsigned subtraction
+   and they indexed off the end of their arrays. Kept below 128 so that a shell
+   can still tell an exit code from a fatal signal. */
+#define LYAP_R_NOT_ENOUGH_POINTS 83
+#define BOXCOUNT_NOT_ENOUGH_POINTS 84
+#define NSTAT_Z__NOT_ENOUGH_POINTS 85
+#define POINCARE__NOT_ENOUGH_POINTS 86
 #define DELAY_WRONG_FORMAT_F 73
 #define DELAY_DIM_NOT_EQUAL_F_M 74
 #define DELAY_DIM_NOT_EQUAL_F_m 75

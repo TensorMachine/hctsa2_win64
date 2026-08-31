@@ -96,24 +96,51 @@ for i = 1:size(C,1)
 end
 
 %-------------------------------------------------------------------------------
-%% 3. TISEAN executables
+%% 3. TISEAN -- MEX files or executables
 %-------------------------------------------------------------------------------
+% Ten programs, either build satisfies them. BF_RunTisean prefers the MEX files
+% and falls back to the executables, so what matters is that each program is
+% available somewhere.
+tiseanProgs = {'d2','nstat_z','false_nearest','boxcount','lyap_r','poincare', ...
+               'c1','c2d','c2g','c2t'};
 if ispc
     tiseanDir = fullfile(root,'Toolboxes','Tisean_bin');
-    probe = 'nstat_z.exe';
+    exeExtn = '.exe';
 else
     tiseanDir = fullfile(getenv('HOME'),'bin');
-    probe = 'nstat_z';
+    exeExtn = '';
+end
+mexDir = fullfile(root,'Toolboxes','Tisean_mex');
+haveExe = false(1,10); haveMex = false(1,10);
+for i = 1:10
+    % isfile rather than exist(...,'file')==2: exist returns 3 for a MEX file
+    % whatever the second argument says, so an == 2 test never matches one.
+    haveExe(i) = isfile(fullfile(tiseanDir,[tiseanProgs{i} exeExtn]));
+    haveMex(i) = isfile(fullfile(mexDir,['tisean_' tiseanProgs{i} '.' mexext]));
 end
 report.tiseanDir = tiseanDir;
-report.tisean = exist(fullfile(tiseanDir,probe),'file') == 2;
-report.tiseanFeatures = 276;
+report.tiseanMexDir = mexDir;
+report.tiseanExeCount = sum(haveExe);
+report.tiseanMexCount = sum(haveMex);
+report.tisean = all(haveExe | haveMex);
+
+% 745 feature values come from the ten operations that call TISEAN directly:
+% NL_PoincareSection 144, NL_dimensions 124, NL_TISEAN_d2 102, NL_TISEAN_fnn 98,
+% NL_BoxCorrDim 84, NL_LargestLyap 56, NL_GPCorrSum 55, SY_TISEAN_nstat_z 54,
+% NL_TISEAN_c1 22, NL_TakensEstimator 6. A further 50 reach false_nearest
+% indirectly through BF_Embed(...,'fnn') and are counted with their own
+% operations. (An earlier figure of 276 here counted only the four pre-merge
+% operations and was never updated for the TSTOOL replacements.)
+report.tiseanFeatures = 745;
 if verbose
-    fprintf('\n-- TISEAN executables --\n');
-    fprintf('  %s  %-32s %4d features\n',pass(report.tisean),tiseanDir,276);
+    fprintf('\n-- TISEAN --\n');
+    fprintf('  %s  MEX  %-28s %2u of 10 programs\n',pass(report.tiseanMexCount==10),mexDir,report.tiseanMexCount);
+    fprintf('  %s  exe  %-28s %2u of 10 programs\n',pass(report.tiseanExeCount==10),tiseanDir,report.tiseanExeCount);
+    fprintf('       %4d feature values need one or the other\n',report.tiseanFeatures);
     if ~report.tisean
-        fprintf('        (see INSTALL.md section 4 -- these are standalone .exe files,\n');
-        fprintf('         not MEX, and are not built by HCTSA2_BuildBinaries)\n');
+        missing = tiseanProgs(~(haveExe | haveMex));
+        fprintf('        missing entirely: %s\n',strjoin(missing,', '));
+        fprintf('        (HCTSA2_BuildTiseanMex for MEX, HCTSA2_BuildTisean for .exe)\n');
     end
 end
 
@@ -172,10 +199,10 @@ if verbose
         100*avail/max(featuresTotal,1));
     fprintf('    pure MATLAB      : %4d  (always)\n',pureMatlab);
     fprintf('    from MEX         : %4d\n',mexOK);
-    fprintf('    from TISEAN      : %4d\n',276*report.tisean);
+    fprintf('    from TISEAN      : %4d\n',report.tiseanFeatures*report.tisean);
     if mexBad > 0 || ~report.tisean
         fprintf('  unavailable        : %4d  -- run HCTSA2_BuildBinaries, or see INSTALL.md\n', ...
-            mexBad + 276*(~report.tisean));
+            mexBad + report.tiseanFeatures*(~report.tisean));
     end
     fprintf('=================================================\n');
     if ~report.statsToolbox || ~report.signalToolbox
@@ -228,7 +255,7 @@ try
     w = which(fn);
     if ~isempty(w)
         if endsWithI(w,ext), tf = true; return; end
-        if exist(fullfile(fileparts(w),[fn ext]),'file') == 2, tf = true; return; end
+        if isfile(fullfile(fileparts(w),[fn ext])), tf = true; return; end
     end
 catch
 end
@@ -248,7 +275,9 @@ function tf = findFileBelow(root,name,depth)
 % capped: the deepest MEX in this tree is four levels down.
 tf = false;
 if depth > 6 || exist(root,'dir') ~= 7, return; end
-if exist(fullfile(root,name),'file') == 2, tf = true; return; end
+% isfile: `name` here ends in .mexw64 and exist would answer 3, not 2, so this
+% branch never fired. Steps 1 and 2 above were carrying the search alone.
+if isfile(fullfile(root,name)), tf = true; return; end
 d = dir(root);
 for i = 1:numel(d)
     if ~d(i).isdir || strcmp(d(i).name,'.') || strcmp(d(i).name,'..'), continue; end

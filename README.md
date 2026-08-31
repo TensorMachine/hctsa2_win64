@@ -48,7 +48,7 @@ trusting any figure written down.
 
 | | |
 |---|---|
-| MATLAB | R2018b or later (developed and validated on R2024a and R2025b) |
+| MATLAB | R2024a or later (developed and validated on R2024a and R2025b) |
 | Required toolboxes | Statistics and Machine Learning, Signal Processing |
 | Compiler | **MinGW-w64**, from the MATLAB Add-On Explorer |
 | Disk | ~350 MB unpacked |
@@ -65,6 +65,11 @@ gcc/gfortran 8.1.0.
 MSVC is not recommended. The bundled sources are patched for MinGW (see
 *Third-party changes* below), and MSVC has not been tested.
 
+**R2024a is the floor** because that is the release in which MathWorks added
+gfortran to the supported MEX compilers on Windows, and four of the ten TISEAN
+programs are Fortran. On an earlier release the C half still builds; use the
+executable build (`HCTSA2_BuildTisean`) for the Fortran four.
+
 ---
 
 ## Getting started — run these in order
@@ -74,11 +79,15 @@ cd <hctsa2 root>
 
 startup                   % 1. set paths (run once per MATLAB session)
 HCTSA2_ProbeToolchain     % 2. is a usable compiler present?
-HCTSA2_BuildTisean        % 3. build 10 TISEAN executables from source
-HCTSA2_BuildBinaries      % 4. build the MEX components
-startup                   % 5. discover built executables
+HCTSA2_BuildTiseanMex     % 3. build the 10 TISEAN programs as MEX files
+HCTSA2_BuildBinaries      % 4. build the other MEX components
+startup                   % 5. discover what was built
 HCTSA2_CheckInstall       % 6. what is available
 ```
+
+Step 3 has an alternative: `HCTSA2_BuildTisean` builds the same ten programs as
+standalone `.exe` files instead. Both are supported and either satisfies the
+library; see *TISEAN* below for which to pick.
 
 Order matters: `startup` reports whether the TISEAN executables exist, so build
 them first. Re-run `startup` in every new MATLAB session, or add the folder to
@@ -114,21 +123,82 @@ features.
 
 ## What gets built
 
-### TISEAN — 10 standalone executables
+### TISEAN — 10 programs, as MEX files or as executables
 
-Built from the bundled TISEAN 3.0.1 source into `Toolboxes/Tisean_bin`. hctsa
-calls these as command-line programs, not MEX.
+Built from the bundled TISEAN 3.0.1 source. Both build scripts replace TISEAN's
+`./configure && make`, which needs a POSIX shell that Windows does not have.
 
 | language | programs |
 |---|---|
 | C | `d2`, `nstat_z`, `false_nearest`, `boxcount`, `lyap_r`, `poincare` |
 | Fortran | `c1`, `c2d`, `c2g`, `c2t` |
 
-Linked with `-static`, so they carry no MinGW DLL dependencies and MinGW does not
-need to be on `PATH` at run time.
+They account for **745 feature values across 26 master operations**, plus 50
+more that reach `false_nearest` indirectly through `BF_Embed(...,'fnn')`.
 
-`HCTSA2_BuildTisean` replaces TISEAN's `./configure && make`, which needs a POSIX
-shell that Windows does not have.
+| | `HCTSA2_BuildTiseanMex` | `HCTSA2_BuildTisean` |
+|---|---|---|
+| output | `Toolboxes/Tisean_mex/tisean_*.mexw64` | `Toolboxes/Tisean_bin/*.exe` |
+| MATLAB | R2024a or later | any supported release |
+| produces an `.exe` | no | yes |
+| `cmd.exe` per call | no | yes (~50 launches per time series) |
+
+`BF_RunTisean` prefers the MEX files and falls back to the executables, so
+operations never need to know which is installed. Set the environment variable
+`HCTSA2_TISEAN_BACKEND` to `mex` or `exe` to force one — which is how
+`HCTSA2_TestTiseanMex` diffs them against each other.
+
+The executables are linked with `-static`, so they carry no MinGW DLL
+dependencies. The MEX files link `libgfortran.a` statically for the same reason.
+
+**Running a program in-process is not simply a matter of renaming `main`.** A
+TISEAN program is written to run once and exit, and three things had to be
+handled before one could be called repeatedly inside MATLAB. Each was found by
+measurement, and each is checked by `HCTSA2_TestTiseanMex`:
+
+- **`exit()` and `stop` end the process.** There are 46 `exit()` calls across the
+  six C programs and the support routines they link, and 13 `stop` statements in
+  the Fortran, and they are reached in normal use — `false_nearest`'s
+  "not enough points" guard is one. They are routed back to the gateway instead.
+- **The globals persist between calls.** `d2` scales `EPSMAX` by the data
+  interval and never restores it, so a second call returns a different, entirely
+  plausible-looking correlation sum. `c1` advances a SLATEC random seed that a
+  fresh process starts from zero. Both are restored between runs.
+- **Nothing frees anything.** `d2`, `nstat_z` and `false_nearest` free their
+  globals on the normal path, none of them do when the program exits early, and
+  the rest never do. The gateway tracks every allocation and sweeps what is
+  left, which is correct on both paths.
+
+### Five crashes and two hangs, fixed in the TISEAN sources
+
+Converting to MEX raised the cost of a crash — in-process, a segmentation fault
+takes MATLAB with it — so the programs were swept over hctsa's own command
+shapes across series lengths, delays, embedding dimensions and Theiler windows.
+**145 of 756 runs terminated abnormally.** Every one was an unsigned subtraction
+that wrapped when an embedding window exceeded the series length, or an epsilon
+search with no exit when the requested neighbours could never be found:
+
+| program | failure | fix |
+|---|---|---|
+| `lyap_r` | segfault (`put_in_boxes`, `length-del-steps` underflow) | signed bound plus a length check |
+| `lyap_r` | infinite epsilon growth | stop at the data diameter |
+| `nstat_z` | segfault (`clength` underflow); its own guard was written in unsigned arithmetic and passed exactly when it should have fired | length check, and the guard evaluated signed |
+| `nstat_z` | infinite epsilon growth | stop at the data diameter |
+| `boxcount` | segfault (`LENGTH-(maxembed-1)*DELAY` underflow) | length check |
+| `poincare` | segfault (`length-(dim-comp)*delay-1` underflow) | length check |
+| `c1` | segfault and hang (`log` of a non-positive count when `-t` reaches the series length) | length check, and a bound on `d1`'s sweep |
+
+The `poincare` one is worth a note on method: the first sweep missed it because
+it varied `-q` together with `-m`, the way hctsa calls it. A later randomised
+fuzz that varied every option independently found it immediately. A grid built
+from how the caller behaves tests the caller, not the program.
+
+The current position: **0 abnormal terminations in 756 grid runs, in 3,000
+randomised runs across lengths from 3 to 2,000 points, and in 45 malformed-input
+runs** through the three Fortran post-processors. These are fixes to the TISEAN
+sources, so the executable build gets them too. Every guard fires only on an
+input that previously crashed or hung — output on all working inputs is
+byte-for-byte unchanged, which is what `HCTSA2_TestTiseanMex` establishes.
 
 ### MEX components
 
@@ -154,6 +224,9 @@ validating.
 | library | what was changed | why |
 |---|---|---|
 | **TISEAN 3.0.1** | `false_nearest.c`: applied the authors' official 2009-03-08 patch (`vemb[i] = i*delay`), plus a stricter unsigned-underflow guard | the univariate branch omitted the delay from its embedding, so every call with tau > 1 embedded at the wrong lags |
+| | `lyap_r.c`, `nstat_z.c`, `boxcount.c`, `poincare.c`, `c1.f`, `d1.f`: length guards and bounded epsilon searches (see above) | five segfaults and two hangs on series hctsa can hand them; `nstat_z`'s own guard was written in unsigned arithmetic and never fired |
+| | `c1.f`, `c2d.f`, `c2g.f`, `c2t.f`, `help.f`: filename buffers widened from `character*72` to `character*512` | gfortran truncates a longer name **silently**, so the program writes to a path nobody asked for and the caller then looks for a file that was never created. A Windows `tempname` is 72 characters on its own. Only the filename variables were widened — `aline` and the option-list buffers are sliced with a hardcoded `:72` and keep their size |
+| | `mex/`: gateways, an `exit()`/`stop` shim and a tracking allocator; the Fortran programs are rewritten as subroutines at build time | so the programs can be MEX files rather than executables. The shared sources are unchanged and still build as executables |
 | **gpml 4.2** | `solve_chol.c`: added MinGW to the LAPACK symbol test | MSVC exports `dpotrs`, MinGW needs `dpotrs_`; without this the build calls an undeclared symbol |
 | | `make.m`: corrected the import-library path | it built `.../win64/gnu/` from the compiler manufacturer string, but MathWorks ships MinGW libraries under `.../win64/mingw64/` |
 | **Michael_Small** | `MS_shannon.c`, `MS_complexitybs.c`: fixed the `qsort` comparator | it cast 8-byte doubles to 4-byte `int`, so the array was not sorted at all — the percentile thresholds built on it were meaningless, and the result varied by compiler |
@@ -196,5 +269,25 @@ Three genuine bugs in hctsa itself were found along the way and fixed: the
 `false_nearest` delay embedding, a Pearson median skewness formula missing a pair
 of parentheses, and an off-by-`d` index in `CO_TranslateShape`. Where a fix makes
 a feature differ from the reference, the reference is the one that was wrong.
+
+A fourth was found while converting TISEAN to MEX files. `d1.f`'s Fisher-Yates
+shuffle read
+
+```fortran
+iperm = min(int(rand(0.0)*nmax-(mt-1)*id)+1, nmax-(mt-1)*id)
+```
+
+and Fortran binds `*` tighter than `-`, so that is
+`int(rand()*nmax - (mt-1)*id)`, not the intended
+`int(rand()*(nmax-(mt-1)*id))`. For embedding dimension m > 1 it goes negative
+whenever `rand() < (mt-1)*id/nmax`, and `ju(iperm)` then reads and writes
+*below* the array — into `jh`, declared immediately before it. So the shuffle
+drew some of its swap partners from a neighbour-search histogram.
+
+In a standalone program `jh` is statically zero at that moment, which makes the
+bug invisible and the result deterministic by accident. In a MEX file `jh` holds
+the previous call's data, so `c1` returned different numbers on every call after
+the first. **This moves `NL_TISEAN_c1`'s 22 feature values** by roughly 0.4–5%
+for m > 1; m = 1 is unaffected, because `(mt-1)*id` is then zero.
 
 ---

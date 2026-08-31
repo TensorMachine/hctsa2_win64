@@ -47,13 +47,35 @@ c===========================================================================
       do 10 i=1,nmax-(mt-1)*id
  10      ju(i)=i+(mt-1)*id
       do 20 i=1,nmax-(mt-1)*id
-         iperm=min(int(rand(0.0)*nmax-(mt-1)*id)+1,nmax-(mt-1)*id)
+c
+c   hctsa 2.0 fix: the parentheses around (nmax-(mt-1)*id) were missing.
+c   Fortran binds * tighter than -, so the original read
+c
+c      int( rand()*nmax - (mt-1)*id ) + 1
+c
+c   rather than the intended int( rand()*(nmax-(mt-1)*id) ) + 1. For m > 1 that
+c   is negative whenever rand() < (mt-1)*id/nmax, and ju(iperm) then reads and
+c   writes BELOW the array -- into jh, which is declared immediately before it.
+c   The Fisher-Yates shuffle therefore drew some of its swap partners from
+c   whatever jh happened to contain.
+c
+c   In a standalone program jh is statically zero at that point, so the bug is
+c   invisible and merely deterministic-by-accident. Inside a MEX file jh holds
+c   the previous call's histogram, so c1 returned different numbers on every
+c   call after the first. Measured with -M7: run 1 matched the executable, runs
+c   2 to 6 did not; with this fix all six match.
+c
+c   m=1 is unaffected either way, because (mt-1)*id is then zero.
+c
+         iperm=min(int(rand(0.0)*(nmax-(mt-1)*id))+1,nmax-(mt-1)*id)
          ih=ju(i)
          ju(i)=ju(iperm)
  20      ju(iperm)=ih
       iu=ncmin
       eln=0
- 1    call mbase(ncomp+(mt-1)*id,mmax,nxx,y,id,m,jh,jpntr,eps)
+      nsweep=0
+ 1    nsweep=nsweep+1
+      call mbase(ncomp+(mt-1)*id,mmax,nxx,y,id,m,jh,jpntr,eps)
       iunp=0
       do 30 nn=1,iu                                           ! find neighbours
          n=ju(nn)
@@ -84,6 +106,16 @@ c===========================================================================
  30      continue
       iu=iunp
       eps=eps*sqrt(2.)
+c   hctsa 2.0 guard. Each sweep multiplies eps by sqrt(2), so a search that has
+c   not converged in 200 sweeps has grown the radius by 10^30 and never will:
+c   the requested neighbour count exceeds what the time separation leaves
+c   available. The original loop had no exit for that and spun forever. A
+c   converging search is nowhere near this bound, so no working input changes.
+      if(iunp.ne.0.and.nsweep.ge.200) then
+         write(istderr(),'(a)')
+     .      "d1: neighbour search did not converge; -n too large"
+         stop
+      endif
       if(iunp.ne.0) goto 1
       eln=eln/(ncmin-(mt-1)*id)
       end

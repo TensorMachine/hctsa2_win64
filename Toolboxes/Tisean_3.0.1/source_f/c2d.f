@@ -26,7 +26,18 @@ c===========================================================================
 
       parameter(meps=1000)
       dimension e(meps), c(meps)
-      character*72 file, fout, aline
+c
+c   hctsa 2.0: filename buffers raised from character*72 to character*512.
+c   TISEAN declared every filename character*72 and gfortran truncates a longer
+c   name silently, so the program writes to a path the caller never asked for
+c   and the caller then looks for a file that does not exist. A Windows
+c   tempname is already 72 characters. Only the filename variables are widened:
+c   aline is a data-line buffer that is sliced with a hardcoded :72, and the
+c   option-list buffers in arguments.f are the same, so both keep their size.
+c   Every routine that receives these is character*(*) and adapts on its own.
+c
+      character*512 file, fout
+      character*72 aline
       data iav/1/
       data iverb/1/
 

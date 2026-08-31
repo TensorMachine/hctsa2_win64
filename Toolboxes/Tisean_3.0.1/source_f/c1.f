@@ -27,7 +27,17 @@ c===========================================================================
 
       parameter(nx=100000,mx=10)
       dimension x(nx,mx), icol(mx)
-      character*72 file, fout
+c
+c   hctsa 2.0: filename buffers raised from character*72 to character*512.
+c   TISEAN declared every filename character*72 and gfortran truncates a longer
+c   name silently, so the program writes to a path the caller never asked for
+c   and the caller then looks for a file that does not exist. A Windows
+c   tempname is already 72 characters. Only the filename variables are widened:
+c   aline is a data-line buffer that is sliced with a hardcoded :72, and the
+c   option-list buffers in arguments.f are the same, so both keep their size.
+c   Every routine that receives these is character*(*) and adapts on its own.
+c
+      character*512 file, fout
       data kmax/100/, res/2./
       data iverb/1/
       external rand
@@ -51,6 +61,23 @@ c===========================================================================
 
       call nthstring(1,file)
       call xreadfile(nmax,mcmax,nx,x,nexcl,icol,file,iverb)
+c
+c   hctsa 2.0 guard. d1 computes ncomp=nmax-(mt-1)*id and then
+c   log(real(ncomp-2*nmin-1)). With a time separation (-t) large enough that
+c   2*ntmin+1 reaches the number of points, that argument is zero or negative:
+c   the logarithm returns NaN, the neighbour count k becomes meaningless and
+c   the eps-doubling sweep in d1 never terminates. Measured: -d1 -m1 -M3 -t40
+c   -n50 on 50 points segfaults, and hangs when built with bounds checking.
+c   hctsa's NL_TISEAN_c1 applies no minimum length of its own.
+c
+      mtmax=(mto-1)/mcmax+1
+      if(nmax-(mtmax-1)*id-2*ntmin-1.le.0) then
+         write(istderr(),'(a)')
+     .      "c1: series too short for the embedding and -t requested"
+         write(istderr(),*) "  points=",nmax," -m=",mto," -d=",id,
+     .      " -t=",ntmin
+         stop
+      endif
       if(file.eq."-") file="stdin"
       if(isout.eq.1) call addsuff(fout,file,"_c1")
       call outfile(fout,iunit,iverb)

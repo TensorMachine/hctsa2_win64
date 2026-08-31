@@ -31,8 +31,22 @@ sql_settings.conf
 plugininstall_*.m
 *.log
 
-# TISEAN generates platform-specific files:
-/Toolboxes/Tisean_3.0.1/
+# TISEAN generates platform-specific files. Ignore everything the
+# unpacked distribution drops in here...
+/Toolboxes/Tisean_3.0.1/*
+
+# ...except the MEX gateways, which are hand-written project source, not
+# build output. Without this exception a plain 'git add' silently skips
+# them, because a directory excluded by the rule above is never descended
+# into. The other tracked TISEAN directories (source_c, source_f, docs)
+# stay tracked because git keeps files it already knows about.
+!/Toolboxes/Tisean_3.0.1/mex/
+
+# Build outputs: the TISEAN MEX files and the standalone executables are
+# produced locally by HCTSA2_BuildTiseanMex / HCTSA2_BuildTisean and are
+# specific to the machine that built them.
+/Toolboxes/Tisean_mex/
+/Toolboxes/Tisean_bin/
 
 # Generated test/benchmark logs:
 /Tests/*.txt

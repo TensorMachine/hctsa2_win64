@@ -319,7 +319,7 @@ int main(int argc,char **argv)
   unsigned long *hfound;
   unsigned long actfound;
   unsigned long clength;
-  double *rms,av,error;
+  double *rms,av,error,epscap;
   FILE *file=NULL;
 
   if (scan_help(argc,argv))
@@ -368,8 +368,22 @@ int main(int argc,char **argv)
   if (epsset)
     EPS0 /= interval;
 
+  /* hctsa 2.0 guard. LENGTH is unsigned long, so an embedding window longer
+     than the series wrapped the subtraction below to ~2^64 and made clength
+     enormous; find_neighbors then indexed far past the end of series[].
+     Measured: -d5 -m3 on 10 points segfaults. */
+  if ((unsigned long)LENGTH <= (unsigned long)(DIM-1)*(unsigned long)DELAY) {
+    fprintf(stderr,"nstat_z: embedding window (%d-1) x delay (%d) is too large "
+	    "for the data length (%lu). Reduce -m or -d, or supply more "
+	    "data.\n",DIM,DELAY,LENGTH);
+    exit(NSTAT_Z__NOT_ENOUGH_POINTS);
+  }
   clength=(LENGTH-(DIM-1)*DELAY)/pieces;
-  if ((clength-(DIM-1)*DELAY-STEP) < MINN) {
+  /* The upstream test below was written in unsigned arithmetic, so a negative
+     left-hand side wrapped huge and the check passed exactly when it should
+     have fired. Evaluated signed, it does what it says. */
+  if ((long long)clength - (long long)(DIM-1)*(long long)DELAY
+      - (long long)STEP < (long long)MINN) {
     fprintf(stderr,"You chose too many pieces and will never find enough"
 	    " neighbors!\n");
     exit(NSTAT_Z__TOO_MANY_PIECES);
@@ -426,6 +440,13 @@ int main(int argc,char **argv)
 	alldone=0;
 	epsilon=EPS0/EPSF;
 	error=0.0;
+	/* rescale_data put the series in [0,1], so no distance can exceed
+	   sqrt(DIM). Past that every point is a neighbour of every other and a
+	   centre that still has fewer than MINN of them never will -- the
+	   causal-exclusion window has removed too many. The original loop had
+	   no exit for that and grew epsilon forever. Tested after the body, so
+	   a run that converges is untouched. */
+	epscap=2.0*sqrt((double)DIM);
 	while (!alldone) {
 	  alldone=1;
 	  epsilon*=EPSF;
@@ -444,6 +465,13 @@ int main(int argc,char **argv)
 	      }
 	      alldone &= done[i];
 	    }
+	  if (!alldone && epsilon >= epscap) {
+	    if (verbosity&VER_INPUT)
+	      fprintf(stderr,"nstat_z: epsilon reached the data diameter with "
+		      "centres still short of -N neighbours; stopping the "
+		      "scan.\n");
+	    break;
+	  }
 	}
 	if (stdo)
 	  fprintf(stdout,"%ld %ld %e\n",first+1,second+1,

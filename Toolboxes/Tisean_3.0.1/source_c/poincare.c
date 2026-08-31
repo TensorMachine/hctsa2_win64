@@ -230,6 +230,19 @@ int main(int argc,char** argv)
     fprintf(stderr,"Component to cut is larger than dimension. Exiting!\n");
     exit(POINCARE__WRONG_COMPONENT);
   }
+  /* hctsa 2.0 guard. Both loops in poincare() run to length-(dim-comp)*delay-1,
+     which is unsigned: when the part of the embedding window above the cut
+     component is longer than the series it wraps to ~2^64 and the loop reads
+     off the end of series[]. Measured: -d25 -m10 -q1 on 20 points segfaults.
+     Deliberately only the underflow -- a start index past a valid end merely
+     leaves the loop empty, which is what the executable has always done. */
+  if ((unsigned long)length <=
+      (unsigned long)(dim-comp)*(unsigned long)delay + 1UL) {
+    fprintf(stderr,"poincare: (dim (%d) - component (%d)) x delay (%d) is too "
+	    "large for the data length (%lu). Reduce -m, -q or -d, or supply "
+	    "more data.\n",dim,comp,delay,length);
+    exit(POINCARE__NOT_ENOUGH_POINTS);
+  }
   if ((where < min) || (where > max)) {
     fprintf(stderr,"You want to cut outside the data interval which is [%e,"
 	    "%e]\n",min,max);
