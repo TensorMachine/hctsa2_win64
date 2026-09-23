@@ -73,8 +73,8 @@ try
     % with no sign that nothing ran. Each operation then invents its own
     % downstream complaint, so a machine with no TISEAN installed produces ten
     % unrelated-looking errors and no clue the cause is common to them.
-    assertProgramAvailable(prog);
-    [status,out] = runViaExe(prog,args,cmd,keepStderr,timeoutSeconds());
+    exePath = assertProgramAvailable(prog);
+    [status,out] = runViaExe(exePath,args,cmd,keepStderr,timeoutSeconds());
 catch err
     if ~isempty(args)
         BF_CleanTempFiles(args{end});
@@ -84,31 +84,93 @@ end
 end
 
 %-------------------------------------------------------------------------------
-function assertProgramAvailable(prog)
-% Raise a single, actionable error when neither backend can supply PROG.
+function exePath = assertProgramAvailable(prog)
+% Resolve PROG to an executable, or raise a single actionable error.
 %
-% The probe runs once per program per MATLAB session, so the installed case --
-% the normal one -- costs a single 'where'/'command -v' and nothing after that.
-persistent haveExe
-if isempty(haveExe), haveExe = struct(); end
+% Returns the absolute path when the program is where startup puts it, and the
+% bare name when it was found somewhere else on the PATH. Callers run whatever
+% comes back, so the file that is checked is the file that runs.
+%
+%---WHY THIS DOES NOT ASK THE SHELL FIRST
+% It used to: "where %s" on Windows, "command -v %s" elsewhere. That reported
+% the program missing on a machine where it was installed and working, and the
+% resulting error fired on every TISEAN call.
+%
+% The reason the shell probe failed there was never established -- it could not
+% be reproduced off Windows -- but it does not need to be, because the probe was
+% answering a harder question than the one being asked. The executables are
+% BUILT INTO A KNOWN DIRECTORY by HCTSA2_BuildTisean, and that is the same
+% directory startup adds to the PATH and the same one HCTSA2_CheckInstall looks
+% in with isfile, which reports correctly on the machine where the probe did
+% not. Looking straight at the file needs no shell, no PATH lookup, no PATHEXT
+% and no process, and it is exact about the extension: d2.exe on Windows, d2
+% everywhere else.
+%
+% The shell probe is kept as a fallback for an installation somewhere else
+% entirely, with the extension made explicit on Windows.
+%---WHY ONLY A SUCCESS IS REMEMBERED
+% A failure is deliberately NOT cached. Caching one makes a recoverable
+% situation permanent: probe before the executables are built, or before
+% startup has put their directory on the PATH, and every later call in that
+% MATLAB session keeps the stale answer even after the cause is fixed. The only
+% way out is "clear functions", which nobody thinks to try -- the symptom is a
+% program reported missing while it sits in the folder the error names.
+% Re-probing a failure costs one isfile() on a path that is about to raise an
+% error anyway, which is nothing beside making the error impossible to clear.
+persistent resolved
+if isempty(resolved), resolved = struct(); end
 field = ['p_' prog];
-if ~isfield(haveExe,field)
-    if ispc
-        probe = sprintf('where %s >nul 2>&1',prog);
-    else
-        probe = sprintf('command -v %s >/dev/null 2>&1',prog);
-    end
-    haveExe.(field) = (system(probe) == 0);
+if isfield(resolved,field)
+    exePath = resolved.(field);
+    return                       % only successes are ever stored
 end
-if haveExe.(field), return; end
+exePath = locateProgram(prog);
+if ~isempty(exePath)
+    resolved.(field) = exePath;
+    return
+end
 
 error('hctsa:tisean:notInstalled', ...
-    ['TISEAN program ''%s'' is not on the PATH, so no TISEAN feature can be ' ...
-     'computed on this machine.\n  The executables are BUILD ARTIFACTS: they ' ...
-     'are machine-specific, they are listed in .gitignore, and they do not ' ...
-     'travel with the repository.\n  Build them on this machine with ' ...
-     'HCTSA2_BuildTisean, then run startup.\n  HCTSA2_CheckInstall reports ' ...
-     'what is present.'],prog);
+    ['TISEAN program ''%s'' could not be found, so no TISEAN feature can be ' ...
+     'computed on this machine.\n  Looked for: %s\n  and on the PATH as %s.' ...
+     '\n  The executables are BUILD ARTIFACTS: they are machine-specific, ' ...
+     'they are listed in .gitignore, and they do not travel with the ' ...
+     'repository.\n  Build them on this machine with HCTSA2_BuildTisean, then ' ...
+     'run startup.\n  HCTSA2_CheckInstall reports what is present.'], ...
+     prog,fullfile(tiseanBinDir(),exeName(prog)),exeName(prog));
+end
+
+%-------------------------------------------------------------------------------
+function p = locateProgram(prog)
+% The install directory first, then the rest of the PATH.
+p = fullfile(tiseanBinDir(),exeName(prog));
+if isfile(p), return; end
+if ispc
+    probe = sprintf('where %s >nul 2>&1',exeName(prog));
+else
+    probe = sprintf('command -v %s >/dev/null 2>&1',exeName(prog));
+end
+if system(probe) == 0
+    p = prog;          % somewhere else on the PATH; let the OS resolve it
+else
+    p = '';
+end
+end
+
+%-------------------------------------------------------------------------------
+function n = exeName(prog)
+if ispc, n = [prog '.exe']; else, n = prog; end
+end
+
+%-------------------------------------------------------------------------------
+function d = tiseanBinDir()
+% Where HCTSA2_BuildTisean writes and startup adds to the PATH. This file lives
+% in PeripheryFunctions/, so the hctsa root is one level up.
+if ispc
+    d = fullfile(fileparts(fileparts(mfilename('fullpath'))),'Toolboxes','Tisean_bin');
+else
+    d = fullfile(getenv('HOME'),'bin');
+end
 end
 
 
@@ -136,7 +198,7 @@ end
 end
 
 %-------------------------------------------------------------------------------
-function [status,out] = runViaExe(prog,args,cmd,keepStderr,timeoutSec)
+function [status,out] = runViaExe(exePath,args,cmd,keepStderr,timeoutSec)
 % Run the executable, abandoning it if it outstays TIMEOUTSEC.
 %
 %---WHY A TIMEOUT IS NEEDED AT ALL
@@ -184,8 +246,9 @@ function [status,out] = runViaExe(prog,args,cmd,keepStderr,timeoutSec)
 % JVM, or Java cannot start the program, this falls back to the old blocking
 % system() call rather than failing.
 persistent warned
+[~,prog] = fileparts(exePath);       % short name, for messages only
 if timeoutSec <= 0 || ~usejava('jvm')
-    [status,out] = runViaSystem(cmd,keepStderr);
+    [status,out] = runViaSystem(exePath,cmd,keepStderr);
     return
 end
 
@@ -195,7 +258,7 @@ cleanup = onCleanup(@() cleanFiles({outFile,errFile})); %#ok<NASGU>
 
 try
     jargs = javaArray('java.lang.String',numel(args)+1);
-    jargs(1) = javaObject('java.lang.String',prog);
+    jargs(1) = javaObject('java.lang.String',exePath);
     for i = 1:numel(args)
         jargs(i+1) = javaObject('java.lang.String',args{i});
     end
@@ -220,7 +283,7 @@ catch err
              'timeout is NOT in force for this session: %s'], ...
             prog,timeoutSec,err.message);
     end
-    [status,out] = runViaSystem(cmd,keepStderr);
+    [status,out] = runViaSystem(exePath,cmd,keepStderr);
     return
 end
 
@@ -246,7 +309,15 @@ out = strrep(out,char(13),'');
 end
 
 %-------------------------------------------------------------------------------
-function [status,out] = runViaSystem(cmd,keepStderr)
+function [status,out] = runViaSystem(exePath,cmd,keepStderr)
+% Run the RESOLVED executable, not the bare name the caller wrote. This path is
+% only reached without a JVM, or when Java could not launch the program, and in
+% both cases leaving the name for the shell to resolve would reintroduce the
+% PATH lookup that assertProgramAvailable exists to avoid.
+if ~isempty(exePath) && ~strcmp(exePath,strtok(cmd))
+    rest = cmd(numel(strtok(cmd))+1:end);
+    if any(exePath == ' '), cmd = ['"' exePath '"' rest]; else, cmd = [exePath rest]; end
+end
 if keepStderr
     % Merge explicitly rather than relying on the host's default. MATLAB's
     % system() folds stderr into the captured string; Octave's does not. An
