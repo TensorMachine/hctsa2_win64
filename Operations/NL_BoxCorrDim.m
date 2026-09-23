@@ -87,6 +87,23 @@ mMax = tm(2);
 %% Run the TISEAN code, boxcount
 % ------------------------------------------------------------------------------
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 4 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 outFilePath = [filePath '.box'];
 
 [~, res] = BF_RunTisean(sprintf('boxcount -M1,%u -d%u -Q2.0 -#%u -o %s %s', ...
@@ -166,4 +183,12 @@ out.medianstretch = median(rsstretch);
 out.minstretch = min(rsstretch); % same as at maximum embedding dimension, m, or usually at maximum ldr (18)
 out.iqrstretch = iqr(rsstretch);
 
+
+BF_CleanTempFiles(filePath); % normal completion
+
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
 end

@@ -110,6 +110,23 @@ end
 %% Write the file
 % ------------------------------------------------------------------------------
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 9 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 fprintf(1,'Wrote the input time series (N = %u) to the temporary file ''%s'' for TISEAN\n',length(y),filePath);
 
 % ------------------------------------------------------------------------------
@@ -425,6 +442,10 @@ try h2results = SUB_getslopes(h2dat_v,h2dat_M);
 catch emsg
     if strcmp(emsg.identifier,'MATLAB:subsassigndimmismatch')
         out = NaN;
+        BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
+                                     % output derived from it
+        BF_CleanTempFiles(filePath); % before an early return
+        BF_CleanTempFiles(filePath); % guard an early return
         return
     end
 end
@@ -467,6 +488,13 @@ out.flatsh2min_linrmserr = flatsh2min.linrmserr;
 
 
 % ------------------------------------------------------------------------------
+    BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
+                                 % output derived from it
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
     function dimdat = SUB_readTISEANout(s,maxm,blocker,nc)
         % blocker the string distinguishing sections of output
         % nc number of columns in string

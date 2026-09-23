@@ -79,8 +79,7 @@ cd <hctsa2 root>
 
 startup                   % 1. set paths (run once per MATLAB session)
 HCTSA2_ProbeToolchain     % 2. is a usable compiler present?
-HCTSA2_BuildTiseanMex     % 3. build the 10 TISEAN programs as MEX files
-HCTSA2_BuildBinaries      % 4. build the other MEX components
+HCTSA2_BuildBinaries      % 3. build the other MEX components
 startup                   % 5. discover what was built
 HCTSA2_CheckInstall       % 6. what is available
 ```
@@ -123,10 +122,11 @@ features.
 
 ## What gets built
 
-### TISEAN — 10 programs, as MEX files or as executables
+### TISEAN — 10 executables
 
-Built from the bundled TISEAN 3.0.1 source. Both build scripts replace TISEAN's
-`./configure && make`, which needs a POSIX shell that Windows does not have.
+Built from the bundled TISEAN 3.0.1 source by `HCTSA2_BuildTisean`, which
+replaces TISEAN's `./configure && make` — that needs a POSIX shell Windows does
+not have. Output goes to `Toolboxes/Tisean_bin/`.
 
 | language | programs |
 |---|---|
@@ -136,44 +136,113 @@ Built from the bundled TISEAN 3.0.1 source. Both build scripts replace TISEAN's
 They account for **745 feature values across 26 master operations**, plus 50
 more that reach `false_nearest` indirectly through `BF_Embed(...,'fnn')`.
 
-| | `HCTSA2_BuildTiseanMex` | `HCTSA2_BuildTisean` |
+Every operation calls them through `BF_RunTisean` rather than `system()`, so
+the timeout, the not-installed check and the temporary-file cleanup below apply
+uniformly. The executables are linked with `-static`, so they carry no MinGW
+DLL dependencies.
+
+An earlier version of this project also built the ten programs as MEX files, to
+avoid shipping executables to a machine with a strict security posture. That
+was removed. Running in-process means there is no child process to kill, and
+therefore no way to stop a `d2` call that will not finish for ten hours — and
+as the next section shows, that is not a hypothetical. A recoverable error beat
+an unkillable one.
+
+### The TISEAN timeout
+
+Two TISEAN programs can run for hours on long series. Neither loops forever —
+every loop in both is bounded — but both grow with roughly the *square* of the
+series length, and `d2`'s early exit is switched off by the flags hctsa passes
+it:
+
+| program | why it grows | which operations |
 |---|---|---|
-| output | `Toolboxes/Tisean_mex/tisean_*.mexw64` | `Toolboxes/Tisean_bin/*.exe` |
-| MATLAB | R2024a or later | any supported release |
-| produces an `.exe` | no | yes |
-| `cmd.exe` per call | no | yes (~50 launches per time series) |
+| `d2` | `-N0` sets the pair limit to `ULONG_MAX` (`d2.c:120`), making the only early exit (`d2.c:561`) unreachable | `NL_dimensions`, `NL_TakensEstimator`, `NL_GPCorrSum` (the last two via `Nref = -1`) |
+| `false_nearest` | no pair limit exists; points farther than `varianz/rt` from any neighbour are never satisfied (`false_nearest.c:168`) and exact duplicates are rejected (`:158`), so flat stretches are rescanned at every epsilon step | `NL_TISEAN_fnn`, and anything using `BF_Embed(...,'fnn')` |
 
-`BF_RunTisean` prefers the MEX files and falls back to the executables, so
-operations never need to know which is installed. Set the environment variable
-`HCTSA2_TISEAN_BACKEND` to `mex` or `exe` to force one — which is how
-`HCTSA2_TestTiseanMex` diffs them against each other.
+Measured at `-M1,10`: `d2 -N0` takes 2.3 s at N=4000, 9.5 s at 8000 and 38.4 s
+at 16000 — four times the work for twice the data, which puts 500k points at
+about ten hours. `false_nearest` takes 4.1 s on 16000 clean points and 41.8 s
+when half the series is constant.
 
-The executables are linked with `-static`, so they carry no MinGW DLL
-dependencies. The MEX files link `libgfortran.a` statically for the same reason.
+`BF_RunTisean` therefore gives each executable a wall-clock budget, 300 seconds
+by default, and raises an error if it is exceeded. hctsa records that as a NaN
+feature, which is the intended behaviour: an error is recoverable, a hung
+session is not. Change it with
 
-**Running a program in-process is not simply a matter of renaming `main`.** A
-TISEAN program is written to run once and exit, and three things had to be
-handled before one could be called repeatedly inside MATLAB. Each was found by
-measurement, and each is checked by `HCTSA2_TestTiseanMex`:
+```matlab
+setenv('HCTSA2_TISEAN_TIMEOUT','1800')      % seconds; 0 disables the limit
+pctRunOnAll setenv('HCTSA2_TISEAN_TIMEOUT','1800')   % on a parallel pool
+```
 
-- **`exit()` and `stop` end the process.** There are 46 `exit()` calls across the
-  six C programs and the support routines they link, and 13 `stop` statements in
-  the Fortran, and they are reached in normal use — `false_nearest`'s
-  "not enough points" guard is one. They are routed back to the gateway instead.
-- **The globals persist between calls.** `d2` scales `EPSMAX` by the data
-  interval and never restores it, so a second call returns a different, entirely
-  plausible-looking correlation sum. `c1` advances a SLATEC random seed that a
-  fresh process starts from zero. Both are restored between runs.
-- **Nothing frees anything.** `d2`, `nstat_z` and `false_nearest` free their
-  globals on the normal path, none of them do when the program exits early, and
-  the rest never do. The gateway tracks every allocation and sweeps what is
-  left, which is correct on both paths.
+This is a trade-off, not a free win. A `d2 -N0` call on 100k points needs about
+25 minutes to finish legitimately and the default kills it at five, so those
+features become NaN. Raise the budget if you want them.
+
+The timeout works because there is a child process to kill. This is the main
+reason the project ships executables rather than MEX files.
+
+### Temporary files
+
+Every TISEAN call writes a temporary time-series file named `hc######` in the
+system temporary directory, and the programs write their results next to it
+(`.c2`, `.d2`, `.h2`, `.stat`, `.box`, `.ros`, `.poin`, `.c1`, `.fnn`). Seven of
+the ten operations never deleted that input file, so a full run left one behind
+per operation per time series, and an aborted call left five.
+
+`BF_CleanTempFiles` removes a whole set given any member of it. Each operation
+calls it on exit, and `BF_RunTisean` calls it on any path that raises — a
+timeout, a missing backend — because that abort takes the operation down before
+its own cleanup can run. Cleanup does **not** happen on a normal return from
+`BF_RunTisean`: the caller usually still needs what TISEAN just wrote, since
+`NL_TISEAN_d2` runs `d2` and then feeds the resulting `.c2` to `c2g` and `c2t`.
+
+`BF_CleanTempFiles` only ever matches `hc` followed by **exactly six digits**,
+optionally then `.` or `_` and a suffix. The obvious implementation, deleting
+`tempdir/hc*`, would be unsafe: a parallel pool shares one temporary directory,
+so a wildcard sweep would delete the input files of other workers mid-run, and
+the resulting failures — a program reporting a missing file it was handed
+moments ago, on a random subset of series — would be very hard to trace back.
+
+For what in-process cleanup cannot catch — MATLAB killed outright, a crash, a
+power cut, or files from an older hctsa — there is a separate sweeper:
+
+```matlab
+HCTSA2_CleanTiseanTemp              % report only; deletes nothing
+HCTSA2_CleanTiseanTemp(1,true)      % delete anything older than 1 hour
+```
+
+It reports by default, and its age threshold is what keeps it safe next to
+running workers: with the timeout in force no live temporary file is more than
+a few minutes old. If you disable the timeout, raise the threshold to match the
+longest call you expect.
+
+Each operation guards its temporary file with a `try`/`catch` around everything
+after `BF_WriteTempFile`, plus a cleanup call before every `return`. Both are
+needed, and it took three attempts to get right — each one missed a whole
+*class* of exit:
+
+| attempt | mechanism | what it missed |
+|---|---|---|
+| 1 | `onCleanup` alone | does not fire in a file containing a **nested** function, because the parent workspace outlives the return — six of the ten operations have one |
+| 2 | explicit calls before `return` and at the end of the body | all **43** `error()` calls |
+| 3 | `try`/`catch` around the body | `try`/`catch` does not intercept **`return`**, and nine were written `out = NaN; return` on one line, so a regex matching `return` alone on a line found none of them |
+
+`try`/`catch` covers `error()` and anything a called function throws; the
+per-return calls cover what `try`/`catch` cannot see. There is no third way out
+of a MATLAB function, so together they are exhaustive.
+
+Because the rule is easy to break and the breakage is invisible until a
+temporary directory fills up, it is checked mechanically rather than by review.
+`HCTSA2_AuditTiseanCleanup` reads the source of every operation that calls
+`BF_WriteTempFile` — discovering them rather than working from a list, so one
+added later is audited without anyone remembering — and proves the file is
+removed on every path. `HCTSA2_TestTisean` runs it as one of its checks.
 
 ### Five crashes and two hangs, fixed in the TISEAN sources
 
-Converting to MEX raised the cost of a crash — in-process, a segmentation fault
-takes MATLAB with it — so the programs were swept over hctsa's own command
-shapes across series lengths, delays, embedding dimensions and Theiler windows.
+The programs were swept over hctsa's own command shapes across series lengths,
+delays, embedding dimensions and Theiler windows.
 **145 of 756 runs terminated abnormally.** Every one was an unsigned subtraction
 that wrapped when an embedding window exceeded the series length, or an epsilon
 search with no exit when the requested neighbours could never be found:
@@ -198,7 +267,7 @@ randomised runs across lengths from 3 to 2,000 points, and in 45 malformed-input
 runs** through the three Fortran post-processors. These are fixes to the TISEAN
 sources, so the executable build gets them too. Every guard fires only on an
 input that previously crashed or hung — output on all working inputs is
-byte-for-byte unchanged, which is what `HCTSA2_TestTiseanMex` establishes.
+byte-for-byte unchanged, which is what `HCTSA2_TestTisean` establishes.
 
 ### MEX components
 
@@ -226,7 +295,6 @@ validating.
 | **TISEAN 3.0.1** | `false_nearest.c`: applied the authors' official 2009-03-08 patch (`vemb[i] = i*delay`), plus a stricter unsigned-underflow guard | the univariate branch omitted the delay from its embedding, so every call with tau > 1 embedded at the wrong lags |
 | | `lyap_r.c`, `nstat_z.c`, `boxcount.c`, `poincare.c`, `c1.f`, `d1.f`: length guards and bounded epsilon searches (see above) | five segfaults and two hangs on series hctsa can hand them; `nstat_z`'s own guard was written in unsigned arithmetic and never fired |
 | | `c1.f`, `c2d.f`, `c2g.f`, `c2t.f`, `help.f`: filename buffers widened from `character*72` to `character*512` | gfortran truncates a longer name **silently**, so the program writes to a path nobody asked for and the caller then looks for a file that was never created. A Windows `tempname` is 72 characters on its own. Only the filename variables were widened — `aline` and the option-list buffers are sliced with a hardcoded `:72` and keep their size |
-| | `mex/`: gateways, an `exit()`/`stop` shim and a tracking allocator; the Fortran programs are rewritten as subroutines at build time | so the programs can be MEX files rather than executables. The shared sources are unchanged and still build as executables |
 | **gpml 4.2** | `solve_chol.c`: added MinGW to the LAPACK symbol test | MSVC exports `dpotrs`, MinGW needs `dpotrs_`; without this the build calls an undeclared symbol |
 | | `make.m`: corrected the import-library path | it built `.../win64/gnu/` from the compiler manufacturer string, but MathWorks ships MinGW libraries under `.../win64/mingw64/` |
 | **Michael_Small** | `MS_shannon.c`, `MS_complexitybs.c`: fixed the `qsort` comparator | it cast 8-byte doubles to 4-byte `int`, so the array was not sorted at all — the percentile thresholds built on it were meaningless, and the result varied by compiler |
@@ -270,7 +338,7 @@ Three genuine bugs in hctsa itself were found along the way and fixed: the
 of parentheses, and an off-by-`d` index in `CO_TranslateShape`. Where a fix makes
 a feature differ from the reference, the reference is the one that was wrong.
 
-A fourth was found while converting TISEAN to MEX files. `d1.f`'s Fisher-Yates
+A fourth was found while stress-testing TISEAN. `d1.f`'s Fisher-Yates
 shuffle read
 
 ```fortran
@@ -285,7 +353,8 @@ whenever `rand() < (mt-1)*id/nmax`, and `ju(iperm)` then reads and writes
 drew some of its swap partners from a neighbour-search histogram.
 
 In a standalone program `jh` is statically zero at that moment, which makes the
-bug invisible and the result deterministic by accident. In a MEX file `jh` holds
+bug invisible and the result deterministic by accident, but the read is out
+of bounds either way and the value it returns is not the authors' intent.
 the previous call's data, so `c1` returned different numbers on every call after
 the first. **This moves `NL_TISEAN_c1`'s 22 feature values** by roughly 0.4–5%
 for m > 1; m = 1 is unaffected, because `(mt-1)*id` is then zero.

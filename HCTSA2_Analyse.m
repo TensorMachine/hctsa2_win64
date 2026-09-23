@@ -1,9 +1,6 @@
 function results = HCTSA2_Analyse(dataFile,varargin)
 % HCTSA2_Analyse   End-to-end hctsa 2.0 pipeline: data in, two tables and plots out.
 %
-% This script is a little jank because it was written by Claude but it
-% gives you the general flow of how to run HCTSA.
-%
 %   results = HCTSA2_Analyse('mydata.mat')
 %   results = HCTSA2_Analyse('mydata.mat','Groups',g,'OutputDir','run1')
 %
@@ -128,9 +125,9 @@ if isempty(opt.ExistingHCTSA)
     end
 
     inpFile = fullfile(opt.OutputDir,'INP_ts.mat');
-    timeSeriesData = tsData(:)'; 
-    labels = labels(:)'; 
-    keywords = keywords(:)'; 
+    timeSeriesData = tsData(:)'; %#ok<NASGU>
+    labels = labels(:)'; %#ok<NASGU>
+    keywords = keywords(:)'; %#ok<NASGU>
     save(inpFile,'timeSeriesData','labels','keywords');
     results.files.inputFile = inpFile;
 

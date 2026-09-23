@@ -126,6 +126,23 @@ end
 %% Write the file
 % ------------------------------------------------------------------------------
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 2 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 if TISEANVerbose()
 	fprintf(1, 'Wrote the input time series (N = %u) to the temporary file ''%s'' for TISEAN.\n', length(y), filePath);
 end
@@ -138,10 +155,10 @@ if isempty(escapeFactor)
 else
 	tisean_command = sprintf('false_nearest -d%u -m1 -M1,%u -t%u -f%g -V0 %s', tau, maxm, theilerWin, escapeFactor, filePath);
 end
-% Routed through BF_RunTisean rather than system(): it dispatches to the MEX
-% build when present, and on the executable path it keeps stderr out of the
+% Routed through BF_RunTisean rather than system(): it applies the wall-clock
+% timeout and the temporary-file cleanup, and it keeps stderr out of the
 % capture, which is what makes the textscan below safe on Windows. -V0 already
-% suppresses the banner, so the data is all that is parsed either way.
+% suppresses the banner, so the data is all that is parsed.
 [~, res] = BF_RunTisean(tisean_command);
 
 % first column: the embedding dimension
@@ -178,6 +195,10 @@ end
 if justBest
 	% We just want a scalar to choose the embedding with
 	out = firstunderf(bestp, mDim, pNN);
+	BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
+	                             % output derived from it
+	BF_CleanTempFiles(filePath); % before an early return
+	BF_CleanTempFiles(filePath); % guard an early return
 	return
 end
 
@@ -223,6 +244,13 @@ out.mdrop = mean(diff(pNN));
 out.pdrop = -mean(sign(diff(pNN)));
 
 % ------------------------------------------------------------------------------
+BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
+                             % output derived from it
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
 function firsti = firstunderf(x, m, p)
 	%% Find m for the first time p goes under x%
 	firsti = m(find(p < x, 1, 'first'));

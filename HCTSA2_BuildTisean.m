@@ -16,7 +16,7 @@ function report = HCTSA2_BuildTisean(outDir)
 % 2009-03-08: the univariate branch built its delay embedding as vemb[i]=i,
 % omitting the delay, while the multivariate branch alongside it correctly used
 % (i/comp)*delay. hctsa always calls it univariate (-m1) with -d tau, so every
-% call with tau > 1 embedded at the wrong lags.
+% call with tau > 1 embedded at the wrong lags. See KNOWN_ISSUES.md.
 %
 % Run HCTSA2_ProbeToolchain first: four of the six are Fortran, and whether
 % MathWorks' MinGW package includes gfortran decides whether they can be built.

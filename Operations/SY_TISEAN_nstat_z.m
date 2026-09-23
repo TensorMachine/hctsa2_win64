@@ -90,6 +90,23 @@ N = length(y); % length of the time series
 
 % Write a temporary file in the system temp directory:
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 2 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 % fprintf(1,'Wrote temporary data file ''%s'' for TISEAN.\n',filePath)
 
 % Get embedding parameters:
@@ -115,7 +132,7 @@ minSafeClength = minNeighbors + 3 * incStep + 2 * pstart - 1;
 if clength < minSafeClength
     delete(filePath); % remove the temporary file
     warning('Not enough neighbors to reliably estimate prediction errors with these settings');
-    out = NaN; return
+    out = NaN; BF_CleanTempFiles(filePath); return
 end
 
 % ------------------------------------------------------------------------------
@@ -240,4 +257,12 @@ out.mineig = min(realEigs);
 out.maxeig = max(realEigs);
 
 
+
+BF_CleanTempFiles(filePath); % normal completion
+
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
 end

@@ -94,6 +94,23 @@ mopt = tm(2); % the resolved embedding dimension, possibly < 3
 M = max(mopt, 3);
 
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 8 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 
 % ------------------------------------------------------------------------------
 %% Run the TISEAN code, boxcount (Q=0.0), for the box-counting dimension (D0)
@@ -223,7 +240,7 @@ end
 % bail out, rather than silently propagating -Inf/NaN into the fits below:
 if any(~isfinite(bc_logN(:))) || any(~isfinite(co_logC(:)))
 	fprintf(1, 'No good outputs obtained from the box-counting/correlation dimension curves.\n');
-	out = NaN; return
+	out = NaN; BF_CleanTempFiles(filePath); return
 end
 
 if doPlot
@@ -294,6 +311,13 @@ out = SUB_bestm(co_logr, co_logC, 'co', out);
 
 % ------------------------------------------------------------------------------
 % ------------------------------------------------------------------------------
+BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
+                             % output derived from it
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
 function out = SUB_mch(logr, logN, prefix, out)
 	% looks at how changes with m. Since m will in general be different for each
 	% different time series (i.e., if choosing an automatic method for

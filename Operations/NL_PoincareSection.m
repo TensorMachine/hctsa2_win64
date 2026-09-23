@@ -105,6 +105,23 @@ tau = tm(1);
 m = tm(2);
 
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 2 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 outFilePath = [filePath '.poin'];
 
 % Cut on the last (m-th) embedding coordinate, at TISEAN's own default
@@ -127,7 +144,7 @@ fileInfo = dir(outFilePath);
 if fileInfo.bytes == 0
 	delete(outFilePath);
 	fprintf(1, 'No section points found to run NL_PoincareSection\n');
-	out = NaN; return
+	out = NaN; BF_CleanTempFiles(filePath); return
 end
 
 % Columns are the two uncut embedding coordinates, followed by the
@@ -139,7 +156,7 @@ NN = size(v, 1);
 
 if NN < 2
 	fprintf(1, 'No section points found to run NL_PoincareSection\n');
-	out = NaN; return
+	out = NaN; BF_CleanTempFiles(filePath); return
 end
 
 % Labeling poincare surface plane x-y
@@ -241,6 +258,13 @@ end
 % think this is enough for now.
 
 % ------------------------------------------------------------------------------
+BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
+                             % output derived from it
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
 function boxcounts = subcountboxes(x, y, nbox)
 	boxcounts = zeros(nbox);
 	% boxes are quantiles along each axis

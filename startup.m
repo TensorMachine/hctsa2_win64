@@ -119,22 +119,6 @@ fprintf(1,', Information dynamics toolkit, ')
 javaaddpath(fullfile(pwd,'Toolboxes','infodynamics-dist','infodynamics.jar'));
 
 % ------------------------------------------------------------------------------
-% Add path for the TISEAN MEX files.
-% ------------------------------------------------------------------------------
-% Built by HCTSA2_BuildTiseanMex. BF_RunTisean prefers these over the
-% executables when both are present; set HCTSA2_TISEAN_BACKEND to 'exe' to
-% override. Unlike the executables these go on the MATLAB path, not on PATH,
-% which also means parallel workers pick them up automatically -- a local pool
-% inherits the client's MATLAB path but not a setenv done after the pool
-% started.
-tiseanMexLocation = fullfile(pwd,'Toolboxes','Tisean_mex');
-if exist(tiseanMexLocation,'dir') == 7
-    addpath(tiseanMexLocation);
-    nMex = numel(dir(fullfile(tiseanMexLocation,['tisean_*.' mexext])));
-    fprintf(1,'TISEAN MEX files: %s (%u of 10)\n',tiseanMexLocation,nMex);
-end
-
-% ------------------------------------------------------------------------------
 % Add path for TISEAN binaries.
 % ------------------------------------------------------------------------------
 % Platform-aware. The original assumed macOS/Linux: it read $HOME via a shell

@@ -4,9 +4,10 @@ function [status,out] = BF_RunTisean(cmd,keepStderr)
 %   [status,out] = BF_RunTisean('nstat_z -# 4 -d1 -m3 /tmp/hc123456')
 %   [status,out] = BF_RunTisean('d2 ...',true)   % keep stderr
 %
-% Dispatches to the TISEAN MEX files when they are present and falls back to
-% the standalone executables otherwise. Callers see the same two outputs either
-% way, so no operation needs to know which is in use.
+% Runs one of the ten TISEAN executables and returns its exit status and its
+% text. Every TISEAN operation goes through here rather than calling system()
+% directly, so the timeout, the not-installed check and the temporary-file
+% cleanup apply uniformly.
 %
 % KEEPSTDERR (default false) controls whether the program's stderr is appended.
 %
@@ -17,23 +18,6 @@ function [status,out] = BF_RunTisean(cmd,keepStderr)
 %            text is the stderr banner, so discarding it returns an empty
 %            string even on success, and callers that test isempty(out) as a
 %            did-it-run check then fail.
-%
-%---CHOOSING THE BACKEND
-% Set the environment variable HCTSA2_TISEAN_BACKEND to 'mex' or 'exe' to force
-% one; anything else (or unset) means "MEX if built, executables if not". It is
-% read once per MATLAB process, so on parallel workers set it with
-%
-%   pctRunOnAll setenv('HCTSA2_TISEAN_BACKEND','exe')
-%
-% This exists so the two paths can be diffed against each other on the target
-% machine. HCTSA2_TestTiseanMex does exactly that.
-%
-%---WHY THE MEX PATH REDIRECTS DATA TO A FILE
-% A MEX file cannot hand its stdout back the way system() does. The five
-% programs that write their data to stdout all accept -o, and their -o output
-% is byte-for-byte identical to their stdout output (verified for all five), so
-% this function supplies a temporary -o and reads it back. The command strings
-% the operations build are untouched.
 %
 %---WHY STDERR IS SEPARATED AT ALL
 % MATLAB's system() merges stdout and stderr into one string. TISEAN writes its
@@ -52,9 +36,8 @@ function [status,out] = BF_RunTisean(cmd,keepStderr)
 %      breaking one data row into two fragments -- as in a c2g capture that
 %      began "-005  5.14077711", the tail of a number severed from its head.
 %
-% Neither can happen on the MEX path, where the two streams go to different
-% places by construction. On the executable path stderr is redirected away.
-% Callers parse by content rather than by position relative to a stderr marker,
+% stderr is therefore redirected away unless the caller asks for it, and
+% callers parse by content rather than by position relative to a stderr marker,
 % which is more robust on every platform.
 
 % ------------------------------------------------------------------------------
@@ -65,79 +48,205 @@ function [status,out] = BF_RunTisean(cmd,keepStderr)
 % version. See <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
 
-persistent haveMex
-if isempty(haveMex), haveMex = struct(); end
 if nargin < 2 || isempty(keepStderr), keepStderr = false; end
-
-% Read the override on every call rather than caching it. Caching meant the
-% choice could only be changed by clearing this function, and `clear <name>`
-% from inside another function is not something to depend on -- if it silently
-% did nothing, a test that switches backends would compare one backend with
-% itself and report everything as matching. getenv is nothing beside writing a
-% temp file and running the program.
-backendMode = lower(strtrim(getenv('HCTSA2_TISEAN_BACKEND')));
-if ~any(strcmp(backendMode,{'mex','exe'})), backendMode = 'auto'; end
 
 args = localTokenize(cmd);
 prog = args{1};
 args = args(2:end);
-checkPathLengths(prog,args);
 
-useMex = false;
-if ~strcmp(backendMode,'exe')
-    field = ['p_' prog];        % TISEAN program names are already identifiers
-    if ~isfield(haveMex,field)
-        haveMex.(field) = (exist(['tisean_' prog],'file') == 3);
+% Anything that leaves this function by raising takes the caller's operation
+% down with it, so the operation's own cleanup never runs and its temporary
+% files survive. Measured: an aborted d2 left five -- the input file plus .c2,
+% .d2, .h2 and .stat. Sweep them here, where the abort actually happens.
+%
+% Only on the RAISING paths. On a normal return the caller often still needs
+% what TISEAN just wrote: NL_TISEAN_d2 runs d2, then feeds the .c2 it produced
+% to c2g and then to c2t. Deleting outputs on success would break the operation
+% one call later.
+try
+    checkPathLengths(prog,args);
+
+    % Check the executable is reachable before shelling out to it. Without
+    % this the failure is silent and misdiagnosed: system() runs a command
+    % that does not exist, the shell writes "not recognized" to stderr, the
+    % redirect sends stderr to nul, and BF_RunTisean returns an EMPTY string
+    % with no sign that nothing ran. Each operation then invents its own
+    % downstream complaint, so a machine with no TISEAN installed produces ten
+    % unrelated-looking errors and no clue the cause is common to them.
+    assertProgramAvailable(prog);
+    [status,out] = runViaExe(prog,args,cmd,keepStderr,timeoutSeconds());
+catch err
+    if ~isempty(args)
+        BF_CleanTempFiles(args{end});
     end
-    useMex = haveMex.(field);
-end
-
-if useMex
-    [status,out] = runViaMex(prog,args,keepStderr);
-else
-    [status,out] = runViaExe(cmd,keepStderr);
+    rethrow(err);
 end
 end
 
 %-------------------------------------------------------------------------------
-function [status,out] = runViaMex(prog,args,keepStderr)
+function assertProgramAvailable(prog)
+% Raise a single, actionable error when neither backend can supply PROG.
+%
+% The probe runs once per program per MATLAB session, so the installed case --
+% the normal one -- costs a single 'where'/'command -v' and nothing after that.
+persistent haveExe
+if isempty(haveExe), haveExe = struct(); end
+field = ['p_' prog];
+if ~isfield(haveExe,field)
+    if ispc
+        probe = sprintf('where %s >nul 2>&1',prog);
+    else
+        probe = sprintf('command -v %s >/dev/null 2>&1',prog);
+    end
+    haveExe.(field) = (system(probe) == 0);
+end
+if haveExe.(field), return; end
 
-% The five programs whose data goes to stdout when -o is absent.
-stdoutProgs = {'nstat_z','false_nearest','c2d','c2g','c2t'};
-
-dataFile = '';
-if any(strcmp(prog,stdoutProgs)) && ~any(strncmp(args,'-o',2))
-    % Derived from the input path, which BF_WriteTempFile already keeps short:
-    % the Fortran programs declare their filenames character*72 and silently
-    % truncate anything longer.
-    dataFile = [args{end} '.tso'];
-    args = [args(1:end-1), {'-o',dataFile}, args(end)];
+error('hctsa:tisean:notInstalled', ...
+    ['TISEAN program ''%s'' is not on the PATH, so no TISEAN feature can be ' ...
+     'computed on this machine.\n  The executables are BUILD ARTIFACTS: they ' ...
+     'are machine-specific, they are listed in .gitignore, and they do not ' ...
+     'travel with the repository.\n  Build them on this machine with ' ...
+     'HCTSA2_BuildTisean, then run startup.\n  HCTSA2_CheckInstall reports ' ...
+     'what is present.'],prog);
 end
 
-capture = [tempname '.tiseanerr'];
-cleanup = onCleanup(@() cleanFiles({capture,dataFile}));
 
-[status,msg] = feval(['tisean_' prog],args,capture);
-
-data = '';
-if ~isempty(dataFile) && isfile(dataFile)
-    data = fileread(dataFile);
-end
-
-% Windows executables emit CRLF; strip the CR so numeric parsing works. The MEX
-% files inherit the same C runtime, so they do too.
-data = strrep(data,char(13),'');
-msg  = strrep(msg,char(13),'');
-
-if keepStderr
-    out = [data msg];
-else
-    out = data;
+%-------------------------------------------------------------------------------
+function sec = timeoutSeconds()
+% Wall-clock budget for one TISEAN run, in seconds. 0 disables the limit.
+%
+% Read on every call so it can be changed without clearing this function, and
+% settable per worker with
+%
+%   pctRunOnAll setenv('HCTSA2_TISEAN_TIMEOUT','900')
+%
+% 300 s is far above any healthy call -- the overwhelming majority finish in
+% well under a second -- and far below the runs that make hctsa look hung.
+%
+% It is a real trade-off, not a free win. d2 called with -N0 on a 100k-point
+% series needs roughly 25 minutes to finish LEGITIMATELY, and this kills it at
+% five. Those features become NaN rather than wrong, which is the right way
+% round, but if you want them, raise this.
+sec = 300;
+v = str2double(strtrim(getenv('HCTSA2_TISEAN_TIMEOUT')));
+if ~isnan(v) && v >= 0
+    sec = v;
 end
 end
 
 %-------------------------------------------------------------------------------
-function [status,out] = runViaExe(cmd,keepStderr)
+function [status,out] = runViaExe(prog,args,cmd,keepStderr,timeoutSec)
+% Run the executable, abandoning it if it outstays TIMEOUTSEC.
+%
+%---WHY A TIMEOUT IS NEEDED AT ALL
+% Neither d2 nor false_nearest can loop forever -- every loop in both is
+% bounded, and the length guards that would otherwise let an unsigned
+% subtraction wrap are intact. What they can do is take a quadratic number of
+% steps with no way to stop early:
+%
+%   d2            -N0 sets the pair limit to ULONG_MAX (d2.c:120), which makes
+%                 the only early exit, "if (imin > howoften1) exit(0)" at
+%                 d2.c:561, unreachable. d2 then always runs its full
+%                 nmax-iteration loop with an O(n) box scan inside each one.
+%                 Measured at -M1,10: 4k 2.3s, 8k 9.5s, 16k 38.4s -- four times
+%                 the work for twice the data. Extrapolating, 500k points is
+%                 about ten hours. NL_dimensions passes -N0 outright;
+%                 NL_TakensEstimator and NL_GPCorrSum reach it through
+%                 Nref = -1. NL_TISEAN_d2 passes no -N, gets the default 1000,
+%                 and is unaffected -- which is why only some features hang.
+%
+%   false_nearest has no pair limit at all. A point whose nearest neighbour
+%                 lies farther than varianz/rt can never be marked done
+%                 (false_nearest.c:168) and exact-duplicate vectors are
+%                 rejected outright (:158), so a constant or near-constant
+%                 stretch leaves points that are rescanned at every epsilon
+%                 step while all sitting in one search box. Measured at
+%                 N = 16000: 4.1s on clean data, 41.8s when half the series is
+%                 flat.
+%
+% Because both terminate eventually, killing the process is sound: nothing is
+% deadlocked, the run is merely too expensive to wait for.
+%
+%---WHY THIS RAISES AN ERROR RATHER THAN RETURNING WHAT IT GOT
+% d2 rewrites its .c2/.d2/.h2 files every 120 seconds (d2.c:31), so a killed
+% run usually leaves a COMPLETE-LOOKING but partial set of output files on
+% disk. Returning them would hand the caller plausible numbers computed from a
+% fraction of the data -- silently wrong features, which is worse than none.
+% An error becomes a NaN in the feature matrix, which is honest.
+%
+%---WHY JAVA AND NOT system()
+% system() blocks until the child exits; there is no way to take it back. Java
+% is present in any MATLAB that runs hctsa (startup javaaddpath's
+% infodynamics.jar), and it gives both a timed wait and a kill. It also takes
+% argv as a list, so nothing passes through a shell and destroyForcibly kills
+% the TISEAN process itself rather than a shell that owns it. When there is no
+% JVM, or Java cannot start the program, this falls back to the old blocking
+% system() call rather than failing.
+persistent warned
+if timeoutSec <= 0 || ~usejava('jvm')
+    [status,out] = runViaSystem(cmd,keepStderr);
+    return
+end
+
+outFile = [tempname '.tout'];
+errFile = [tempname '.terr'];
+cleanup = onCleanup(@() cleanFiles({outFile,errFile})); %#ok<NASGU>
+
+try
+    jargs = javaArray('java.lang.String',numel(args)+1);
+    jargs(1) = javaObject('java.lang.String',prog);
+    for i = 1:numel(args)
+        jargs(i+1) = javaObject('java.lang.String',args{i});
+    end
+    pb = javaObject('java.lang.ProcessBuilder',jargs);
+    pb.redirectOutput(javaObject('java.io.File',outFile));
+    if keepStderr
+        % Merged into stdout, matching what system() hands back.
+        pb.redirectErrorStream(true);
+    else
+        pb.redirectError(javaObject('java.io.File',errFile));
+    end
+    proc = pb.start();
+catch err
+    % Java could not launch it at all -- a PATH resolution difference, a
+    % missing JVM class, a sandbox. Fall back rather than turn a working
+    % configuration into a broken one, but say so once so a silently
+    % unprotected run is not mistaken for a protected one.
+    if isempty(warned)
+        warned = true;
+        warning('hctsa:tisean:noTimeout', ...
+            ['Could not launch %s through Java, so the %g-second TISEAN ' ...
+             'timeout is NOT in force for this session: %s'], ...
+            prog,timeoutSec,err.message);
+    end
+    [status,out] = runViaSystem(cmd,keepStderr);
+    return
+end
+
+finished = proc.waitFor(int64(timeoutSec), ...
+    javaMethod('valueOf','java.util.concurrent.TimeUnit','SECONDS'));
+
+if ~finished
+    proc.destroyForcibly();
+    try proc.waitFor(); catch, end %#ok<CTCH>
+    error('hctsa:tisean:timeout', ...
+        ['TISEAN program ''%s'' was still running after %g seconds and was ' ...
+         'stopped.\n  Command: %s\n  This is cost, not a deadlock: d2 with ' ...
+         '-N0 and false_nearest on near-constant data both grow roughly with ' ...
+         'the SQUARE of the series length.\n  Shorten the series, or raise ' ...
+         'the budget with setenv(''HCTSA2_TISEAN_TIMEOUT'',''1800'') ' ...
+         '(pctRunOnAll on a parallel pool).'], ...
+        prog,timeoutSec,cmd);
+end
+
+status = double(proc.exitValue());
+out = readTextFile(outFile);
+out = strrep(out,char(13),'');
+end
+
+%-------------------------------------------------------------------------------
+function [status,out] = runViaSystem(cmd,keepStderr)
 if keepStderr
     % Merge explicitly rather than relying on the host's default. MATLAB's
     % system() folds stderr into the captured string; Octave's does not. An
@@ -150,6 +259,16 @@ else
 end
 [status,out] = system([cmd redirect]);
 out = strrep(out,char(13),'');
+end
+
+%-------------------------------------------------------------------------------
+function s = readTextFile(f)
+s = '';
+if ~isfile(f), return; end
+fid = fopen(f,'r');
+if fid < 0, return; end
+s = fread(fid,Inf,'*char')';
+fclose(fid);
 end
 
 %-------------------------------------------------------------------------------
@@ -203,9 +322,8 @@ end
 function cleanFiles(files)
 % delete() WARNS rather than errors when a file is already gone, so try/catch
 % does not silence it -- the warning has to be turned off around the call. The
-% MEX file removes the capture itself when it reads it back, and on Windows the
-% name can still be visible to isfile for a moment after the handle closes, so
-% this fires routinely and means nothing. Only the two specific identifiers are
+% On Windows a name can still be visible to isfile for a moment after its
+% handle closes, so this fires routinely and means nothing. Only the two specific identifiers are
 % suppressed, and the previous state is restored.
 ws = warning('off','MATLAB:DELETE:FileNotFound');
 ws(end+1) = warning('off','MATLAB:DELETE:Permission');

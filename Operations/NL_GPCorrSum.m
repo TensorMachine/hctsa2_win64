@@ -127,6 +127,23 @@ end
 %% Write the file for TISEAN to work with
 % ------------------------------------------------------------------------------
 filePath = BF_WriteTempFile(y);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves.
+%
+% This is a try/catch rather than a cleanup call before each error(), because
+% enumerating exits is exactly what failed before: an earlier attempt covered
+% the return statements and the end of the body and missed all 3 error()
+% calls in this file, so a real run still littered the temporary directory. A
+% try/catch cannot miss one, and it also covers what this function does not
+% raise itself -- an indexing slip, a textscan failure, a called function that
+% throws -- which no amount of enumeration would have caught.
+%
+% The body below is deliberately NOT re-indented: indentation is cosmetic in
+% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
+% whitespace diff.
+try
+
 
 % Map TSTOOL's Nref convention (-1 = use all points) onto TISEAN's d2
 % (-N 0 = use all pairs):
@@ -219,7 +236,7 @@ rc = rc(1:nn, :);
 
 if isempty(rc)
 	fprintf(1, 'No output obtained from d2''s correlation sum.\n');
-	out = NaN; return
+	out = NaN; BF_CleanTempFiles(filePath); return
 end
 
 % The .c2 file stores raw r (log-spaced, not pre-logged -- confirmed by the
@@ -241,7 +258,7 @@ end
 rGood = (isfinite(lnCr));
 if ~any(rGood)
 	fprintf(1, 'No good outputs obtained from the correlation sum.\n');
-	out = NaN; return
+	out = NaN; BF_CleanTempFiles(filePath); return
 end
 
 % Only keep finite values:
@@ -306,4 +323,12 @@ end
 % now non-robust linear fit
 % [p, S] = polyfit(lnr',lnCr,1);
 
+
+BF_CleanTempFiles(filePath); % normal completion
+
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
 end

@@ -98,9 +98,7 @@ end
 %-------------------------------------------------------------------------------
 %% 3. TISEAN -- MEX files or executables
 %-------------------------------------------------------------------------------
-% Ten programs, either build satisfies them. BF_RunTisean prefers the MEX files
-% and falls back to the executables, so what matters is that each program is
-% available somewhere.
+% Ten programs, all supplied by the executable build.
 tiseanProgs = {'d2','nstat_z','false_nearest','boxcount','lyap_r','poincare', ...
                'c1','c2d','c2g','c2t'};
 if ispc
@@ -110,19 +108,13 @@ else
     tiseanDir = fullfile(getenv('HOME'),'bin');
     exeExtn = '';
 end
-mexDir = fullfile(root,'Toolboxes','Tisean_mex');
-haveExe = false(1,10); haveMex = false(1,10);
+haveExe = false(1,10);
 for i = 1:10
-    % isfile rather than exist(...,'file')==2: exist returns 3 for a MEX file
-    % whatever the second argument says, so an == 2 test never matches one.
     haveExe(i) = isfile(fullfile(tiseanDir,[tiseanProgs{i} exeExtn]));
-    haveMex(i) = isfile(fullfile(mexDir,['tisean_' tiseanProgs{i} '.' mexext]));
 end
 report.tiseanDir = tiseanDir;
-report.tiseanMexDir = mexDir;
 report.tiseanExeCount = sum(haveExe);
-report.tiseanMexCount = sum(haveMex);
-report.tisean = all(haveExe | haveMex);
+report.tisean = all(haveExe);
 
 % 745 feature values come from the ten operations that call TISEAN directly:
 % NL_PoincareSection 144, NL_dimensions 124, NL_TISEAN_d2 102, NL_TISEAN_fnn 98,
@@ -134,13 +126,12 @@ report.tisean = all(haveExe | haveMex);
 report.tiseanFeatures = 745;
 if verbose
     fprintf('\n-- TISEAN --\n');
-    fprintf('  %s  MEX  %-28s %2u of 10 programs\n',pass(report.tiseanMexCount==10),mexDir,report.tiseanMexCount);
-    fprintf('  %s  exe  %-28s %2u of 10 programs\n',pass(report.tiseanExeCount==10),tiseanDir,report.tiseanExeCount);
-    fprintf('       %4d feature values need one or the other\n',report.tiseanFeatures);
+    fprintf('  %s  %-30s %2u of 10 programs\n', ...
+            pass(report.tiseanExeCount==10),tiseanDir,report.tiseanExeCount);
+    fprintf('       %4d feature values need them\n',report.tiseanFeatures);
     if ~report.tisean
-        missing = tiseanProgs(~(haveExe | haveMex));
-        fprintf('        missing entirely: %s\n',strjoin(missing,', '));
-        fprintf('        (HCTSA2_BuildTiseanMex for MEX, HCTSA2_BuildTisean for .exe)\n');
+        fprintf('        missing: %s\n',strjoin(tiseanProgs(~haveExe),', '));
+        fprintf('        (build them with HCTSA2_BuildTisean, then run startup)\n');
     end
 end
 
