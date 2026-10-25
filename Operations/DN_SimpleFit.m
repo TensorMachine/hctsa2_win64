@@ -1,37 +1,60 @@
-function out = DN_SimpleFit(x,dmodel,numBins)
-% DN_SimpleFit  Fit distributions or simple time-series models to the data.
+function out = DN_SimpleFit(x, dmodel, numBins)
+% DN_SimpleFit   Fits a simple curve to the distribution of the values.
 %
-% Uses the 'fit' function from Matlab's Curve Fitting Toolbox.
+% Fits a simple parametric curve to an estimate of the distribution of values in
+% the time series, ignoring their temporal ordering. The distribution is estimated
+% either as a histogram, with a specified number of bins, or as a
+% kernel-smoothed density (a Gaussian kernel with an explicit bandwidth, BF_KSDensity). The outputs
+% measure the goodness of fit, and test the residuals (in order of increasing
+% value) for remaining structure. The curve is fitted by least squares to the
+% density, in a deterministic way that does not depend on random starts or on an
+% optimizer's default settings (BF_FitDensityCurve).
 %
-% The distribution of time-series values is estimated using either a
-% kernel-smoothed density via the Matlab function ksdensity with the default
-% width parameter, or by a histogram with a specified number of bins, numBins.
-%
-%---INPUTS:
+% ---INPUTS:
 % x, the input time series
+% dmodel, the distribution model to fit:
+%           (i) 'gauss1': a single Gaussian
+%           (ii) 'gauss2': a sum of two Gaussians
+%           (iii) 'exp1': an exponential, a*exp(b*x)
+%           (iv) 'power1': a power law, a*x^b (cannot be fit if any bin center
+%                   is not positive; NaN is returned)
+% NaN is also returned if there are no more bins than parameters of the model.
+% numBins, how to estimate the distribution (default: 'sqrt'):
+%           a text option: the name of a binning rule (BF_HistEdges: 'sqrt', 'sturges',
+%                   'fd' or 'auto'), e.g., 'sqrt' uses the square root of the
+%                   number of data points as the number of equal-width bins
+%           a positive integer: the number of equal-width bins in the histogram
+%           0: use a kernel-smoothed density (BF_KSDensity: Gaussian kernel,
+%                   bandwidth s*(4/(3n))^(1/5) with s the median absolute
+%                   deviation divided by 0.6745) instead of a histogram,
+%                   evaluated at 100 points
 %
-% dmodel, the model to fit:
-%       (I) distribution models:
-%           (i) 'gauss1'
-%           (ii) 'gauss2'
-%           (iii) 'exp1'
-%           (iv) 'power1'
-%       (II) simple time-series models:
-%           (i) 'sin1'
-%           (ii) 'sin2'
-%           (iii) 'sin3'
-%           (iv) 'fourier1'
-%           (v) 'fourier2'
-%           (vi) 'fourier3'
+% ---OUTPUTS:
+% r2, the R^2 goodness of fit
+% adjr2, R^2 adjusted for the number of fitted parameters
+% rmse, the root-mean-square error of the fit, in units of probability density of
+%       the standardized series (the fit is to the density: the histogram counts
+%       divided by the number of points and the bin width, or the kernel-smoothed
+%       density estimate; the error is multiplied by the standard deviation of x), so it
+%       does not depend on the length or the scale of the series
+% resAC1, resAC2, the autocorrelation of the residuals, in order of
+%       increasing value, at lags 1 and 2
+% resrunsz, the signed z-statistic of a runs test on the residuals, in order of
+%       increasing value (BF_RunsZ): negative when the residuals have fewer runs
+%       about their median than expected for a random order
+% (resAC1, resAC2 and resrunsz are NaN if the residuals have no variation beyond
+% floating-point round-off, as for an exact fit: BF_ResidualStats)
 %
-% numBins, the number of bins for a histogram-estimate of the distribution of
-%       time-series values. If numBins = 0, uses ksdensity instead of histogram.
-%
-%---OUTPUTS: the goodness of fifit, R^2, rootmean square error, the
-% autocorrelation of the residuals, and a runs test on the residuals.
+% ---NOTES:
+% Fits of time-series models (sinusoids or Fourier series) against time have
+% moved to SP_SinusoidFit, since they depend on the temporal ordering of the
+% data. For backward compatibility, the time-series models ('sin1', 'sin2',
+% 'sin3', 'fourier1', 'fourier2', 'fourier3') are still accepted here: the
+% call is passed on to SP_SinusoidFit (with identical outputs) after issuing a
+% one-time 'hctsa:deprecated' warning.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -63,82 +86,91 @@ function out = DN_SimpleFit(x,dmodel,numBins)
 % Preliminaries
 % ------------------------------------------------------------------------------
 
+% ------------------------------------------------------------------------------
+%% Deprecated: time-series models now live in SP_SinusoidFit
+% ------------------------------------------------------------------------------
+persistent warnedTSmodel % warn only once per session
+TSmodels = {'sin1', 'sin2', 'sin3', 'fourier1', 'fourier2', 'fourier3'}; % time-series models
+if ischar(dmodel) && any(strcmp(TSmodels, dmodel))
+	if isempty(warnedTSmodel)
+		warning('hctsa:deprecated', ['DN_SimpleFit no longer fits time-series models; ' ...
+				'''%s'' is dispatched to SP_SinusoidFit (this warning is shown once per session).'], dmodel);
+		warnedTSmodel = true;
+	end
+	out = SP_SinusoidFit(x, dmodel);
+	return
+end
 
 % ------------------------------------------------------------------------------
 %% Fit the model
 % ------------------------------------------------------------------------------
-% Two cases: distribution fits and fits on the data
-distModels = {'gauss1','gauss2','exp1','power1'}; % valid distribution models
-TSmodels = {'sin1','sin2','sin3','fourier1','fourier2','fourier3'}; % valid time-series models
+distModels = {'gauss1', 'gauss2', 'exp1', 'power1'}; % valid distribution models
 
-if any(strcmp(distModels,dmodel)) % valid DISTRIBUTION model name
-    if nargin < 3 || isempty(numBins) % haven't specified numBins
-        numBins = 'sqrt'; % use sqrt of number of data points
-    end
-
-    % Compute the histogram counts:
-    if ischar(numBins) % specify a binning method
-        [dny,binEdges] = histcounts(x,'BinMethod',numBins);
-        dnx = mean([binEdges(1:end-1); binEdges(2:end)]);
-    elseif numBins == 0 % use ksdensity instead of a histogram
-        [dny,dnx] = ksdensity(x);
-    else
-        [dny,binEdges] = histcounts(x,numBins);
-        dnx = mean([binEdges(1:end-1); binEdges(2:end)]);
-    end
-
-    % Both must be column vectors:
-    if size(dnx,2) > size(dnx,1)
-        dnx = dnx';
-        dny = dny';
-    end
-
-    % Fit the distribution model:
-    try
-        [cfun,gof,output] = BF_fit(dnx,dny,dmodel);
-	catch emsg % this model can't even be fitted OR license problem...
-        if strcmp(emsg.identifier,'curvefit:fit:nanComputed') ...
-                || strcmp(emsg.identifier,'curvefit:fit:infComputed')
-            fprintf(1,'Error fitting the model ''%s'' to this data:\n%s',dmodel,emsg.message);
-            out = NaN; return
-        elseif strcmp(emsg.message,'Power functions cannot be fit to non-positive xdata.') ...
-                || strcmp(emsg.identifier,'curvefit:fit:powerFcnsRequirePositiveData')
-            fprintf(1,'The model ''%s'' can not be applied to non-positive data\n',dmodel);
-            out = NaN; return
-        else
-            error('Error fitting %s to the data distribution\n%s',dmodel,emsg.message);
-        end
+if any(strcmp(distModels, dmodel)) % valid DISTRIBUTION model name
+	if nargin < 3 || isempty(numBins) % haven't specified numBins
+		numBins = 'sqrt'; % use sqrt of number of data points
 	end
 
-elseif ismember(dmodel,TSmodels) % Valid time-series model name
-    if size(x,2) > size(x,1)
-        x = x';
-    end % x must be a column vector
-    t = (1:length(x))'; % Time variable for equal sampling of the univariate time series
-    try
-        [cfun,gof,output] = BF_fit(t,x,dmodel); % fit the model
-	catch emsg % this model can't even be fitted OR license problem
-        if strcmp(emsg.message,'NaN computed by model function.') || strcmp(emsg.message,'Inf computed by model function.')
-            fprintf(1,'The model %s failed for this data -- returning NaNs for all fitting outputs\n',dmodel);
-            out = NaN; return
-        else
-            error('Unexpected error fitting ''%s'' to the time series',dmodel)
-        end
+	% Compute the distribution (histogram, normalized to a probability density):
+	if ~ischar(numBins) && numBins == 0 % use a kernel-smoothed density instead of a histogram
+		[dny, dnx] = BF_KSDensity(x);
+		if any(isnan(dny)) % constant series: no distribution to fit
+			out = NaN; return
+		end
+	else % histogram with an explicit number of equal-width bins (a number, or a rule)
+		binEdges = BF_HistEdges(x, numBins);
+		dny = histcounts(x, binEdges);
+		dnx = mean([binEdges(1:end - 1); binEdges(2:end)]);
+		dny = dny / (sum(dny) * mean(diff(binEdges))); % counts -> probability density
 	end
+
+	% Both must be column vectors:
+	if size(dnx, 2) > size(dnx, 1)
+		dnx = dnx';
+		dny = dny';
+	end
+
+	% Fit the distribution model, by least squares for the density (BF_FitDensityCurve):
+	if strcmp(dmodel, 'power1') && any(dnx <= 0)
+		fprintf(1, 'The model ''%s'' can not be applied to non-positive data\n', dmodel);
+		out = NaN; return
+	end
+	fitModels = {'gauss1', 'gauss', 3; 'gauss2', 'gauss2', 6; 'exp1', 'exp', 2; 'power1', 'power', 2}; % model, curve, number of parameters
+	iModel = find(strcmp(fitModels(:, 1), dmodel));
+	dnyFit = BF_FitDensityCurve(dnx, dny, fitModels{iModel, 2});
+
+	% Residuals (in order of increasing value) and goodness of fit as in the Curve Fitting
+	% Toolbox: R^2, R^2 adjusted for the number of fitted parameters, and the root-mean-square
+	% error from the residual sum of squares divided by the degrees of freedom of the error
+	res = dny - dnyFit;
+	sse = sum(res.^2);
+	sstot = sum((dny - mean(dny)).^2);
+	dfe = length(dny) - fitModels{iModel, 3}; % degrees of freedom of the error
+	if dfe < 1 % no more bins than parameters: the fit is not meaningful
+		out = NaN; return
+	end
+	r2 = 1 - sse/sstot;
+	adjr2 = 1 - (1 - r2)*(length(dny) - 1)/dfe;
+	rmse = sqrt(sse/dfe);
+
 else
-    error('Invalid distribution or time-series model ''%s'' specified',dmodel);
+	error('Invalid distribution model ''%s'' specified', dmodel);
 end
 
 % ------------------------------------------------------------------------------
 %% Compute the outputs into a structure
 % ------------------------------------------------------------------------------
-% Not included in hctsa library (redundancy with rmse):
-out.r2 = gof.rsquare; % rsquared
-out.adjr2 = gof.adjrsquare; % degrees of freedom-adjusted rsqured
+out.r2 = r2; % rsquared
+out.adjr2 = adjr2; % degrees of freedom-adjusted rsquared (not currently registered
+                   % by any mop -- redundant with r2 for these fixed-order fits)
 
-out.rmse = gof.rmse; % root mean square error
-out.resAC1 = CO_AutoCorr(output.residuals,1,'Fourier'); % autocorrelation of residuals at lag 1
-out.resAC2 = CO_AutoCorr(output.residuals,2,'Fourier'); % autocorrelation of residuals at lag 2
-out.resruns = HT_HypothesisTest(output.residuals,'runstest'); % runs test on residuals -- outputs p-value
+% Root mean square error. The fit was done directly to the probability density, so
+% multiplying by std(x) expresses it in density units of the standardized series,
+% which does not grow with the length of the series (histogram counts do) or
+% depend on the scale of x:
+out.rmse = rmse * std(x);
+
+% Remaining structure in the residuals, in order of increasing value:
+[out.resAC1, out.resAC2, out.resrunsz] = BF_ResidualStats(res, dny);
 
 end

@@ -1,39 +1,58 @@
 function out = NL_PoincareSection(y, ref, embedParams)
 % NL_PoincareSection   Poincare section analysis of a time series.
 %
-% Time-delay embeds the time series and computes a Poincare section using
-% TISEAN's 'poincare', which cuts the trajectory on a fixed embedding
-% coordinate (the last, by convention) held at its own mean, in a single
-% crossing direction.
+% Time-delay embeds the time series in three dimensions and computes a Poincare section
+% with the algorithm of TISEAN's 'poincare', which cuts the trajectory on a fixed embedding
+% coordinate (the last, by convention) held at its own mean, in a single crossing direction. Each crossing
+% gives a point (x, y) on the 2-dimensional section: the other two embedding coordinates
+% at the (interpolated) crossing. The outputs describe this cloud of points: the proportion
+% of time points that cross; the spread, range and autocorrelation of x, y and of the
+% distance D from the mean of the points; the distances between successive points; and
+% how the points fill a grid of cells whose edges are quantiles of each coordinate.
 %
 % ---INPUTS:
 % y, the input time series
-%
-% ref: 'max' or 'min', selecting the crossing direction. This operation
-%      previously used TSTOOL's 'poincare', which cut a hyperplane
-%      orthogonal to the local tangent vector at a chosen reference point in
-%      the time series -- a construction TISEAN has no equivalent for.
-%      'ref' is repurposed here to instead pick which of the two possible
-%      crossing directions to use: 'max' selects crossings heading toward a
-%      local maximum (ascending through the mean, TISEAN's "from below",
-%      -C0); 'min' selects crossings heading toward a local minimum
+% ref, 'max' or 'min', selecting the crossing direction (default: 'max'):
+%      'max' selects crossings heading toward a local maximum (ascending through the mean,
+%      TISEAN's "from below", -C0); 'min' selects crossings heading toward a local minimum
 %      (descending through the mean, "from above", -C1).
+% embedParams, the usual thing to give BF_Embed for the time-delay embedding, as {tau,m},
+%      where tau is a number of samples or 'ac', 'ac1e' or 'mi' (see BF_GetTau)
+%      (default: {'mi',3}). m is forced to 3, so that the Poincare section is
+%      2-dimensional.
 %
-% embedParams: the usual thing to give BF_Embed for the time-delay embedding, as
-%               {tau,m}. m is forced to 3 -- i.e., embed in a 3
-%               dimensional space so that the Poincare section is 2-dimensional.
+% ---OUTPUTS: (x and y are the coordinates of the points on the section; ds the distances
+% between successive points; D the distances of the points from their mean position)
+% pcross, the number of section points divided by the length of the time series
+% maxx, minx, stdx, iqrx, meanx: maximum, minimum, standard deviation, interquartile range
+%      and mean of the x coordinates
+% ac1x, ac2x: autocorrelation of the x coordinates at lags 1 and 2
+% tauacx: first zero-crossing of the autocorrelation function of the x coordinates
+% maxy, miny, stdy, iqry, meany, ac1y, ac2y, tauacy: the same for the y coordinates
+% boxarea, the area of the bounding box of the points: range(x)*range(y)
+% pwithinr01, pwithin02, pwithin03, pwithin05, pwithin1, pwithin2: the proportion of
+%      successive points within a distance of 0.1, 0.2, 0.3, 0.5, 1 and 2, respectively
+% meands, maxds, minds, iqrds: mean, maximum, minimum and interquartile range of ds
+% maxD, minD, stdD, iqrD, meanD, ac1D, ac2D, tauacD: the same statistics as for x, but for D
+% maxpbox5, minpbox5, zerospbox5, meanpbox5, rangepbox5, hboxcounts5, tracepbox5:
+%      statistics of the proportions of points in the cells of a 5 by 5 grid whose edges
+%      are quantiles of x and y: maximum, minimum, number of empty cells, mean, range, the
+%      Miller-Madow-corrected entropy of the occupancy (in nats), and the sum of the
+%      diagonal (the proportion of points in cells where the x and y quantile bins match)
+% maxpbox10, minpbox10, zerospbox10, meanpbox10, rangepbox10, hboxcounts10, tracepbox10:
+%      the same for a 10 by 10 grid
+% The output is NaN if the embedding fails or the section has fewer than 2 points.
 %
-% ---OUTPUTS: include statistics on the x- and y- components of these vectors on the
-% Poincare surface, on distances between adjacent points, distances from the
-% mean position, and the entropy of the vector cloud.
-%
-% Uses TISEAN's 'poincare' (this operation previously used TSTOOL's
-% 'poincare', a different construction -- see 'ref' above).
+% ---REFERENCES:
 % TISEAN: https://www.pks.mpg.de/tisean/
-
-% Another thing that could be cool to do is to analyze variation in the plots as
-% ref changes... (not done here)
 %
+% ---NOTES:
+% TISEAN's 'poincare' has no reference-point concept: 'ref' instead picks which of the two
+% possible crossing directions to use.
+%
+% Another thing that could be cool to do is to analyze variation in the plots as ref
+% changes... (not done here)
+
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
@@ -73,7 +92,7 @@ end
 
 if nargin < 3 || isempty(embedParams)
 	embedParams = {'mi', 3};
-	fprintf(1, 'Using default embedding settings: minimum of the automutual information for tau and m = 3\n');
+	fprintf(1, 'Using default embedding settings: the smaller of the first automutual information minimum and the 1/e autocorrelation time for tau, and m = 3\n');
 end
 
 if embedParams{2} ~= 3
@@ -102,61 +121,28 @@ doPlot = 0; % plot outputs to a figure
 N = length(y); % length of the time series
 tm = BF_Embed(y, embedParams{1}, embedParams{2}, true);
 tau = tm(1);
+if isnan(tau)
+	warning('Could not determine embedding parameters for this time series');
+	out = NaN; return
+end
 m = tm(2);
 
-filePath = BF_WriteTempFile(y);
-% --- temporary-file safety net ------------------------------------------------
-% Everything from here to the matching catch runs with the temporary file
-% guaranteed to be removed, whichever way control leaves.
-%
-% This is a try/catch rather than a cleanup call before each error(), because
-% enumerating exits is exactly what failed before: an earlier attempt covered
-% the return statements and the end of the body and missed all 2 error()
-% calls in this file, so a real run still littered the temporary directory. A
-% try/catch cannot miss one, and it also covers what this function does not
-% raise itself -- an indexing slip, a textscan failure, a called function that
-% throws -- which no amount of enumeration would have caught.
-%
-% The body below is deliberately NOT re-indented: indentation is cosmetic in
-% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
-% whitespace diff.
-try
-
-outFilePath = [filePath '.poin'];
-
-% Cut on the last (m-th) embedding coordinate, at TISEAN's own default
-% threshold (that coordinate's mean):
-[~, res] = BF_RunTisean(sprintf('poincare -d%u -m%u -q%u -C%u -o %s %s', ...
-						  tau, m, m, direction, outFilePath, filePath), true);
-
-if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
-	if exist(outFilePath, 'file'), delete(outFilePath); end
-	error('Call to TISEAN function ''poincare'' failed.');
-end
-
-if ~exist(outFilePath, 'file')
-	error('TISEAN function ''poincare'' did not produce a .poin output file.');
-end
-
-% An empty output file means no crossings were found in this direction
-% (dlmread errors on an empty file, so check first):
-fileInfo = dir(outFilePath);
-if fileInfo.bytes == 0
-	delete(outFilePath);
+% Cut on the last (m-th) embedding coordinate at the mean of the series (the
+% algorithm of TISEAN's poincare with its defaults, computed here in double precision):
+v = SUB_PoincareCut(y, m, tau, direction);
+if size(v, 1) == 0
 	fprintf(1, 'No section points found to run NL_PoincareSection\n');
-	out = NaN; BF_CleanTempFiles(filePath); return
+	out = NaN; return
 end
 
 % Columns are the two uncut embedding coordinates, followed by the
 % (interpolated) crossing time -- only the first two are point coordinates:
-v = dlmread(outFilePath);
-delete(outFilePath);
 v = v(:, 1:2);
 NN = size(v, 1);
 
 if NN < 2
 	fprintf(1, 'No section points found to run NL_PoincareSection\n');
-	out = NaN; BF_CleanTempFiles(filePath); return
+	out = NaN; return
 end
 
 % Labeling poincare surface plane x-y
@@ -164,7 +150,7 @@ x = v(:, 1);
 y = v(:, 2);
 
 if doPlot
-	figure('color', 'w'); box('on');
+	figure('color', 'w'); box('on'); %#ok<UNRCH>
 	plot(x, y, '.k'); axis equal
 end
 
@@ -243,11 +229,16 @@ for i = 1:length(numPartitions)
 
 	out.(sprintf('maxpbox%u', numPartitions(i))) = max(pbox(:));
 	out.(sprintf('minpbox%u', numPartitions(i))) = min(pbox(:));
-	out.(sprintf('zerospbox%u', numPartitions(i))) = sum(pbox(:) == 0);
+	out.(sprintf('zerospbox%u', numPartitions(i))) = nnz(pbox(:) == 0);
 	out.(sprintf('meanpbox%u', numPartitions(i))) = mean(pbox(:));
 	out.(sprintf('rangepbox%u', numPartitions(i))) = range(pbox(:));
-	% This probably needs to be normalized:
-	out.(sprintf('hboxcounts%u', numPartitions(i))) = -sum(pbox(pbox > 0) .* log(pbox(pbox > 0)));
+	% Box-occupancy entropy, Miller-Madow corrected: the plug-in estimator
+	% -sum(p.*log(p)) is biased low by (M-1)/(2n) for M occupied boxes and n
+	% points on the section, which makes the raw value track NN (and hence the
+	% time-series length) as much as the geometry of the section.
+	occupied = (pbox > 0);
+	out.(sprintf('hboxcounts%u', numPartitions(i))) = ...
+		-sum(pbox(occupied) .* log(pbox(occupied))) + (sum(occupied(:)) - 1) / (2 * NN);
 	out.(sprintf('tracepbox%u', numPartitions(i))) = sum(diag(pbox)); % trace
 end
 
@@ -258,13 +249,6 @@ end
 % think this is enough for now.
 
 % ------------------------------------------------------------------------------
-BF_CleanTempFiles(filePath); % remove the temporary file and every TISEAN
-                             % output derived from it
-catch tiseanCleanupErr
-    BF_CleanTempFiles(filePath);
-    rethrow(tiseanCleanupErr);
-end
-% --- end temporary-file safety net --------------------------------------------
 function boxcounts = subcountboxes(x, y, nbox)
 	boxcounts = zeros(nbox);
 	% boxes are quantiles along each axis
@@ -283,4 +267,42 @@ function boxcounts = subcountboxes(x, y, nbox)
 end
 % ------------------------------------------------------------------------------
 
+end
+
+% ------------------------------------------------------------------------------
+function v = SUB_PoincareCut(s, m, tau, direction)
+	% The algorithm of TISEAN's poincare (-d tau -m m -q m -C direction, cut at the
+	% default level, the mean of the series), in double precision. With the delay
+	% vector at time i being (s(i - (m-1)*tau), ..., s(i - tau), s(i)), a crossing is
+	% s(i) < c <= s(i+1) (direction 0, from below) or s(i) > c >= s(i+1) (direction 1,
+	% from above), at the fractional time i + delta, delta = (s(i) - c)/(s(i) - s(i+1)).
+	% Each row of v holds the other m-1 coordinates linearly interpolated to that time,
+	% s(j) + delta*(s(j+1) - s(j)) for j = i - (m-1)*tau, ..., i - tau, then the time
+	% since the previous crossing; the first crossing only starts the clock.
+	s = s(:);
+	N = length(s);
+	c = 0; % the mean, as TISEAN sums it (in order)
+	for k = 1:N
+		c = c + s(k);
+	end
+	c = c / N;
+	i = ((m - 1)*tau + 1:N - 1)';
+	if direction == 0
+		i = i(s(i) < c & s(i + 1) >= c);
+	else
+		i = i(s(i) > c & s(i + 1) <= c);
+	end
+	if length(i) < 2
+		v = zeros(0, m);
+		return
+	end
+	delta = (s(i) - c) ./ (s(i) - s(i + 1));
+	t = (i - 1) + delta; % (0-based crossing times)
+	v = zeros(length(i), m);
+	for k = 1:m - 1
+		j = i - (m - k)*tau;
+		v(:, k) = s(j) + delta .* (s(j + 1) - s(j));
+	end
+	v(:, m) = [NaN; diff(t)];
+	v = v(2:end, :);
 end

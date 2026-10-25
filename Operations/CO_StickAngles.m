@@ -1,21 +1,56 @@
 function out = CO_StickAngles(y)
-% CO_StickAngles    Analysis of line-of-sight angles between time-series data points.
+% CO_StickAngles   Analysis of angles between successive same-sign time-series values.
 %
-% Line-of-sight angles between time-series points treat each time-series value
-% as a stick protruding from an opaque baseline level.
-% Statistics are returned on the raw time series, where sticks protrude
-% from the zero-level, and the z-scored time series, where sticks
-% protrude from the mean level of the time series.
+% Each time-series value is treated as a stick protruding from a baseline at zero
+% (the mean, for a z-scored series). Sticks above the baseline form a positive set
+% and those below it a negative set. Within each set, the angle between successive
+% sticks is atan of the slope from one stick's tip to the next: (y(next) - y(this))
+% divided by the number of samples between them. Statistics are returned on the
+% positive angles (_p), the negative angles (_n), and all of them (_all, and the
+% outputs with no suffix): location, spread and shape, differences between the
+% positive and negative sets, symmetry, stationarity, autocorrelation, and quantiles.
+% The tau, ac1, quantile and statav outputs use the angle sequences standardized to
+% zero mean and unit variance. The set of all angles is the positive set's sequence
+% followed by the negative set's: its distributional statistics (std, mean, median,
+% quantiles, skewness, kurtosis) do not depend on that order, but its statav outputs
+% do, and compare the positive with the negative set (and, for more than two parts,
+% parts within each set) rather than segments in time.
 %
 % ---INPUTS:
-% y, the input time series
+% y, the input time series (assumed z-scored, so that the sign split is about the
+%       mean)
 %
-% ---OUTPUTS: are returned on the obtained sequence of angles, theta, reflecting the
-% maximum deviation a stick can rotate before hitting a stick representing
-% another time point. Statistics include the mean and spread of theta,
-% the different between positive and negative angles, measures of symmetry of
-% the angles, stationarity, autocorrelation, and measures of the distribution of
-% these stick angles.
+% ---OUTPUTS:
+% mean_p, median_p, mean_n, median_n, mean, median, std, the mean, median and
+%       standard deviation of the angles (for the positive set, negative set, or
+%       all angles),
+% pnsumabsdiff, the summed absolute difference between the histograms (the proportion
+%       of angles in each of 20 bins spanning -pi/2 to pi/2) of the positive and
+%       negative angles (0 if identical, 2 if they share no bin),
+% symks_p, symks_n, the asymmetry about zero of the distribution of the positive or
+%       negative set's angles: half the summed absolute difference between its
+%       histogram (as above) and its mirror image (0 if symmetric, 1 if all angles
+%       are in bins whose mirror image is empty),
+% ratmean_p, ratmean_n, the mean of the positive angles divided by the mean of the
+%       negative angles within the positive or negative set,
+% statav2_p_m, statav2_p_s, statav3_p_m, statav3_p_s, statav4_p_m, statav4_p_s,
+%       statav5_p_m, statav5_p_s, statav2_n_m, statav2_n_s, statav3_n_m, statav3_n_s,
+%       statav4_n_m, statav4_n_s, statav5_n_m, statav5_n_s, statav2_all_m,
+%       statav3_all_m, statav4_all_m, statav5_all_m, statav5_all_s, the standard
+%       deviation across 2, 3, 4 or 5 equal parts of the sequence of the mean (_m) or
+%       the standard deviation (_s) of the angles, divided by their overall standard
+%       deviation (for _all, parts of the positive-then-negative sequence; see above),
+% tau_p, tau_n, the first zero-crossing of the autocorrelation function of the
+%       positive or negative set's angle sequence (interpolated),
+% ac1_p, ac1_n, the lag-1 autocorrelation of those sequences,
+% q1_p, q10_p, q90_p, q99_p, q1_n, q10_n, q90_n, q99_n, q1_all, q10_all, q90_all,
+%       q99_all, the 1%, 10%, 90% and 99% quantiles of the standardized angles,
+% skewness_p, skewness_n, skewness_all, kurtosis_p, kurtosis_n, kurtosis_all, the
+%       skewness and kurtosis of the angles.
+%
+% ---NOTES:
+% Needs the Signal Processing Toolbox (the buffer function). Heights are in z-scored
+% units and distances in samples, so the angles depend on the sampling rate.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -78,12 +113,12 @@ end
 allAngles = vertcat(angles{:});
 
 if doPlot
-	figure('color', 'w')
+	figure('color', 'w') %#ok<UNRCH>
 	% A few options of what to plot:
 	hold off; plot(angles{1}, '.k'); hold on
 	plot(angles{2}, '.r'); hold off;
-	[yp, xp] = ksdensity(angles{1});
-	[yn, xn] = ksdensity(angles{2});
+	[yp, xp] = BF_KSDensity(angles{1});
+	[yn, xn] = BF_KSDensity(angles{2});
 	plot(xp, yp, 'r'); hold on; plot(xn, yn, 'b');
 	histogram(angles{1}, 50);
 end
@@ -92,13 +127,15 @@ end
 %% Basic stats?
 % ------------------------------------------------------------------------------
 % on raw values
-out.std_p = std(angles{1});
 out.mean_p = mean(angles{1});
 out.median_p = median(angles{1});
 
-out.std_n = std(angles{2});
 out.mean_n = mean(angles{2});
 out.median_n = median(angles{2});
+
+% (std_p and std_n are not returned: they are largely redundant with
+% CO_PosNegAsymmetry's volPos and volNeg, which measure regime-conditional volatility
+% more directly.)
 
 out.std = std(allAngles);
 out.mean = mean(allAngles);
@@ -107,12 +144,14 @@ out.median = median(allAngles);
 % ------------------------------------------------------------------------------
 %% Difference between positive and negative angles
 % ------------------------------------------------------------------------------
-% Return difference in densities
-ksx = linspace(min(allAngles), max(allAngles), 200);
+% Angles lie in (-pi/2, pi/2), so histograms with fixed bins over that support need
+% no smoothing parameter and are bounded (a kernel density would depend on the
+% bandwidth, which collapses when the angles are tied)
+binEdges = BF_HistEdges(allAngles, 20, [-pi / 2, pi / 2]);
 if ~isempty(angles{1}) && ~isempty(angles{2})
-	ksy1 = ksdensity(angles{1}, ksx); % spans the range of full extent (of both positive and negative angles)
-	ksy2 = ksdensity(angles{2}, ksx); % spans the range of full extent (of both positive and negative angles)
-	out.pnsumabsdiff = sum(abs(ksy1 - ksy2));
+	px1 = histcounts(angles{1}, binEdges, 'Normalization', 'probability');
+	px2 = histcounts(angles{2}, binEdges, 'Normalization', 'probability');
+	out.pnsumabsdiff = sum(abs(px1 - px2));
 else
 	out.pnsumabsdiff = NaN;
 end
@@ -121,11 +160,11 @@ end
 %% How symmetric is the distribution of angles?
 % ------------------------------------------------------------------------------
 % on raw outputs
-% difference between ksdensities of positive and negative portions
-if ~isempty(angles{1});
-	maxdev = max(abs(angles{1}));
-	ksy1 = ksdensity(angles{1}, linspace(-maxdev, maxdev, 201));
-	out.symks_p = sum(abs(ksy1(1:100) - fliplr(ksy1(102:end))));
+% difference between the histogram of the positive (negative) set and its mirror image
+% about zero (the bins are symmetric about zero):
+if ~isempty(angles{1})
+	px1 = histcounts(angles{1}, binEdges, 'Normalization', 'probability');
+	out.symks_p = 0.5 * sum(abs(px1 - fliplr(px1)));
 	out.ratmean_p = mean(angles{1}(angles{1} > 0)) / mean(angles{1}(angles{1} < 0));
 else
 	out.symks_p = NaN;
@@ -133,9 +172,8 @@ else
 end
 
 if ~isempty(angles{2})
-	maxdev = max(abs(angles{2}));
-	ksy2 = ksdensity(angles{2}, linspace(-maxdev, maxdev, 201));
-	out.symks_n = sum(abs(ksy2(1:100) - fliplr(ksy2(102:end))));
+	px2 = histcounts(angles{2}, binEdges, 'Normalization', 'probability');
+	out.symks_n = 0.5 * sum(abs(px2 - fliplr(px2)));
 	out.ratmean_n = mean(angles{2}(angles{2} > 0)) / mean(angles{2}(angles{2} < 0));
 else
 	out.symks_n = NaN;
@@ -156,7 +194,7 @@ zallAngles = zscore(allAngles);
 % if size(ap_buff_2,2)>2,ap_buff_2 = ap_buff_2(:,1:2);end % lose last point
 
 % There are positive angles
-if ~isempty(zangles{1});
+if ~isempty(zangles{1})
 	% StatAv2
 	[statav_m, statav_s] = SUB_statav(zangles{1}, 2);
 	out.statav2_p_m = statav_m;
@@ -185,7 +223,7 @@ else
 end
 
 % There are negative angles
-if ~isempty(zangles{2});
+if ~isempty(zangles{2})
 	% StatAv2
 	[statav_m, statav_s] = SUB_statav(zangles{2}, 2);
 	out.statav2_n_m = statav_m;
@@ -215,51 +253,50 @@ end
 % All angles:
 
 % StatAv2
-[statav_m, statav_s] = SUB_statav(zallAngles, 2);
+[statav_m, ~] = SUB_statav(zallAngles, 2);
 out.statav2_all_m = statav_m;
-out.statav2_all_s = statav_s;
 
 % StatAv3
-[statav_m, statav_s] = SUB_statav(zallAngles, 3);
+[statav_m, ~] = SUB_statav(zallAngles, 3);
 out.statav3_all_m = statav_m;
-out.statav3_all_s = statav_s;
 
 % StatAv4
-[statav_m, statav_s] = SUB_statav(zallAngles, 4);
+[statav_m, ~] = SUB_statav(zallAngles, 4);
 out.statav4_all_m = statav_m;
-out.statav4_all_s = statav_s;
 
 % StatAv5
 [statav_m, statav_s] = SUB_statav(zallAngles, 5);
 out.statav5_all_m = statav_m;
 out.statav5_all_s = statav_s;
 
+% (statav2_all_s, statav3_all_s and statav4_all_s are not returned: they are largely
+% redundant with statav5_all_s and with each other, so only one representative of the
+% StatAv spread-of-all-angles family is kept.)
+
 %% correlations?
-if ~isempty(zangles{1});
+% (ac2_p, ac2_n and ac2_all are not returned, as they are largely redundant with the
+% corresponding ac1_*; nor are tau_all and ac1_all, which are largely redundant with
+% their p/n counterparts. Keeping the p/n split, rather than the pooled 'all',
+% preserves the asymmetry signal that is the point of this feature.)
+if ~isempty(zangles{1})
 	out.tau_p = CO_FirstCrossing(zangles{1}, 'ac', 0, 'continuous');
 	out.ac1_p = CO_AutoCorr(zangles{1}, 1, 'Fourier');
-	out.ac2_p = CO_AutoCorr(zangles{1}, 2, 'Fourier');
 else
-	out.tau_p = NaN; out.ac1_p = NaN; out.ac2_p = NaN;
+	out.tau_p = NaN; out.ac1_p = NaN;
 end
 
-if ~isempty(zangles{2});
+if ~isempty(zangles{2})
 	out.tau_n = CO_FirstCrossing(zangles{2}, 'ac', 0, 'continuous');
 	out.ac1_n = CO_AutoCorr(zangles{2}, 1, 'Fourier');
-	out.ac2_n = CO_AutoCorr(zangles{2}, 2, 'Fourier');
 else
-	out.tau_n = NaN; out.ac1_n = NaN; out.ac2_n = NaN;
+	out.tau_n = NaN; out.ac1_n = NaN;
 end
-
-out.tau_all = CO_FirstCrossing(zallAngles, 'ac', 0, 'continuous');
-out.ac1_all = CO_AutoCorr(zallAngles, 1, 'Fourier');
-out.ac2_all = CO_AutoCorr(zallAngles, 2, 'Fourier');
 
 % ------------------------------------------------------------------------------
 %% What does the distribution look like?
 % ------------------------------------------------------------------------------
 % Some quantiles and moments
-if ~isempty(zangles{1});
+if ~isempty(zangles{1})
 	out.q1_p = quantile(zangles{1}, 0.01);
 	out.q10_p = quantile(zangles{1}, 0.1);
 	out.q90_p = quantile(zangles{1}, 0.9);
@@ -272,7 +309,7 @@ else
 	out.skewness_p = NaN; out.kurtosis_p = NaN;
 end
 
-if ~isempty(zangles{2});
+if ~isempty(zangles{2})
 	out.q1_n = quantile(zangles{2}, 0.01);
 	out.q10_n = quantile(zangles{2}, 0.1);
 	out.q90_n = quantile(zangles{2}, 0.9);

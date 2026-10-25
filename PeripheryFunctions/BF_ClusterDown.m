@@ -11,24 +11,32 @@ function [distMat_cl,cluster_Groupi,ord,handles] = BF_ClusterDown(distMat,vararg
 % 'objectLabels', labels for axes
 % 'whatDistance', the type of distance metric used:
 %        (i) 'corr' (default): provide 1-R, where R is correlation coefficient
-%        (ii) 'abscorr': provide correlation distances, 1-R, but clustering is
-%                        done on abscorr distances (sign of R is ignored), and
+%                        (also 'corr_fast'); clustering is done on these distances, and
 %                        correlations, R, are plotted
+%        (ii) 'abscorr': provide correlation distances, 1-R, but clustering is
+%                        done on abscorr distances, 1-|R| (sign of R is ignored), and
+%                        absolute correlations, |R|, are plotted
 %        (iii) 'abscorr_ii': provide correlation distances, 1-R, but clustering
 %                        is done on abscorr distances (sign of R is ignored), and
-%                        absolute correlations, |R|, are plotted
+%                        correlations, R, are plotted
 %        (iv) 'general': provide any distance matrix, plots the distance matrix
 % 'linkageMeth', the linkage method to use (for Matlab's linkage function)
+% 'doPlot', draw the dendrogram and the reordered distance matrix (default true;
+%        HCTSA2 2.5.1). false computes only the clusters: no figure, and no leaf
+%        ordering, so distMat_cl and ord are empty
 %
 %---OUTPUTS:
-% distMat_cl, the distance matrix re-ordered by clustering
-% cluster_Groupi, the assignment of nodes to clusters (cell of indices)
-% ord, the ordering of objects in the dendrogram
+% distMat_cl, the distance matrix re-ordered by clustering (empty without a plot)
+% cluster_Groupi, the assignment of nodes to clusters (cell of indices), largest
+%               first; each cluster's first member is its centre (the smallest
+%               summed distance, as clustered, to the other members)
+% ord, the ordering of objects in the dendrogram (empty without a plot)
 % handles, structure containing handles to plotting elements, f (figure),
-%               ax1 (dendrogram), ax2 (pairwise correlation matrix)
+%               ax1 (dendrogram), ax2 (pairwise correlation matrix); empty
+%               without a plot
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -83,6 +91,9 @@ addParameter(inputP,'whatDistance',default_whatDistance,@ischar);
 default_linkageMeth = 'average';
 addParameter(inputP,'linkageMeth',default_linkageMeth,@ischar);
 
+% HCTSA2 2.5.1: doPlot, whether to draw the figure (a large dendrogram and image)
+addParameter(inputP,'doPlot',true,@(x) (islogical(x) || isnumeric(x)) && isscalar(x));
+
 % plotBig, whether to make a big plot
 % default_plotBig = 0;
 % check_plotBig = @(x) x==1 || x==0;
@@ -100,7 +111,14 @@ whatDistance = inputP.Results.whatDistance;
 % clusterMeth = inputP.Results.clusterMeth;
 linkageMeth = inputP.Results.linkageMeth;
 % plotBig = inputP.Results.plotBig;
+doPlot = logical(inputP.Results.doPlot);
 clear('inputP');
+
+% HCTSA2 2.5.1 (upstream issue P37): a distance vector, as pdist returns, is
+% indexed as a matrix below (distMat(ord,ord) and the cluster centres)
+if any(size(distMat)==1)
+    distMat = squareform(distMat);
+end
 
 %-------------------------------------------------------------------------------
 %% Process input distance data
@@ -110,22 +128,29 @@ clear('inputP');
 % ------------------------------------------------------------------------------
 %% Compute dendrogram
 % ------------------------------------------------------------------------------
-f = figure('color','w');
-f.Position(3:4) = [1200,800];
+if doPlot
+    f = figure('color','w');
+    f.Position(3:4) = [1200,800];
 
-% Get the dendrogram reordering:
-ax1 = subplot(1,6,6);
-ord = BF_LinkageOrdering(distVec,links);
-h_dend = dendrogram(links,0,'Orientation','right','Reorder',ord);
-ax1.YDir = 'reverse'; % needs to be reversed to match the reversed y-axis of the imagesc plot
+    % Get the dendrogram reordering:
+    ax1 = subplot(1,6,6);
+    ord = BF_LinkageOrdering(distVec,links);
+    h_dend = dendrogram(links,0,'Orientation','right','Reorder',ord);
+    ax1.YDir = 'reverse'; % needs to be reversed to match the reversed y-axis of the imagesc plot
 
-% Save the clustered distance matrix for output
-distMat_cl = distMat(ord,ord);
+    % Make the dendrogram look aight
+    set(h_dend,'color','k','LineWidth',1)
+    ax1.YTickLabel = {};
+    xlabel('Distance');
 
-% Make the dendrogram look aight
-set(h_dend,'color','k','LineWidth',1)
-ax1.YTickLabel = {};
-xlabel('Distance');
+    % Save the clustered distance matrix for output
+    distMat_cl = distMat(ord,ord);
+else
+    % HCTSA2 2.5.1: no leaf ordering either (optimalleaforder is slow for 1,000-2,000
+    % objects, and distMat(ord,ord) is a second full matrix)
+    ord = [];
+    distMat_cl = [];
+end
 
 %-------------------------------------------------------------------------------
 %% Cluster into groups:
@@ -137,12 +162,14 @@ numClusters = max(T);
 fprintf(1,'%s distance-based clustering with %u clusters.\n',whatDistance,numClusters);
 
 % Reorder members of each cluster by distance to other members of the cluster:
+% (HCTSA2 2.5.1: by the distances the clustering used, distVec, i.e. 1 - |R| for
+% 'abscorr'; the input's 1 - R made an anti-correlated member look far from the centre)
 cluster_Groupi = cell(numClusters,1);
 for j = 1:numClusters
     cluster_Groupi{j} = find(T==j);
     if sum(T==j) > 1
         % Sort by increasing sum of distances to other members of the cluster
-        [~,ix] = sort(sum(distMat(cluster_Groupi{j},cluster_Groupi{j})),'ascend');
+        [~,ix] = sort(sum(localSubDist(distVec,numItems,cluster_Groupi{j})),'ascend');
         cluster_Groupi{j} = cluster_Groupi{j}(ix);
     end
 end
@@ -153,6 +180,11 @@ cluster_Groupi = cluster_Groupi(ix);
 
 % Select the closest to cluster centre in each group
 clusterCenters = cellfun(@(x) x(1),cluster_Groupi);
+
+if ~doPlot
+    handles = struct();
+    return
+end
 
 cluster_Groupi_cl = cellfun(@(x) arrayfun(@(y)find(ord==y),x),cluster_Groupi,...
                                                 'UniformOutput',false);
@@ -219,10 +251,10 @@ ax2.XTick = [];
 % Add a color bar:
 cB = colorbar('southoutside');
 switch whatDistance
-case {'corr','abscorr_ii'}
-    cB.Label.String = 'Spearman correlation, \rho';
+case {'corr','abscorr_ii','corr_fast'}
+    cB.Label.String = 'Correlation, \rho';
 case 'abscorr'
-    cB.Label.String = 'Magnitude of Spearman correlation, |\rho|';
+    cB.Label.String = 'Magnitude of correlation, |\rho|';
 case 'general'
     cB.Label.String = 'distance';
 end
@@ -246,4 +278,16 @@ if nargout > 3
     handles.ax2 = ax2;
 end
 
+end
+
+%-------------------------------------------------------------------------------
+function D = localSubDist(distVec,numItems,g)
+% HCTSA2 2.5.1: the distances among items g, read from the pdist-ordered vector
+% distVec without forming the full matrix (pair i < j is at (i-1)*(n-i/2) + j-i)
+[a,b] = ndgrid(g,g);
+lo = min(a,b);
+hi = max(a,b);
+off = lo < hi;
+D = zeros(numel(g));
+D(off) = distVec((lo(off)-1).*(numItems-lo(off)/2) + hi(off) - lo(off));
 end

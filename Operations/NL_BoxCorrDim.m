@@ -1,32 +1,13 @@
 function out = NL_BoxCorrDim(y, numBins, embedParams)
-% NL_BoxCorrDim  Correlation dimension of a time series.
+% NL_BoxCorrDim   [DEPRECATED] Renamed NL_BoxCountEntropyRate.
 %
-% Estimates the correlation dimension of a time-delay embedded time series
-% using a box-counting approach, via TISEAN's 'boxcount' (this operation
-% previously used TSTOOL's 'corrdim').
+% DEPRECATED: use NL_BoxCountEntropyRate. The features are increments of the
+% order-2 Renyi (box-counting) entropy with embedding dimension, i.e. entropy-rate-like
+% (K2), not correlation dimensions, as the old name suggested. This thin wrapper
+% is kept only so that custom input files keep working, and is no longer part of
+% the default feature library.
 %
-% 'boxcount' estimates the Renyi entropy of order Q (Q = 2.0 here, giving
-% the box-counting correlation entropy/dimension) via partitioning, for
-% every embedding dimension 1:m and a sweep of length scales, writing (for
-% each embedding dimension d) both the raw entropy H_Q(epsilon,d) and its
-% increment over the (d-1)-dimensional embedding, H_Q(epsilon,d) -
-% H_Q(epsilon,d-1) -- it is this increment (which approaches the
-% correlation dimension itself as d grows) that plays the role of TSTOOL's
-% corrdim matrix, whose columns/rows this operation's output statistics
-% below already summarise as per-embedding-dimension and per-length-scale
-% local dimension estimates.
-%
-% ---INPUTS:
-% y, column vector of time series data
-% numBins, number of length-scale (epsilon) values in the box-counting sweep
-%          (TSTOOL's own "maximum number of partitions per axis" doesn't
-%          have an exact TISEAN equivalent; this is the closest analogue --
-%          it controls the resolution of the length-scale sweep the same
-%          way numBins previously did).
-% embedParams [opt], embedding parameters as {tau,m} in 2-entry cell for a
-%                   time-delay, tau, and embedding dimension, m. As inputs to BF_Embed.
-%
-% ---OUTPUTS: Simple summaries of the outputs from boxcount.
+% ---INPUTS and OUTPUTS: as for NL_BoxCountEntropyRate.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -57,138 +38,16 @@ function out = NL_BoxCorrDim(y, numBins, embedParams)
 % this program. If not, see <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
 
-doPlot = false; % plot outputs to a figure
-
-% ------------------------------------------------------------------------------
-%% Check inputs, preliminaries
-% ------------------------------------------------------------------------------
-% (1) Maxmum number of partitions per axis, numBins
-if nargin < 2 || isempty(numBins)
-	numBins = 100; % default number of bins per axis is 100
+% Warn once per session:
+persistent hasWarned
+if isempty(hasWarned)
+	warning('hctsa:deprecated', ['NL_BoxCorrDim is deprecated: use NL_BoxCountEntropyRate ' ...
+				'(same code and outputs; the features are entropy-rate-like, not correlation dimensions).']);
+	hasWarned = true;
 end
 
-% (2) Set embedding parameters to defaults
-if nargin < 3 || isempty(embedParams)
-	embedParams = {'ac', 'fnn'};
-else
-	if length(embedParams) ~= 2
-		error('Embedding parameters should be formatted like {tau,m}')
-	end
-end
+if nargin < 2, numBins = []; end
+if nargin < 3, embedParams = []; end
+out = NL_BoxCountEntropyRate(y, numBins, embedParams);
 
-% ------------------------------------------------------------------------------
-%% Resolve the embedding parameters (tau, m)
-% ------------------------------------------------------------------------------
-tm = BF_Embed(y, embedParams{1}, embedParams{2}, true);
-tau = tm(1);
-mMax = tm(2);
-
-% ------------------------------------------------------------------------------
-%% Run the TISEAN code, boxcount
-% ------------------------------------------------------------------------------
-filePath = BF_WriteTempFile(y);
-% --- temporary-file safety net ------------------------------------------------
-% Everything from here to the matching catch runs with the temporary file
-% guaranteed to be removed, whichever way control leaves.
-%
-% This is a try/catch rather than a cleanup call before each error(), because
-% enumerating exits is exactly what failed before: an earlier attempt covered
-% the return statements and the end of the body and missed all 4 error()
-% calls in this file, so a real run still littered the temporary directory. A
-% try/catch cannot miss one, and it also covers what this function does not
-% raise itself -- an indexing slip, a textscan failure, a called function that
-% throws -- which no amount of enumeration would have caught.
-%
-% The body below is deliberately NOT re-indented: indentation is cosmetic in
-% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
-% whitespace diff.
-try
-
-outFilePath = [filePath '.box'];
-
-[~, res] = BF_RunTisean(sprintf('boxcount -M1,%u -d%u -Q2.0 -#%u -o %s %s', ...
-						  mMax, tau, numBins, outFilePath, filePath), true);
-
-if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
-	if exist(outFilePath, 'file'), delete(outFilePath); end
-	error('Call to TISEAN function ''boxcount'' failed.');
-end
-
-if ~exist(outFilePath, 'file')
-	error('TISEAN function ''boxcount'' did not produce a .box output file.');
-end
-
-fid = fopen(outFilePath);
-fileLines = textscan(fid, '%[^\n]');
-fclose(fid);
-delete(outFilePath);
-fileLines = fileLines{1};
-
-% One '#component = 1 embedding = <d>' block per embedding dimension d = 1:mMax:
-w = strmatch('#component', fileLines);
-if length(w) ~= mMax
-	error('TISEAN function ''boxcount'' returned an unexpected number of data blocks.');
-end
-w(end + 1) = length(fileLines) + 1;
-
-rs = zeros(numBins, mMax); % local dimension estimate at each (length scale, embedding dim)
-for d = 1:mMax
-	ss = fileLines(w(d) + 1:w(d + 1) - 1);
-	nn = 0;
-	for jj = 1:length(ss)
-		tmp = textscan(ss{jj}, '%f%f%f');
-		if all(cellfun(@isempty, tmp))
-			break % a trailing blank/comment line
-		end
-		nn = nn + 1;
-		rs(nn, d) = tmp{3}; % the increment over the (d-1)-dim embedding (see header comment)
-	end
-	if nn ~= numBins
-		error('TISEAN function ''boxcount'' returned an unexpected number of length scales.');
-	end
-end
-
-% Contains ldr as rows for embedding dimensions 1:m as columns;
-if doPlot
-	figure('color', 'w'); box('on');
-	plot(rs, 'k');
-end
-
-% ------------------------------------------------------------------------------
-%% Output Statistics
-% ------------------------------------------------------------------------------
-% These statistics are just from intuition
-
-m = size(rs, 2); % number of embedding dimensions (= mMax)
-ldr = size(rs, 1); % number of length scales (= numBins)
-
-for i = 2:m
-	out.(sprintf('meand%u', i)) = mean(rs(:, i));
-	out.(sprintf('mediand%u', i)) = median(rs(:, i));
-	out.(sprintf('mind%u', i)) = min(rs(:, i));
-end
-
-for i = 2:ldr
-	out.(sprintf('meanr%u', i)) = mean(rs(i, :));
-	out.(sprintf('medianr%u', i)) = median(rs(i, :));
-	out.(sprintf('minr%u', i)) = min(rs(i, :));
-	out.(sprintf('meanchr%u', i)) = mean(diff(rs(i, :)));
-end
-
-out.stdmean = std(mean(rs));
-out.stdmedian = std(median(rs));
-
-rsstretch = rs(:);
-out.medianstretch = median(rsstretch);
-out.minstretch = min(rsstretch); % same as at maximum embedding dimension, m, or usually at maximum ldr (18)
-out.iqrstretch = iqr(rsstretch);
-
-
-BF_CleanTempFiles(filePath); % normal completion
-
-catch tiseanCleanupErr
-    BF_CleanTempFiles(filePath);
-    rethrow(tiseanCleanupErr);
-end
-% --- end temporary-file safety net --------------------------------------------
 end

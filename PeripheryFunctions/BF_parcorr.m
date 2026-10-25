@@ -11,17 +11,28 @@ y = y(:); y = y(isfinite(y));
 N = numel(y);
 numLags = min(20,N-1);
 method = 'ols';
+if mod(numel(varargin),2) ~= 0
+    error('BF_parcorr:badOptions','Options must be name/value pairs.');
+end
 for k = 1:2:numel(varargin)-1
     switch lower(varargin{k})
     case 'numlags', numLags = varargin{k+1};
     case 'method',  method  = varargin{k+1};
+    otherwise
+        error('BF_parcorr:unknownOption','Unknown or unsupported option ''%s''.',char(varargin{k}));
     end
+end
+% (HCTSA2 2.2.1: any other method used to run as OLS or, if it began with 'y',
+% as Yule-Walker. 'yule_walker', CO_PartialAutoCorr's documented spelling, stays.)
+isYW = any(strcmpi(method,{'yule-walker','yule_walker','yw'}));
+if ~isYW && ~strcmpi(method,'ols')
+    error('BF_parcorr:method','Method must be ''ols'' or ''yule-walker''.');
 end
 
 pacf = zeros(numLags+1,1);
 pacf(1) = 1;
 
-if strncmpi(method,'y',1)
+if isYW
     acf = BF_autocorr(y,'NumLags',numLags);
     phi = zeros(numLags,numLags);
     phi(1,1) = acf(2);

@@ -123,7 +123,7 @@ void equidistri(double sigmax,unsigned int which)
   int i;
   double limit,equinorm;
   
-  equinorm=(double)ULONG_MAX;
+  equinorm=(double)ULLONG_MAX; /* hctsa2: see routines/rand.c */
   if (!absolute)
     limit=2.0*sqrt(3.0)*sigmax*noiselevel;
   else

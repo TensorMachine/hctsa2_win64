@@ -1,24 +1,47 @@
 function out = FC_LocalSimple(y, forecastMeth, trainLength)
-% FC_LocalSimple    Simple local time-series forecasting.
+% FC_LocalSimple   How well a simple local rule forecasts the next value.
 %
-% Simple predictors using the past trainLength values of the time series to
-% predict its next value.
+% Predicts each value of the time series from the trainLength values just before
+% it, using a simple rule (the mean, the median, or a straight line fitted to those
+% values and extended one step). The residuals are the prediction minus the data
+% (e = yp - y), and the outputs describe them with the shared residual summary
+% MF_ResidualAnalysis (at its 'core' level), plus the Gaussianity of their
+% distribution. The first trainLength values are used for training only and are not
+% forecast. If the series is too short to forecast, a NaN is returned.
 %
 % ---INPUTS:
 % y, the input time series
 %
 % forecastMeth, the forecasting method:
-%          (i) 'mean': local mean prediction using the past trainLength time-series
-%                       values,
-%          (ii) 'median': local median prediction using the past trainLength
-%                         time-series values
-%          (iii) 'lfit': local linear prediction using the past trainLength
-%                         time-series values.
+%          (i) 'mean': the mean of the past trainLength values (default),
+%          (ii) 'median': the median of the past trainLength values,
+%          (iii) 'lfit': the next point on a straight line fitted to the past
+%                         trainLength values.
 %
-% trainLength, the number of time-series values to use to forecast the next value
+% trainLength, the number of past values used to forecast the next value (default
+%          3), or a string that sets it from the series: 'ac' (the first
+%          zero-crossing of the autocorrelation function of y; discrete, from
+%          CO_FirstCrossing), 'ac1e' (the floor of its first 1/e crossing), or 'mi'
+%          (the smaller of the first minimum of the Kraskov automutual information
+%          and the 'ac1e' delay); see BF_GetTau. For 'lfit' with 'ac', 'ac1e' or
+%          'mi', this is at least 2 (a line cannot be fitted to a single point).
 %
-% ---OUTPUTS: the mean error, stationarity of residuals, Gaussianity of
-% residuals, and their autocorrelation structure.
+% ---OUTPUTS:
+% meane, mean of the residuals (the bias of the forecast)
+% meanabs, mean absolute residual
+% stde, standard deviation of the residuals
+% maxonstd, largest absolute residual, in units of the residual standard deviation
+% ac1, ac2, ac3: autocorrelation of the (z-scored) residuals at lags 1, 2 and 3
+% propbth, proportion of the residual autocorrelations at lags 1 to 25 within the
+%          significance band +/- 2.6/sqrt(N)
+% taurat, decorrelation time of the residuals (first zero-crossing of their
+%          autocorrelation function) divided by that of the time series
+% sws, standard deviation across 5 windows of the local standard deviation of the
+%          residuals, relative to their overall standard deviation
+% swm, standard deviation across 5 windows of the local mean of the residuals,
+%          relative to their overall standard deviation
+% normr2, R^2 of a Gaussian fit (DN_SimpleFit) to the kernel-smoothed distribution
+%          of the residuals: a measure of their Gaussianity
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -57,7 +80,7 @@ if nargin < 2 || isempty(forecastMeth)
 	forecastMeth = 'mean';
 end
 % Number of samples to train with, trainLength
-if nargin < 2 || isempty(trainLength)
+if nargin < 3 || isempty(trainLength)
 	trainLength = 3;
 end
 
@@ -66,14 +89,27 @@ N = length(y); % Time-series length
 % ------------------------------------------------------------------------------
 % Do the local prediction
 % ------------------------------------------------------------------------------
+if ischar(trainLength) && ismember(trainLength, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	trainLength = BF_GetTau(y, trainLength);
+	if isnan(trainLength)
+		out = NaN; return
+	end
+	if strcmp(forecastMeth, 'lfit')
+		trainLength = max(trainLength, 2); % a straight line needs at least two points
+	end
+end
 if strcmp(trainLength, 'ac')
 	% Make it first zero-crossing of ACF:
 	lp = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	if strcmp(forecastMeth, 'lfit') && ~isnan(lp)
+		lp = max(lp, 2); % a straight line needs at least two points
+	end
 else
 	lp = trainLength; % the length of the subsegment preceeding to use to predict the subsequent value
 end
 evalr = lp + 1:N; % range over which to evaluate the forecast
-if isempty(evalr)
+if isnan(lp) || isempty(evalr)
 	warning('This time series is too short for forecasting');
 	out = NaN;
 	return
@@ -108,29 +144,25 @@ end
 % Output statistics on the residuals, res
 % ------------------------------------------------------------------------------
 
-% Mean residual (mean error/bias):
-out.meanerr = mean(res);
-
-% Spread of residuals:
-out.stderr = std(res);
-out.meanabserr = mean(abs(res));
-
-% Stationarity of residuals:
-out.sws = SY_SlidingWindow(res, 'std', 'std', 5, 1); % across five non-overlapping segments
-out.swm = SY_SlidingWindow(res, 'mean', 'std', 5, 1); % across five non-overlapping segments
-
-% Normality of residuals:
-tmp = DN_SimpleFit(res, 'gauss1', 0);
-if ~isstruct(tmp) && isnan(tmp) % fitting failed
-	out.gofr2 = NaN;
-else
-	out.gofr2 = tmp.r2; % r-squared
+% Report the residuals through the shared contract, at the cheap 'core' level, under
+% the names the rest of the model-fitting family uses.
+residOut = MF_ResidualAnalysis(res, y, 'core');
+fields = fieldnames(residOut);
+for k = 1:length(fields)
+	out.(fields{k}) = residOut.(fields{k});
 end
 
-% Autocorrelation structure of the residuals:
-out.ac1 = CO_AutoCorr(res, 1, 'Fourier');
-out.ac2 = CO_AutoCorr(res, 2, 'Fourier');
-out.taures = CO_FirstCrossing(res, 'ac', 0, 'continuous');
-out.tauresrat = CO_FirstCrossing(res, 'ac', 0, 'continuous') / CO_FirstCrossing(y, 'ac', 0, 'continuous');
+% (taures, the residual decorrelation time, is not returned: it is largely redundant
+%  with ac1. Its ratio form taurat, which is not, is retained via the shared contract
+%  above.)
+% Normality of the residuals, as the r-squared of a Gaussian fit to their distribution
+% (a distributional statistic of the residuals, not a goodness-of-fit measure for the
+% forecast).
+tmp = DN_SimpleFit(res, 'gauss1', 0);
+if ~isstruct(tmp) && isnan(tmp) % fitting failed
+	out.normr2 = NaN;
+else
+	out.normr2 = tmp.r2; % r-squared
+end
 
 end

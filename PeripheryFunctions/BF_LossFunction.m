@@ -15,7 +15,7 @@ function outputMeasure = BF_LossFunction(yTest,yPredict,whatLoss,classLabels)
 % classLabels, labels for each class
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -58,7 +58,10 @@ case {'acc','accuracy','Accuracy'}
     % Overall classification rate:
     outputMeasure = 100*mean(yTest==yPredict);
 case {'balancedAcc','balancedAccuracy'}
-    outputMeasure = 100*mean(arrayfun(@(x) mean(yPredict(yTest==x)==yTest(yTest==x)),classLabels));
+    % (HCTSA2: averaged over the classes present in yTest; a class absent from a
+    % test fold gave NaN for the whole fold)
+    perClass = arrayfun(@(x) mean(yPredict(yTest==x)==yTest(yTest==x)),classLabels);
+    outputMeasure = 100*mean(perClass(~isnan(perClass)));
 case 'sumLoss'
     % Sum of errors:
     outputMeasure = sum(yTest~=yPredict);

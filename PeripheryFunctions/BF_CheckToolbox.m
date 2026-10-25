@@ -17,7 +17,7 @@ function [outFlag,theName] = BF_CheckToolbox(theToolbox,infoMode,doInstallCheck)
 % theName, text of the toolbox name
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -51,31 +51,42 @@ end
 
 %-------------------------------------------------------------------------------
 %% Get a more interpretable string for user feedback: theName
-%% (and for testing against text in matlab.addons.installedAddons)
+%% (the product name that ver reports), and the toolbox's folder: theFolder
 %-------------------------------------------------------------------------------
 switch theToolbox
 case 'statistics_toolbox'
     theName = 'Statistics and Machine Learning Toolbox';
+    theFolder = 'stats';
 case 'curve_fitting_toolbox'
     theName = 'Curve Fitting Toolbox';
+    theFolder = 'curvefit';
 case 'signal_toolbox'
     theName = 'Signal Processing Toolbox';
+    theFolder = 'signal';
 case 'identification_toolbox'
     theName = 'System Identification Toolbox';
+    theFolder = 'ident';
 case 'wavelet_toolbox'
     theName = 'Wavelet Toolbox';
+    theFolder = 'wavelet';
 case 'econometrics_toolbox'
     theName = 'Econometrics Toolbox';
+    theFolder = 'econ';
 case 'robust_toolbox'
     theName = 'Robust Control Toolbox';
+    theFolder = 'robust';
 case 'financial_toolbox'
     theName = 'Financial Toolbox';
+    theFolder = 'finance';
 case 'database_toolbox'
     theName = 'Database Toolbox';
+    theFolder = 'database';
 case 'parallel_computing_toolbox'
     theName = 'Parallel Computing Toolbox';
+    theFolder = 'parallel';
 case 'distrib_computing_toolbox'
     theName = 'Parallel Computing Toolbox';
+    theFolder = 'parallel';
 otherwise
     error('Unknown toolbox ''%s''.\n',theToolbox);
 end
@@ -84,14 +95,45 @@ end
 %% Now do the checks:
 %-------------------------------------------------------------------------------
 % 1. Check the toolbox exists in the current Matlab environment:
-outFlag = false;
+%
+% Installation is checked with ver(theFolder), which reads the toolbox's
+% Contents.m from the Matlab path, matching the product name. It is not checked
+% with matlab.addons.installedAddons, which can return an empty or incomplete
+% list in a newly started Matlab session: on a fresh 48-worker parallel pool
+% (NCI Gadi, R2025a), 44/48 workers got an empty list 2s after starting while
+% ver, exist and license all answered correctly, and an incomplete list (once
+% cached) failed every later call for the missing toolboxes on that worker.
+%
+% Both checks are read-only queries whose answer can't change during a session
+% (unlike license('checkout',...) below, which reserves a license seat -- a real
+% side effect, so that one is left uncached), so each toolbox's result is cached
+% here: this function is called by ~42 operations.
+persistent cachedKeys cachedResults
+if isempty(cachedKeys)
+    cachedKeys = {};
+    cachedResults = false(0);
+end
 if doInstallCheck
-    installedAddOns = matlab.addons.installedAddons;
-    % have toolbox installed
-    haveToolbox = any(ismember(installedAddOns.Name,theName));
+    cacheKey = ['installed:',theToolbox];
 else
-    % have toolbox license
-    haveToolbox = license('test',theToolbox);
+    cacheKey = ['licensed:',theToolbox];
+end
+
+outFlag = false;
+idx = find(strcmp(cacheKey,cachedKeys),1);
+if isempty(idx)
+    if doInstallCheck
+        % have toolbox installed
+        v = ver(theFolder);
+        haveToolbox = any(strcmp({v.Name},theName));
+    else
+        % have toolbox license
+        haveToolbox = logical(license('test',theToolbox));
+    end
+    cachedKeys{end+1} = cacheKey;
+    cachedResults(end+1) = haveToolbox;
+else
+    haveToolbox = cachedResults(idx);
 end
 if infoMode
     % Just checking availability for info (e.g., during installation)
@@ -103,13 +145,17 @@ if infoMode
 else
     % Want to use (and checkout) a license
     if ~haveToolbox
-        error('This function requires %s but you don''t have it installed'.',theName);
+        if doInstallCheck
+            error('This function requires %s but you don''t have it installed.',theName);
+        else
+            error('This function requires %s but no license for it was found.',theName);
+        end
     end
 
     % 2. Check to see if there's an available license for this toolbox:
     [licenseFree,~] = license('checkout',theToolbox); % Attempt to check out a license
     if ~licenseFree
-        error('This function requires %s but I could not obtain a license for it).',theName);
+        error('This function requires %s but I could not obtain a license for it.',theName);
     end
 end
 

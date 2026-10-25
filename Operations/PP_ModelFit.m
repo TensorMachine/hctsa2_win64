@@ -1,34 +1,43 @@
-function out = PP_ModelFit(y,model,order,randomSeed)
-% PP_ModelFit   Investigates whether AR model fit improves with different preprocessings.
+function out = PP_ModelFit(y, model, order, randomSeed)
+% PP_ModelFit   How the error of an AR model changes after preprocessing the series.
 %
-% After performing the range of transformations to the time series, returns the
-% in-sample root-mean-square (RMS) prediction errors for an AR model on each
-% transformed time series as a ratio of the RMS prediction error of the original
-% time series.
+% Fits an autoregressive (AR) model to the time series and to a set of
+% preprocessed versions of it, and returns the in-sample root-mean-square (RMS)
+% one-step prediction error for each preprocessed version as a ratio of the RMS
+% prediction error for the original series. Every version is z-scored before the
+% model is fitted. The AR model is fitted by forward-backward least squares
+% (BF_ARfb).
 %
-% PP_PreProcess.m is used to perform the preprocessings
+% The preprocessed versions come from PP_PreProcess, and only one representative of
+% each family of closely related transformations is fitted:
+%     d1: incremental differencing (first differences)
+%     d2: second differences
+%     p1_20: a straight line removed in each of 20 equal segments (piece-wise
+%            linear detrending)
+%     p2_5: a quadratic removed in each of 5 equal segments (piece-wise quadratic
+%            detrending)
+%     rmgd: the values replaced by Gaussian values of the same rank (rank mapping
+%            to a Gaussian distribution)
+% (The spectral-filtering versions that PP_PreProcess can also return are not computed.
+% The peak-removal version 'peaks_08' is also omitted, being largely redundant with
+% 'd2', the more standard and interpretable second-differencing transformation.)
 %
-% The AR model is fitted using the function ar and pe from Matlab's System
-% Identification Toolbox
-%
-% Transformations performed include:
-% (i) incremental differencing,
-% (ii) filtering of the power spectral density function,
-% (iii) removal of piece-wise polynomial trends, and
-% (iv) rank mapping the values of the time series to a Gaussian distribution.
-%
-%---INPUTS:
-%
+% ---INPUTS:
 % y, the input time series
-% model, the time-series model to fit to the transformed time series (currently
-%           'ar' is the only option)
+% model, the time-series model to fit to the transformed series (currently 'ar'
+%       is the only option)
+% order, the order of the AR model to fit (default: 2)
+% randomSeed, the seed of the random draws used by rmgd (see BF_RandomSeed and
+%       PP_PreProcess; portable generator BF_Random)
 %
-% order, the order of the AR model to fit to the data
-%
-% randomSeed, whether (and how) to reset the random seed, using BF_ResetSeed
+% ---OUTPUTS: the ratios of the RMS prediction error of the AR model for the
+% preprocessed series to that for the original series:
+% stderat_d1, stderat_d2, stderat_p1_20, stderat_p2_5, stderat_rmgd
+% A ratio above 1 means the preprocessing left the series harder to predict, as
+% when it removes a trend or slow dynamics that the model had been exploiting.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -57,153 +66,58 @@ function out = PP_ModelFit(y,model,order,randomSeed)
 % ------------------------------------------------------------------------------
 
 % ------------------------------------------------------------------------------
-%% Preliminaries
-% ------------------------------------------------------------------------------
-N = length(y); % length of the time series
-
-% ------------------------------------------------------------------------------
 %% Inputs
 % ------------------------------------------------------------------------------
 % Model: the model to fit preprocessed time series to
 if nargin < 2 || isempty(model)
-    model = 'ar';
+	model = 'ar';
 end
 
 % order: the order of model to fit
 if nargin < 3 || isempty(order)
-    order = 2;
+	order = 2;
 end
 
 % randomSeed: how to treat the randomization
 if nargin < 4
-    randomSeed = []; % default
+	randomSeed = []; % default
 end
 
 % ------------------------------------------------------------------------------
 %% Apply a range of preprocessings
 % ------------------------------------------------------------------------------
-yp = PP_PreProcess(y,'',[],[],[],randomSeed);
+yp = PP_PreProcess(y, '', [], [], false, randomSeed); % doSpectral = false: spectral versions are never used here
 % Returns a structure, yp, with a range of time series in it, each a different
 % transformation of the original, y.
-%% ____________________FIT MODEL TO ALL:_______________________ %%
-
-fields = fieldnames(yp);
+% ------------------------------------------------------------------------------
+%% Fit the model to a curated subset
+% ------------------------------------------------------------------------------
+% 'nothing' must stay first (it's the ratio denominator below); the rest are
+% the 5 family representatives (see header note).
+fields = {'nothing', 'd1', 'd2', 'p1_20', 'p2_5', 'rmgd'};
 numFields = length(fields);
-% statstore = struct('fpes',{});
+rmsErr = zeros(numFields, 1);
 
 for i = 1:numFields
-    % for each preprocessing, fit the model
-    data = yp.(fields{i});
-    % data is the current preprocessed data
-
-    switch model % SO MANY OPTIONS! ;-)
-        case 'ar'
-
-            data = zscore(data); % zscore the data from this preprocessing
-            m = BF_ar(data,order); % fit the model
-
-            % Get statistics on fit
-            %     () FPE
-            statstore.fpe(i) = m.EstimationInfo.FPE;
-            %     () in-sample prediction error
-            e = BF_pe(m,data);
-            statstore.rmserr(i) = sqrt(mean(e.^2));
-            statstore.mabserr(i) = mean(abs(e));
-            statstore.ac1(i) = CO_AutoCorr(e,1,'Fourier');
-
-        otherwise
-            error('Unknown model ''%s''',model);
-    end
+	data = zscore(yp.(fields{i})); % z-score each preprocessed version
+	switch model
+		case 'ar'
+			% In-sample one-step prediction errors of an AR model fitted by forward-backward
+			% least squares: the forward residuals, with zero error for the first 'order'
+			% samples (which have no full set of past values)
+			[~, ~, loss] = BF_ARfb(data, order);
+			N = length(data);
+			rmsErr(i) = sqrt(loss * (N - order) / N);
+		otherwise
+			error('Unknown model ''%s''', model);
+	end
 end
 
 % ------------------------------------------------------------------------------
-%% Return statistics on statistics
+%% Ratio of the RMS error for each preprocessed version to the original series
 % ------------------------------------------------------------------------------
-% actually often as you make more stationary and remove trends it becomes
-% harder to predict because these trends are very easy to predict, and
-% making the series whiter will obviously decrease its predictability.
-
-% (1) ratio of fpe of preprocessed to unprocessed time series
-% I think just this is ok.
-% for i=2:numFields
-%     eval(['out.fperat_' fields{i} ' = ' num2str(statstore.fpe(i)/statstore.fpe(1)) ';']);
-% end
-
-% No, I'll just do in-sample rms error, for a single model no point fpeing
 for i = 2:numFields
-    out.(sprintf('rmserrrat_%s',fields{i})) = statstore.rmserr(i)/statstore.rmserr(1);
+	out.(sprintf('stderat_%s', fields{i})) = rmsErr(i) / rmsErr(1);
 end
-% In fact, greater error in this case means a better detrending in some
-% sense -- it's remobed more of the 'obvious' linear structure (assuming
-% that's the aim).
-
-% could also return statistics on other things like prediction error, but
-% not alot of point, I think.
-
-%
-%     function ydt =  SUB_remps(y,n,method)
-%         % Removes the first n (proportion) of power spectrum
-%         % Based on my deseasonalize1.m code
-%
-%
-%         %% Take the Fourier Transform
-%
-%         Ny = length(y); % number of samples in y
-% %         t = linspace(0,1,Ny); % time vector
-%         NFFT = 2^nextpow2(Ny); % next power of 2
-%         Fy = fft(y,NFFT); % fast fourier transform of y
-%         Fy1 = Fy(1:NFFT/2+1);
-% %         f = 1/2*linspace(0,1,NFFT/2+1); % frequency vector
-%
-%         %% Remove this range
-%         % set it to (mean of the rest) across this range
-%         switch method
-%             case 'lf'
-%                 cullr = 1:floor(length(Fy1)*n);
-%             case 'biggest'
-%                 cullr = find(abs(Fy1)>quantile(abs(Fy1),n));
-%         end
-%
-%         meanrest = mean(abs(Fy1(setxor(1:end,cullr))));
-% %         meanrest = 0;
-%         FyF = Fy;
-%         FyF(cullr)=meanrest;
-%         FyF(end-cullr+2)=meanrest;
-%
-%
-%         % PLOT
-% %         plot(abs(Fy)),hold on; plot(abs(FyF),'--r'); hold off
-% %         input('Here''s the filtered one...')
-% %         plot(abs(FyF),'k');
-% %         input('Again on it''s own...')
-%
-%
-%         %% Inverse Fourier Transform
-%         ydt = ifft(FyF,NFFT);
-%         ydt = zscore(ydt(1:Ny)); % crop to desired length
-%
-%
-%         % PLOT
-% %         plot(zscore(ydt),'b'); hold on; plot(y,'r'); hold off;
-% %         input(['Mean difference is ' num2str(mean(y-ydt))])
-%
-%     end
-%
-%     function ydt = SUB_rempt(y,order,nbits)
-%         N = length(y);
-%         ydt = zeros(N,1);
-%         bits = round(linspace(0,N,nbits+1));
-%         for k=1:nbits
-%             r = bits(k)+1 : bits(k+1); % range defined by adjacent 'bits'
-%             x = (1:length(r))'; % faux x-range
-%             ybit = y(r); % y-range
-%             p = polyfit(x,ybit,order);
-%             ydt(r) = ybit-polyval(p,x);
-%         end
-%         ydt = zscore(ydt);
-% %         plot(y,'b'); hold on; plot(ydt,'r');
-% %         input('here we are')
-%     end
-
 
 end

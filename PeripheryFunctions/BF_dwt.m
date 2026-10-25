@@ -7,14 +7,17 @@ function [a,d] = BF_dwt(x,wname)
 x = x(:);
 lf = numel(Lo_D);
 n = numel(x);
+if n < 1
+    error('BF_dwt:emptyInput','The input signal is empty.');
+end
 
-% Half-point symmetric extension by lf-1 on each side
+% Half-point symmetric extension by lf-1 on each side, by index folding: for
+% n < lf-1 the reflection repeats, as in wextend('sym') (HCTSA2 2.2.1).
 lE = lf - 1;
-left  = x(min(lE,n):-1:1);
-right = x(n:-1:max(1,n-lE+1));
-if numel(left) < lE,  left  = [repmat(x(1),lE-numel(left),1);  left];  end
-if numel(right) < lE, right = [right; repmat(x(end),lE-numel(right),1)]; end
-xe = [left; x; right];
+m = mod((1-lE:n+lE) - 1,2*n);        % 0-based position within one period of 2n
+ix = m + 1;
+ix(m >= n) = 2*n - m(m >= n);        % reflected half of the period
+xe = x(ix(:));
 
 a = downsample2(conv(xe,Lo_D(:),'valid'));
 d = downsample2(conv(xe,Hi_D(:),'valid'));

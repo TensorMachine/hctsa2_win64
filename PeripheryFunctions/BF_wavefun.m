@@ -20,6 +20,20 @@ function [phi,psi,xval] = BF_wavefun(wname,iter)
 % follows.
 
 if nargin < 2 || isempty(iter), iter = 8; end
+if isstring(wname) && isscalar(wname), wname = char(wname); end   % (HCTSA2 2.2.1)
+
+if strcmpi(wname,'morl')
+    % Morlet, a "crude" wavelet (no scaling function, no filters): the closed
+    % form psi(x) = exp(-x^2/2)*cos(5x) sampled at 2^iter points on its
+    % effective support [-8, 8]. Matches MATLAB's wavefun('morl',iter), whose
+    % outputs are [psi,xval]; here phi is returned empty so the callers'
+    % [~,psi,xval] form works for every wavelet. Checked against the licensed
+    % run of 2026-09-23 (iter 8 and 10: equal to 1e-15).
+    xval = linspace(-8,8,2^iter);
+    psi = exp(-xval.^2/2).*cos(5*xval);
+    phi = [];
+    return
+end
 
 [~,~,Lo_R,Hi_R] = BF_wfilters(wname);
 Lo_R = Lo_R(:)';

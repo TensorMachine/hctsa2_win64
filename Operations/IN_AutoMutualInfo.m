@@ -8,7 +8,11 @@ function out = IN_AutoMutualInfo(y, timeDelay, estMethod, extraParam)
 % timeDelay: time lag for automutual information calculation
 %
 % estMethod: the estimation method used to compute the mutual information:
-%           (*) 'gaussian'
+%           (*) 'gaussian': -0.5*log(1 - r^2) for the Pearson correlation r between
+%                   the series and its lagged copy. 1 - r^2 is floored at 1e-12 so
+%                   that a deterministic relationship (|r| = 1 up to rounding, as for
+%                   a trend or a pure oscillation) gives a finite value (at most
+%                   13.8 nats) rather than an Inf or a rounding-noise value.
 %           (*) 'kernel'
 %           (*) 'kraskov1'
 %           (*) 'kraskov2'
@@ -84,13 +88,15 @@ end
 
 % Initialize miCalc object (needs to be reinitialized within the loop for kraskov):
 if ~strcmp(estMethod, 'gaussian')
-	miCalc = IN_Initialize_MI(estMethod, extraParam, false); % NO ADDED NOISE!
+	miCalc = IN_Initialize_MI(estMethod, extraParam, false, y); % NO ADDED NOISE!
+	y = BF_TieBreakNoise(y); % (except tiny, reproducible tie-breaking jitter if y has many repeats)
 end
 
 for k = 1:numTimeDelays
 
-	% Check enough samples to compute an automutual information
-	if timeDelay(k) > N - minSamples
+	% Check enough samples to compute an automutual information (isnan catches
+	% an unresolvable 'ac'/'tau' delay from a degenerate, e.g. constant, series)
+	if isnan(timeDelay(k)) || timeDelay(k) > N - minSamples
 		% Time series is too short -- keep the remaining values as NaNs
 		break
 	end
@@ -101,7 +107,8 @@ for k = 1:numTimeDelays
 
 	if strcmp(estMethod, 'gaussian')
 		r = corr(y1, y2, 'type', 'Pearson');
-		amis(k) = -0.5 * log(1 - r^2);
+		% (floor 1 - r^2: at |r| = 1 it is rounding noise, and can be 0 or negative)
+		amis(k) = -0.5 * log(max(1 - r^2, 1e-12));
 	else
 		% Reinitialize for Kraskov:
 		miCalc.initialise(1, 1);
@@ -115,7 +122,7 @@ for k = 1:numTimeDelays
 
 	% Plot:
 	if doPlot
-		plot(y1, y2, '.k')
+		plot(y1, y2, '.k') %#ok<UNRCH>
 		title(sprintf('ami = %.3f', amis(k)))
 		pause(0.1)
 	end
@@ -127,7 +134,7 @@ if any(isnan(amis))
 end
 
 if doPlot
-	plot(amis, '-k')
+	plot(amis, '-k') %#ok<UNRCH>
 end
 
 % -------------------------------------------------------------------------------

@@ -1,20 +1,67 @@
-function out = EN_PermEn(y,m,tau)
-% EN_PermEn     Permutation Entropy of a time series.
+function out = EN_PermEn(y, m, tau)
+% EN_PermEn   Permutation entropy of a time series.
 %
-% "Permutation Entropy: A Natural Complexity Measure for Time Series"
-% C. Bandt and B. Pompe, Phys. Rev. Lett. 88(17) 174102 (2002)
+% Bandt and Pompe's permutation entropy. The series is cut into overlapping runs
+% of m values, spaced tau samples apart, and each run is replaced by its ordinal
+% pattern (the order its m values would take if sorted, one of m! possible
+% patterns). The permutation entropy is the Shannon entropy of how often each
+% pattern occurs; it depends only on the order of the values, not their size.
+% Also returns the version normalized by log2(m!), an adapted implementation by
+% Bruce Land and Damian Elias, the weighted permutation entropy (in which each run
+% counts in proportion to its variance, so patterns formed by large fluctuations
+% matter more than those formed by small ones), and an ordinal time asymmetry (the
+% distance between the pattern distribution of the series and that of the same
+% series read backward).
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-% m, the embedding dimension (or order of the permutation entropy)
-% tau, the time-delay for the embedding
+% m, the embedding dimension (the order of the permutation entropy; default: 2)
+% tau, the time delay for the embedding (default: 1); can also be 'ac' (first
+%    zero-crossing of the autocorrelation function), 'ac1e' (the floor of its first
+%    1/e crossing), or 'mi' (the smaller of the first minimum of the Kraskov
+%    automutual information and the 'ac1e' delay), as in BF_Embed (see BF_GetTau)
 %
-%---OUTPUT:
-% Outputs the permutation entropy and normalized version computed according to
-% different implementations
+% ---OUTPUTS:
+% A structure with fields:
+% permEn, the permutation entropy in bits, -sum(p.*log2(p)) over the ordinal-
+%    pattern probabilities p
+% normPermEn, permEn normalized by log2(m!), from 0 to 1
+% permEnLE, the Land-Elias version: the entropy in nats, with probabilities below
+%    1/(number of embedding vectors) raised to that floor, divided by (m - 1)
+% normWPE, the weighted permutation entropy, normalized by log2(m!), from 0 to 1;
+%    each pattern's probability is the sum of the variances of the runs that have
+%    that pattern, divided by the sum of the variances of all runs (NaN if every
+%    run is constant)
+% ordAsym, the ordinal time asymmetry: the total variation distance,
+%    (1/2) sum_j |p_j - q_j|, between the pattern distribution p of the series
+%    and the pattern distribution q of the time-reversed series, from 0 (equal
+%    distributions) to 1
+% NaN (instead of a structure) is returned if the series is too short to embed
+% (fewer than 5 embedding vectors).
+%
+% ---REFERENCES:
+% C. Bandt and B. Pompe, "Permutation Entropy: A Natural Complexity Measure for
+% Time Series", Phys. Rev. Lett. 88(17) 174102 (2002).
+%
+% B. Fadlallah, B. Chen, A. Keil and J. Principe, "Weighted-permutation
+% entropy: A complexity measure for time series incorporating amplitude
+% information", Phys. Rev. E 87, 022911 (2013). DOI: 10.1103/PhysRevE.87.022911
+%
+% M. Zanin, A. Rodriguez-Gonzalez, E. Menasalvas Ruiz and D. Papo, "Assessing
+% time series reversibility through permutation patterns", Entropy 20(9), 665
+% (2018). DOI: 10.3390/e20090665
+%
+% ---NOTES:
+% The time-reversed series has the same runs as the original read backward, so
+% its pattern distribution is computed from the same runs without re-embedding.
+% ordAsym is a distance between two empirical distributions and so is above zero
+% even for a time-reversible series; for white noise the amount is about
+% 0.55*sqrt(m!/Nx) for Nx runs.
+% The Land-Elias version is adapted from
+% http://people.ece.cornell.edu/land/PROJECTS/Complexity/ (logisticPE.m).
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -42,61 +89,41 @@ function out = EN_PermEn(y,m,tau)
 % this program. If not, see <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Check inputs and set defaults:
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 
 if nargin < 2 || isempty(m)
-    m = 2; % order 2
+	m = 2; % order 2
 end
 
 if nargin < 3 || isempty(tau)
-    tau = 1;
+	tau = 1;
 end
 
 % ------------------------------------------------------------------------------
 % Embed the signal:
 % ------------------------------------------------------------------------------
-x = BF_Embed(y,tau,m,false);
-Nx = size(x,1); % number of embedding vectors produced
+x = BF_Embed(y, tau, m, false);
+Nx = size(x, 1); % number of embedding vectors produced
 if Nx < 5 % need at least 5 embedding vectors to actually do a computation
-    error('Time series too short to embed');
+	% Data-dependent (series too short for the requested tau/m), not a code error.
+	warning('Time series too short to embed');
+	out = NaN; return
 end
-% Generate permutations up to the embedding dimension, m:
-permList = perms(1:m);
-numPerms = length(permList);
+numPerms = factorial(m);
+permIdx = BF_OrdinalPatternRank(x); % index in 1:m! for each embedding vector
+countPerms = accumarray(permIdx, 1, [numPerms, 1]);
 
-% Initialize
-countPerms = zeros(numPerms,1);
-
-% Count each type of permutation through the time series
-% Map each window's permutation to its index by table lookup instead of a
-% linear scan. The original compared the sorted order against every row of
-% permList until it matched -- up to factorial(m) comparisons per window, so
-% ~490,000 for m = 5 on a 4097-point series.
-%
-% A permutation of 1..m is uniquely identified by sum(perm .* m.^(0:m-1)),
-% which indexes a small dense table. The counts are integers and the mapping
-% is exact, so countPerms is bit-for-bit what the scan produced.
-powers = m.^(0:m-1);
-permKey = permList*powers(:);
-lookup = zeros(max(permKey),1);
-lookup(permKey) = 1:numPerms;
-
-[~,ixAll] = sort(x,2);
-keys = ixAll*powers(:);
-idx = lookup(keys);
-for j = 1:Nx
-    countPerms(idx(j)) = countPerms(idx(j)) + 1;
-end
-
-p = countPerms/Nx; %((Nx-(m-1))*tau);
-p_0 = p(p>0); % makes log(0) = 0
-out.permEn = -sum(p_0.*log2(p_0));
+% ------------------------------------------------------------------------------
+% Convert counts to probabilities
+p = countPerms / Nx; % ((Nx-(m-1))*tau);
+p_0 = p(p > 0); % makes log(0) = 0
+out.permEn = -sum(p_0 .* log2(p_0));
 
 % Normalized permutation entropy (more comparable across m?)
 mFact = factorial(m);
-out.normPermEn = out.permEn/log2(mFact);
+out.normPermEn = out.permEn / log2(mFact);
 
 % ------------------------------------------------------------------------------
 % Adapted implementation by Bruce Land and Damian Elias:
@@ -106,7 +133,26 @@ out.normPermEn = out.permEn/log2(mFact);
 
 % Not clear to me why you would make log(0) = log(1/Nx); (the minimum)
 % rather than exclude it from the sum, as is done here:
-p_LE = max(1/Nx,p);
-out.permEnLE = -sum(p_LE.*log(p_LE))/(m-1);
+p_LE = max(1 / Nx, p);
+out.permEnLE = -sum(p_LE .* log(p_LE)) / (m - 1);
+
+% ------------------------------------------------------------------------------
+% Weighted permutation entropy (each run weighted by its variance):
+% ------------------------------------------------------------------------------
+w = var(x, 1, 2); % variance of the m values in each run
+if sum(w) > 0
+	pw = accumarray(permIdx, w, [numPerms, 1]) / sum(w);
+	pw = pw(pw > 0);
+	out.normWPE = -sum(pw .* log2(pw)) / log2(numPerms);
+else
+	out.normWPE = NaN;
+end
+
+% ------------------------------------------------------------------------------
+% Ordinal time asymmetry (the reversed series has each run read backward):
+% ------------------------------------------------------------------------------
+permIdxRev = BF_OrdinalPatternRank(x(:, end:-1:1));
+countPermsRev = accumarray(permIdxRev, 1, [numPerms, 1]);
+out.ordAsym = 0.5 * sum(abs(countPerms - countPermsRev)) / Nx;
 
 end

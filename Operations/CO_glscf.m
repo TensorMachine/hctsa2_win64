@@ -1,22 +1,28 @@
-function glscf = CO_glscf(y, alpha, beta, tau)
-% CO_glscf  The generalized linear self-correlation function of a time series.
+function glscf = CO_GLSCF(y, alpha, beta, tau)
+% CO_GLSCF   The generalized linear self-correlation function of a time series.
 %
-% This function was introduced in Queiros and Moyano in Physica A, Vol. 383, pp.
-% 10--15 (2007) in the paper "Yet on statistical properties of traded volume:
-% Correlation and mutual information at different value magnitudes"
-% https://www.sciencedirect.com/science/article/pii/S0378437107004645
-%
-% The function considers magnitude correlations.
+% Computes the Pearson correlation between |y(t)|^alpha and |y(t+tau)|^beta: the
+% correlation between the alpha-th power of the magnitude of the series now and the
+% beta-th power of its magnitude tau samples later. When alpha = beta this estimates
+% how values of the same order of magnitude are related in time; when alpha ~= beta
+% it estimates correlations between different magnitudes of the time series.
 %
 % ---INPUTS:
 % y, the input time series
-% alpha and beta are real and nonzero parameters
-% tau is the time-delay (can also be 'tau' to set to first zero-crossing of the ACF)
+% alpha, the power applied to the magnitude at time t (real and nonzero)
+% beta, the power applied to the magnitude at time t+tau (real and nonzero)
+% tau, the time delay: an integer number of samples, or a string that sets it from the
+%      series: 'tau' (default; the first zero-crossing of the autocorrelation
+%      function), 'ac1e' (the floor of its first 1/e crossing), or 'mi' (the smaller
+%      of the first minimum of the Kraskov automutual information and the 'ac1e'
+%      delay); see BF_GetTau
 %
-% When alpha = beta estimates how values of the same order of magnitude are
-% related in time
-% When alpha ~= beta, estimates correlations between different magnitudes of the
-% time series.
+% ---OUTPUTS:
+% glscf, a scalar: the generalized self-correlation at that delay.
+%
+% ---REFERENCES:
+% Queiros and Moyano, "Yet on statistical properties of traded volume: Correlation and
+% mutual information at different value magnitudes", Physica A 383, 10--15 (2007).
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -55,15 +61,25 @@ if nargin < 4 || isempty(tau)
 end
 
 % Set tau to first zero-crossing of the autocorrelation function with the input 'tau'
+if ischar(tau) && ismember(tau, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		glscf = NaN; return
+	end
+end
 if strcmp(tau, 'tau')
 	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	if isnan(tau)
+		glscf = NaN; return
+	end
 end
 
 % Take magnitudes of time-delayed versions of the time series. abs(y) is
 % cached (keyed on an exact, NaN-safe content match of y) since this
-% function is called ~31 times directly as separate master operations with
+% function is called many times directly as separate master operations with
 % different (alpha,beta,tau) on the same series (x_z), plus repeatedly from
-% CO_fzcglscf's internal loop over tau -- each call would otherwise
+% CO_FZCGLSCF's internal loop over tau -- each call would otherwise
 % recompute abs(y) from scratch (see CO_AutoCorr.m for the same pattern and
 % rationale, including why this is safe under parfor).
 persistent cacheY cacheAy

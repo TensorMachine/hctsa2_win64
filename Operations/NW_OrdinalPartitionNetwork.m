@@ -1,0 +1,174 @@
+function out = NW_OrdinalPartitionNetwork(y, d, tau)
+% NW_OrdinalPartitionNetwork   Ordinal partition transition network measures.
+%
+% Symbolizes the time series into ordinal patterns (Bandt-Pompe) and builds a
+% directed transition network in which nodes are the ordinal patterns actually
+% observed and edges connect a pattern to whichever pattern immediately follows it
+% in time. Network-topological measures of this ordinal partition transition
+% network are then computed. The network is unweighted: an edge exists if the
+% transition occurs at least once (self-transitions included).
+%
+% Entropy is not recomputed here, to avoid duplicating EN_PermEn.m, which computes
+% entropy-based measures on the same symbolization; Kulp et al. found entropy to be
+% a weaker discriminator than the network measures computed below.
+%
+% ---INPUTS:
+% y, the input time series
+% d, the ordinal pattern (embedding) dimension: windows of d consecutive
+%    (delay-tau-spaced) points are each mapped to their rank permutation, one of
+%    d! possible ordinal patterns (default: 3)
+% tau, the time delay (default: 1, as used throughout Kulp et al. 2016). An integer
+%    number of samples, or 'ac' (the first zero-crossing of the autocorrelation function),
+%    'ac1e' (the floor of its first 1/e crossing), or 'mi' (the smaller of the first
+%    minimum of the Kraskov automutual information and the 'ac1e' delay) to set the
+%    delay from the series (see BF_GetTau), as in the time-lagged networks of
+%    McCullough et al. 2015
+%
+% ---OUTPUTS:
+% A structure with fields:
+% meanDegree, the mean degree (average number of unique out-edges per visited
+%    node, m/n for m unique edges and n nodes; equal to the mean in-degree): the
+%    paper's central discriminating measure
+% NFP, the number of forbidden (non-occurring) ordinal patterns, d! minus the
+%    number of nodes
+% maxOutDegree, the largest out-degree
+% maxInDegree, the largest in-degree
+% stdOutDegree, the standard deviation of the out-degrees
+% stdInDegree, the standard deviation of the in-degrees
+% reciprocity, the fraction of unique edges whose reverse edge also exists
+% maxEdgeWeight, the proportion of all observed transitions taken up by the most
+%    frequent single transition
+% (The maximum and spread of the degrees, reciprocity and edge-weight measures are
+% not reported in the paper but are cheaply available from the same
+% transition-pair computation.) NaN is returned instead of a structure if the
+% embedding fails or there are fewer than 30 embedded points.
+%
+% ---REFERENCES:
+% C.W. Kulp, J.M. Chobot, H.R. Freitas and G.D. Sprechini, "Using ordinal partition
+% transition networks to analyze ECG data", Chaos 26(7), 073114 (2016).
+% DOI: 10.1063/1.4959537
+%
+% M. McCullough, M. Small, T. Stemler and H.H.-C. Iu, "Time lagged ordinal partition
+% networks for capturing dynamics of continuous dynamical systems", Chaos 25(5),
+% 053101 (2015). DOI: 10.1063/1.4919075
+% The original (weighted) ordinal partition transition network, of which the
+% unweighted version of Kulp et al. (used here) is a variant.
+%
+% C. Bandt and B. Pompe, "Permutation entropy: a natural complexity measure for time
+% series", Phys. Rev. Lett. 88(17), 174102 (2002). DOI: 10.1103/PhysRevLett.88.174102
+% The underlying ordinal-pattern symbolization.
+
+% ------------------------------------------------------------------------------
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% <http://www.benfulcher.com>
+%
+% If you use this code for your research, please cite the following two papers:
+%
+% (1) B.D. Fulcher and N.S. Jones, "hctsa: A Computational Framework for Automated
+% Time-Series Phenotyping Using Massive Feature Extraction, Cell Systems 5: 527 (2017).
+% DOI: 10.1016/j.cels.2017.10.001
+%
+% (2) B.D. Fulcher, M.A. Little, N.S. Jones, "Highly comparative time-series
+% analysis: the empirical structure of time series and their methods",
+% J. Roy. Soc. Interface 10(83) 20130048 (2013).
+% DOI: 10.1098/rsif.2013.0048
+%
+% This function is free software: you can redistribute it and/or modify it under
+% the terms of the GNU General Public License as published by the Free Software
+% Foundation, either version 3 of the License, or (at your option) any later
+% version.
+%
+% This program is distributed in the hope that it will be useful, but WITHOUT
+% ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+% FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+% details.
+%
+% You should have received a copy of the GNU General Public License along with
+% this program. If not, see <http://www.gnu.org/licenses/>.
+% ------------------------------------------------------------------------------
+
+% ------------------------------------------------------------------------------
+%% Check inputs
+% ------------------------------------------------------------------------------
+if nargin < 2 || isempty(d)
+    d = 3;
+end
+if nargin < 3 || isempty(tau)
+    tau = 1;
+end
+
+% ------------------------------------------------------------------------------
+%% Embed the signal into d-dimensional ordinal-pattern windows
+% ------------------------------------------------------------------------------
+X = BF_Embed(y, tau, d, false);
+if isscalar(X) && isnan(X) % embedding failed
+    warning('Embedding failed');
+    out = NaN; return
+end
+Nx = size(X, 1);
+if Nx < 30
+    warning('Time series too short for a meaningful ordinal partition network (Nx = %u)', Nx);
+    out = NaN; return
+end
+
+% ------------------------------------------------------------------------------
+%% Symbolize: assign each window an ordinal-pattern ID, compacted to only
+%% the patterns actually observed (avoids ever enumerating all d! possible
+%% permutations, which matters since only a small fraction are typically
+%% visited). Node labels carry no meaning beyond identity -- every measure
+%% below is invariant to how observed patterns are numbered -- so patterns
+%% are ranked (cf. EN_PermEn.m, which uses the same ranking without the
+%% compaction step below, since it needs all d! bins) and then compacted
+%% with unique():
+% ------------------------------------------------------------------------------
+patternIdx = BF_OrdinalPatternRank(X); % index in 1:d! for each window
+[~, ~, s] = unique(patternIdx); % compact to 1:n, n = number of observed patterns
+n = double(max(s)); % number of unique ordinal patterns observed (network nodes)
+
+% ------------------------------------------------------------------------------
+%% Build the directed transition network from consecutive symbols
+% ------------------------------------------------------------------------------
+fromNodes = s(1:end - 1);
+toNodes = s(2:end);
+
+[pairs, ~, ic] = unique([fromNodes, toNodes], 'rows'); % unique directed edges
+weights = accumarray(ic, 1); % how many times each unique edge repeats
+m = size(pairs, 1); % number of unique directed edges
+
+% ------------------------------------------------------------------------------
+%% Core measures (cf. Kulp et al. 2016)
+% ------------------------------------------------------------------------------
+% Not returned: meanDegree/d, NFP/factorial(d), the density (meanDegree/n) and
+% the mean edge weight (1/m), which are exact rescalings of the fields below
+% (recoverable from meanDegree and NFP, since n = factorial(d) - NFP).
+out.meanDegree = m / n; % mean in-degree = mean out-degree = m/n for any directed network
+
+dFactorial = factorial(d);
+out.NFP = dFactorial - n; % number of forbidden (non-occurring) ordinal patterns
+
+% ------------------------------------------------------------------------------
+%% Complementary graph statistics (not in the paper, cheap from the same pairs)
+% ------------------------------------------------------------------------------
+outDegCounts = accumarray(pairs(:, 1), 1, [n, 1]);
+inDegCounts = accumarray(pairs(:, 2), 1, [n, 1]);
+
+out.maxOutDegree = max(outDegCounts);
+out.maxInDegree = max(inDegCounts);
+out.stdOutDegree = std(outDegCounts);
+out.stdInDegree = std(inDegCounts);
+
+% Reciprocity: fraction of edges (i,j) for which the reverse edge (j,i) also occurs
+A = sparse(pairs(:, 1), pairs(:, 2), true, n, n);
+out.reciprocity = full(sum(sum(A & A'))) / m;
+
+% Edge weights are raw repeat counts, so they grow in direct proportion to the
+% number of transitions: with d fixed there are at most factorial(d)^2 possible
+% edges, so m saturates while the transition count keeps growing with N. Divide
+% through by the total number of transitions to get edge *probabilities*, which
+% are intensive.
+numTransitions = sum(weights); % = length(s)-1, the number of observed transitions
+
+% (mean(weights)/numTransitions would be identically 1/m -- see the note above.)
+out.maxEdgeWeight = max(weights) / numTransitions; % probability of the most frequent single transition
+
+end

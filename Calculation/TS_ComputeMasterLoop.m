@@ -1,8 +1,23 @@
-function [masterOutput, masterTime] = TS_ComputeMasterLoop(x,x_z,masterCode,masterID,numMasterOps,howVocal,theTsID,iterNum)
+function [masterOutput, masterTime, errorMsg] = TS_ComputeMasterLoop(x,x_z,masterFn,masterCode,masterID,numMasterOps,howVocal,theTsID,iterNum,beVerbose) %#ok<INUSD>
 % TS_ComputeMasterLoop     Used in a loop by TS_Compute to evaluate a given master function.
+%
+% masterFn is a function handle, precompiled once from masterCode (see
+% TS_CalculateFeatureVector/TS_Compute), taking (x,x_z) as inputs. masterCode
+% is kept only for display/error messages below.
+%
+% beVerbose, [default: false] governs any text (fprintf/disp/warning) that
+% masterFn itself prints while it runs: shown, attributed to this master
+% operation, when true; silently discarded when false. Independent of
+% howVocal, which controls only this function's own progress-reporting text.
+%
+% errorMsg, '' on success, otherwise emsg.message from a failed evaluation.
+% Printed immediately here only when beVocal (howVocal=='full' or
+% beVerbose); otherwise always returned (not just on failure -- always '' on
+% success) so the caller can batch it into an end-of-run error log instead of
+% interleaving it with a progress bar (see TS_CalculateFeatureVector.m).
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -23,11 +38,12 @@ function [masterOutput, masterTime] = TS_ComputeMasterLoop(x,x_z,masterCode,mast
 % California, 94041, USA.
 % ------------------------------------------------------------------------------
 
-if strcmp(howVocal,'full')
-    beVocal = true;
-else
-    beVocal = false;
+if nargin < 10 || isempty(beVerbose)
+    beVerbose = false;
 end
+
+beVocal = strcmp(howVocal,'full') || beVerbose;
+errorMsg = '';
 
 if beVocal
     % Display code name for error checking
@@ -37,25 +53,39 @@ end
 
 try
 	masterTimer = tic;
-    if beVocal
-        % Any output text is printed to screen
-    	masterOutput = BF_ParEval(x,x_z,masterCode,1);
-    else
-        % Output text stored in second output (could log this if you really want to)
-        masterOutput = BF_ParEval(x,x_z,masterCode,0);
-    end
+    % Call the precompiled function handle via evalc, which lets us capture (and
+    % then either show or discard) any fprintf/disp/warning text masterFn prints
+    % internally -- a single point of control for output from arbitrary Operations
+    % code, rather than relying on every Operation to gate its own messages.
+    % Function handles (rather than eval-ing masterCode as a string) keep this
+    % parfor-safe; evalc of the call itself is a plain function call from parfor's
+    % point of view and carries negligible overhead (~10us, measured) next to
+    % typical feature computation times.
+    prevWarnState = warning('off','backtrace'); % keep captured warnings free of clickable stack-trace clutter
+    % (x, x_z and masterFn are referenced only inside this evalc string)
+    capturedText = evalc('masterOutput = masterFn(x,x_z);');
+    warning(prevWarnState);
 	masterTime = toc(masterTimer);
     if beVocal
         fprintf(1,' evaluated (%s).\n',BF_TheTime(masterTime));
+    end
+    if beVerbose && ~isempty(capturedText)
+        fprintf(1,'%s',capturedText);
     end
 	% For not-applicable/'real NaN', masterOutput is a NaN, otherwise a
 	% structure with components to be called below by pointer operations.
 
 catch emsg
+    warning(prevWarnState); % restore even though evalc threw mid-capture
+    errorMsg = emsg.message;
     if beVocal
         fprintf(1,' error.\n'); % ,BF_TheTime(masterTime)
+        fprintf(1,'---Error evaluating %s:\n%s.\n',masterCode,errorMsg);
     end
-	fprintf(1,'---Error evaluating %s:\n%s.\n',masterCode,emsg.message);
+    % When ~beVocal, errorMsg is returned rather than printed here -- the
+    % caller batches it into an end-of-run log instead (this is the common
+    % case, e.g. howVocal=='minimal', where printing per-error here would
+    % otherwise interrupt the animated progress bar on every failure).
     masterOutput = {}; % Keep empty output
     masterTime = 0; % Set zero calculation time
 	% Remains an empty cell entry.

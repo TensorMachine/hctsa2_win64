@@ -90,9 +90,9 @@ extern double* rand_arb_dist(double *,unsigned long,unsigned long,
 
 /* routines from rand.c */
 extern void rnd_init(unsigned long);
-extern unsigned long rnd_long();
-extern unsigned long rnd_1279();
-extern unsigned long rnd69069();
+extern unsigned long long rnd_long();   /* hctsa2: 64-bit on every platform */
+extern unsigned long long rnd_1279();
+extern unsigned long long rnd69069();
 extern double gaussian(double);
 
 /* routines from eigen.c */

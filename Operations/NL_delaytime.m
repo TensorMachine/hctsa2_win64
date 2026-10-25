@@ -1,22 +1,57 @@
-function out = NL_delaytime(y, maxDelay, past, randomSeed)
-% NL_delaytime    Optimal delay time using the method of Parlitz and Wichard.
+function out = NL_DelayTime(y, maxDelay, past, ~)
+% NL_DelayTime   How quickly points that start with nearly equal values drift apart, over a range of delays.
 %
-% Computed natively in MATLAB. TSTOOL's own 'delaytime' code
-% (tstoolbox/@signal/delaytime.m, vendored in this repo under
-% Toolboxes/OpenTSTOOL) turned out to be pure MATLAB itself -- no compiled
-% TSTOOL binary/mex involved at all -- so its exact algorithm (still
-% undocumented/uncredited beyond "method of Parlitz and Wichard", per
-% TSTOOL's own comments) is reproduced here directly, rather than
-% approximated: sort the (truncated) series by value; repeatedly (64
-% iterations) pick a random reference point by value-rank, then find its
-% nearest value-neighbors on either side (excluding a Theiler window of
-% "past" samples in time) and accumulate |x(neighbor+lag) - x(ref+lag)|
-% for lag = 0:maxDelay; the average over iterations is tau(lag+1).
+% Optimal delay time using the method of Parlitz and Wichard, as in TSTOOL's
+% 'delaytime'. For each of 256 reference times t (spread evenly over the values of
+% the series by a low-discrepancy sequence, rather than chosen at random, and more
+% of them than TSTOOL's 64 so that the curve does not depend on the few references
+% used), finds the two times
+% whose values are nearest to y(t) from below and from above, excluding times
+% within a Theiler window of t (past), and accumulates |y(s+l) - y(t+l)|
+% for both neighbors s, for delays l = 0,...,maxDelay. Averaged over the 256
+% references, this gives a curve tau(l+1) that starts low (the neighbors begin
+% with nearly equal values) and tends to rise to a noisy level as they
+% separate. The outputs summarize this curve.
 %
-% Two bugs fixed relative to TSTOOL's own source's search for the
-% nearest-by-value neighbor *above* the reference rank
-% ("post = index(find(abs(index(ref+1:end)-actual) > past))"), confirmed
-% directly with a concrete worked example before fixing:
+% ---INPUTS:
+% y, column vector of time series data
+% maxDelay, maximum value of the delay to consider: {'ac', k} for k times the
+%           first zero-crossing of the autocorrelation function, or a number
+%           of samples (or a value in (0,1), read as a proportion of the
+%           time-series length);
+%           at least 10, and shortened to fit series shorter than 2*maxDelay
+%           (default: {'ac',10})
+% past, Theiler window: value-neighbors closer in time than this are not used
+%       ({'ac', k}, or a number of samples; see BF_TheilerWindow)
+%       (default: {'ac',1})
+% randomSeed, ignored: the reference points are deterministic. Kept so that existing
+%       calls still work.
+%
+% ---OUTPUTS: statistics of the curve tau(l+1), the summed distance of the two
+% value-neighbors at delay l:
+% tau1, tau2, tau3: the curve at delays 0, 1 and 2 (note tau1 is delay 0)
+% difftau12, difftau13: tau2 - tau1 and tau3 - tau1
+% meantau, stdtau, mintau, maxtau: mean, standard deviation, minimum and
+%           maximum of the curve over delays 0,...,maxDelay
+%
+% ---REFERENCES:
+% C. Merkwirth, U. Parlitz, I. Wedekind, D. Engster and W. Lauterborn, "OpenTSTOOL
+% User Manual", Version 1.2 (February 2009), Drittes Physikalisches Institut,
+% Universitaet Goettingen (section 6.20.3.17, 'delaytime', p. 53: "Compute optimal
+% delaytime for a scalar timeseries with method of Parlitz and Wichard").
+% The method is attributed to Parlitz and Wichard only in TSTOOL's documentation
+% and source (tstoolbox/@signal/delaytime.m); no journal paper describing it was
+% found in Crossref, arXiv or a web search.
+%
+% ---NOTES:
+% Computed natively in MATLAB. TSTOOL's 'delaytime' (tstoolbox/@signal/delaytime.m)
+% is itself pure MATLAB, so its algorithm (undocumented beyond "method of Parlitz
+% and Wichard", per TSTOOL's own comments) is reproduced here directly, rather
+% than approximated.
+%
+% Two bugs are corrected relative to TSTOOL's search for the nearest-by-value
+% neighbor *above* the reference rank
+% ("post = index(find(abs(index(ref+1:end)-actual) > past))"):
 % (1) it applies find() to the subarray index(ref+1:end) but then indexes
 %     back into the *full* index array with the resulting (subarray-
 %     relative) positions without adding ref back on -- so it actually
@@ -29,17 +64,6 @@ function out = NL_delaytime(y, maxDelay, past, randomSeed)
 %     ref. "post" here takes the first element after offsetting, so both
 %     directions consistently return the nearest value-neighbor passing
 %     the Theiler-window exclusion.
-%
-% ---INPUTS:
-% y, column vector of time series data
-%
-% maxDelay, maximum value of the delay to consider (can also specify a
-%           proportion of time series length)
-%
-% past, the TSTOOL documentation describes this parameter as "?", which is
-%       relatively uninformative.
-%
-% randomSeed, whether (and how) to reset the random seed, using BF_ResetSeed
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -81,7 +105,14 @@ N = length(y); % length of time series
 % ------------------------------------------------------------------------------
 % (1) Maximum delay, maxDelay
 if nargin < 2 || isempty(maxDelay)
-	maxDelay = 0.2; % 1/5 the length of the time series
+	maxDelay = {'ac', 10};
+end
+if iscell(maxDelay) % a multiple of the autocorrelation time (as for a Theiler window)
+	maxDelay = BF_TheilerWindow(y, maxDelay);
+	if isnan(maxDelay)
+		warning('No autocorrelation zero-crossing to set the maximum delay')
+		out = NaN; return
+	end
 end
 if maxDelay < 1 && maxDelay > 0
 	maxDelay = round(N * maxDelay); % specify a proportion of time series length
@@ -92,32 +123,53 @@ if maxDelay < 10
 	fprintf(1, 'Max delay set to its minimum: delaytime = 10\n');
 end
 if maxDelay >= N / 2
-	% Heuristic for appropriate time delay
-	warning('Max delay, %u, too long for time series of length %u', maxDelay, N)
-	out = NaN; return
+	% Too long for the series: shorten to fit (keeping the minimum of 10)
+	maxDelay = ceil(N / 2) - 1;
+	if maxDelay < 10
+		warning('Time series of length %u too short for a maximum delay of 10', N)
+		out = NaN; return
+	end
 end
 
-% randomSeed: how to treat the randomization
-if nargin < 4
-	randomSeed = [];
+% (2) Theiler window, past
+if nargin < 3 || isempty(past)
+	past = {'ac', 1};
+end
+past = BF_TheilerWindow(y, past);
+if isnan(past) % the autocorrelation function never crosses zero
+	warning('No autocorrelation zero-crossing to set the Theiler window')
+	out = NaN; return
 end
 
 % ------------------------------------------------------------------------------
 %% Run
 % ------------------------------------------------------------------------------
 
-% Control the random seed (for reproducibility):
-BF_ResetSeed(randomSeed);
+% The reference points are the ranks (in the sorted values of the series) given by the
+% golden-ratio (Weyl) sequence frac(j*phi): evenly spread, deterministic, and the
+% next one is used whenever a reference has no valid neighbors on both sides.
+numUsed = 0;
 
 % Reproduces TSTOOL's tstoolbox/@signal/delaytime.m directly (see header comment):
-ITERATIONS = 64;
+ITERATIONS = 256;
 len = N - maxDelay;
 [~, index] = sort(y(1:len));
 
 err = zeros(maxDelay + 1, 1);
+maxAttempts = 1000; % per iteration, on drawing a reference point with neighbors on both sides
 for i = 1:ITERATIONS
+	numAttempts = 0;
 	while true
-		ref = ceil(rand(1, 1) * len);
+		numAttempts = numAttempts + 1;
+		if numAttempts > maxAttempts
+			% (e.g., the Theiler exclusion, past, leaves no reference point with
+			% value-neighbors on both sides -- data-dependent, so NaN rather than
+			% spinning forever)
+			warning('Could not find reference points with neighbors on both sides after %u attempts', maxAttempts);
+			out = NaN; return
+		end
+		numUsed = numUsed + 1;
+		ref = max(1, ceil(mod(numUsed * 0.6180339887498949, 1) * len));
 		actual = index(ref);
 		preCandidates = index(abs(index(1:ref - 1) - actual) > past);
 		postCandidates = index(ref + find(abs(index(ref + 1:end) - actual) > past));

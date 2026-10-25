@@ -10,7 +10,7 @@ function [firstCrossing, pointOfCrossing] = BF_PointOfCrossing(x,threshold)
 % pointOfCrossing, the (linearly) interpolated point of crossing
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -37,6 +37,16 @@ function [firstCrossing, pointOfCrossing] = BF_PointOfCrossing(x,threshold)
 % You should have received a copy of the GNU General Public License along with
 % this program. If not, see <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
+
+% An entirely undefined input (e.g., the autocorrelation of a constant/
+% zero-variance series is 0/0 at every lag) is not the same as a well-defined
+% sequence that simply never crosses the threshold: the former has no answer
+% (NaN), the latter legitimately saturates at N below.
+if all(isnan(x))
+    firstCrossing = NaN;
+    pointOfCrossing = NaN;
+    return
+end
 
 % Find index of x at which the first crossing event occurs:
 if x(1) > threshold

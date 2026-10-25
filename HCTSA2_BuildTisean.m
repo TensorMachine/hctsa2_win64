@@ -4,13 +4,16 @@ function report = HCTSA2_BuildTisean(outDir)
 %   HCTSA2_BuildTisean
 %   report = HCTSA2_BuildTisean('Toolboxes/Tisean_bin')
 %
-% Compiles the six TISEAN executables hctsa calls, using the compilers that come
-% with MATLAB's MinGW-w64 add-on. No autotools, no shell, no prebuilt binaries.
-% Run from the hctsa 2.0 root.
+% Compiles the eleven TISEAN executables hctsa calls, and ripser, using the
+% compilers that come with MATLAB's MinGW-w64 add-on. No autotools, no shell, no
+% prebuilt binaries. Run from the hctsa2 root (the folder holding startup.m).
 %
 %   d2, nstat_z, false_nearest,  C        -> gcc
-%   boxcount, lyap_r, poincare
+%   boxcount, lyap_r,
+%   lyap_spec, nrlazy
 %   c1, c2d, c2g, c2t            Fortran  -> gfortran
+%   ripser                       C++      -> g++   (Toolboxes/ripser, not TISEAN;
+%                                                   NL_PersistentHomology)
 %
 % The bundled false_nearest.c carries the official TISEAN 3.0.1 patch of
 % 2009-03-08: the univariate branch built its delay embedding as vemb[i]=i,
@@ -18,7 +21,13 @@ function report = HCTSA2_BuildTisean(outDir)
 % (i/comp)*delay. hctsa always calls it univariate (-m1) with -d tau, so every
 % call with tau > 1 embedded at the wrong lags. See KNOWN_ISSUES.md.
 %
-% Run HCTSA2_ProbeToolchain first: four of the six are Fortran, and whether
+% The random number generators in d2.c and routines/rand.c (used by lyap_spec)
+% are 64-bit on every platform. The originals chose their generator by
+% sizeof(long), which is 4 on Windows, so a Windows build gave different d2 and
+% lyap_spec output from Linux/macOS. With the change the Windows programs
+% reproduce the Linux output; on Linux nothing changes.
+%
+% Run HCTSA2_ProbeToolchain first: four of the eleven are Fortran, and whether
 % MathWorks' MinGW package includes gfortran decides whether they can be built.
 %
 %---WHAT THIS REPLACES
@@ -44,7 +53,7 @@ root = pwd;
 src = fullfile(root,'Toolboxes','Tisean_3.0.1');
 if exist(src,'dir') ~= 7
     error('HCTSA2_BuildTisean:noSource', ...
-        'TISEAN source not found at %s. Run this from the hctsa 2.0 root.',src);
+        'TISEAN source not found at %s. Run this from the hctsa2 root (the folder holding startup.m).',src);
 end
 if exist(outDir,'dir') ~= 7, mkdir(outDir); end
 
@@ -55,8 +64,9 @@ fprintf('output : %s\n',outDir);
 %-------------------------------------------------------------------------------
 %% Locate the toolchain
 %-------------------------------------------------------------------------------
-[gcc,gfortran,ar,ranlib] = findTools();
+[gcc,gfortran,ar,ranlib,gxx] = findTools();
 fprintf('\ngcc      : %s\n',emptyAs(gcc,'NOT FOUND'));
+fprintf('g++      : %s\n',emptyAs(gxx,'NOT FOUND'));
 fprintf('gfortran : %s\n',emptyAs(gfortran,'NOT FOUND'));
 fprintf('ar       : %s\n',emptyAs(ar,'NOT FOUND'));
 if isempty(gcc)
@@ -67,10 +77,14 @@ if isempty(ar)
 end
 if isempty(gfortran)
     fprintf(2,'\ngfortran is missing: c1, c2d, c2g and c2t cannot be built.\n');
-    fprintf(2,'d2 and nstat_z will still be produced.\n');
+    fprintf(2,'The seven C programs will still be produced.\n');
 end
 
 binDir = fileparts(gcc);          % MinGW bin: needed on PATH for gcc to run
+% (HCTSA2 2.2.1: the scratch name and the smoke test below draw random numbers
+% and re-seed the global stream; put it back as the caller left it.)
+rngState = rng;
+restoreRng = onCleanup(@() rng(rngState)); %#ok<NASGU>
 build = fullfile(tempdir,sprintf('tisean_build_%06u',randi(999999)));
 mkdir(build);
 cleanupObj = onCleanup(@() rmdir(build,'s'));
@@ -149,31 +163,50 @@ end
 %% 3. The programs
 %-------------------------------------------------------------------------------
 fprintf('\n--- 3. programs ---\n');
-% Seven programs, not six. NL_TISEAN_fnn builds its command into a variable
-% before calling system(), so an earlier enumeration that scanned for
+% Seven programs, not six. NL_FNN (then NL_TISEAN_fnn) builds its command into a
+% variable before calling system(), so an earlier enumeration that scanned for
 % system(sprintf('<name> ... missed false_nearest entirely. The reliable check
 % is to test every TISEAN program name against the Operations source, which is
 % how this list was rebuilt.
 % Ten programs. The last three are needed by upstream v2.0.0's TSTOOL
-% replacements -- NL_BoxCorrDim and NL_dimensions call boxcount, NL_LargestLyap
-% calls lyap_r, NL_PoincareSection calls poincare. All three are C, so they add
-% no toolchain requirement beyond what was already needed.
+% replacements -- NL_BoxCorrDim (NL_BoxCountEntropyRate since upstream fc43329)
+% and NL_Dimensions call boxcount, NL_LargestLyap calls lyap_r, NL_PoincareSection
+% calls poincare. All three are C, so they add no toolchain requirement beyond
+% what was already needed.
+% Twelve programs: upstream 3.0.0-alpha added NL_LyapSpec (lyap_spec) and
+% PP_SchreiberDenoise (nrlazy), both C.
+% Eleven (HCTSA2 2.5.0): upstream f54e4d1 computes NL_PoincareSection's section in
+% MATLAB, so poincare is no longer called and is not built (its source stays).
 progs = {
  'd2',            'C'
  'nstat_z',       'C'
  'false_nearest', 'C'
  'boxcount',      'C'
  'lyap_r',        'C'
- 'poincare',      'C'
+ 'lyap_spec',     'C'
+ 'nrlazy',        'C'
  'c1',            'F'
  'c2d',           'F'
  'c2g',           'F'
  'c2t',           'F'
+ 'ripser',        'CXX'
 };
 for i = 1:size(progs,1)
     name = progs{i,1}; lang = progs{i,2};
     exe = fullfile(root,outDir,[name '.exe']);
-    if strcmp(lang,'C')
+    if strcmp(lang,'CXX')
+        % ripser: upstream's compile_ripser flags, plus -static as below. It is
+        % written to the same folder as the TISEAN programs, where BF_RunTisean
+        % looks first.
+        if isempty(gxx)
+            fprintf('  %-9s SKIPPED (no g++)\n',name);
+            report(end+1) = mk(name,'skipped','no g++'); %#ok<AGROW>
+            continue
+        end
+        in = fullfile(root,'Toolboxes','ripser','ripser.cpp');
+        cmd = sprintf('"%s" -std=c++11 -O3 -D NDEBUG -static "%s" -o "%s"', ...
+            gxx,in,exe);
+    elseif strcmp(lang,'C')
         in = fullfile(src,'source_c',[name '.c']);
         % -static: link the MinGW runtime in. Without it the executables need
         % libgcc_s_seh-1.dll (and for Fortran, libgfortran-5.dll,
@@ -193,6 +226,21 @@ for i = 1:size(progs,1)
         in = fullfile(src,'source_f',[name '.f']);
         cmd = sprintf('"%s" -O2 -static -std=legacy -fallow-argument-mismatch "%s" -o "%s" "%s" "%s"', ...
             gfortran,in,exe,libF,libS);
+    end
+    % (HCTSA2 2.2.1: remove the previous executable first. A failed build used to
+    % leave the OLD one here, where HCTSA2_CheckInstall counts it and BF_RunTisean
+    % runs it -- an old lyap_spec.exe ignores 2.2.0's -t option and gives
+    % different numbers. On Windows it cannot be removed while a pool or another
+    % MATLAB is running it.)
+    if exist(exe,'file') == 2
+        wsDel = warning('off','MATLAB:DELETE:Permission');
+        try delete(exe); catch, end %#ok<CTCH,NOSEM>
+        warning(wsDel);
+        if exist(exe,'file') == 2
+            fprintf(2,'  %-9s FAILED: cannot replace the old %s.exe (still running?)\n',name,name);
+            report(end+1) = mk(name,'failed','old executable in use, not replaced'); %#ok<AGROW>
+            continue
+        end
     end
     [st,msg] = runTool(binDir,cmd);
     if st ~= 0 && strcmp(lang,'F')
@@ -221,20 +269,27 @@ setenv('PATH',[fullfile(root,outDir) pathsep binDir pathsep oldPath]);
 restorePath = onCleanup(@() setenv('PATH',oldPath));
 rng(1);
 y = cumsum(randn(500,1)); y = (y-mean(y))/std(y);
-fn = fullfile(tempdir,sprintf('tsmoke%05u',randi(99999)));
-if ispc, fn = strrep(fn,'\','/'); end
-dlmwrite(fn,y,'precision',7);
+% (HCTSA2 2.2.1: an hc###### file from BF_WriteTempFile, removed with every file
+% the programs write beside it, on every way out. The fixed suffix list this
+% replaces missed .box, .ros, .stat and .laz.1.)
+if exist('BF_WriteTempFile','file') ~= 2
+    addpath(fullfile(root,'PeripheryFunctions'));
+end
+fn = BF_WriteTempFile(y,7);
+cleanSmoke = onCleanup(@() BF_CleanTempFiles(fn)); %#ok<NASGU>
 for i = 1:numel(report)
     if ~strcmp(report(i).status,'built'), continue; end
     n = report(i).name;
     switch n
-        case 'd2',      c = sprintf('d2 -d1 -M1,3 -t10 %s',fn);
-        case 'nstat_z', c = sprintf('nstat_z -# 3 -d1 -m2 %s',fn);
-        case 'false_nearest', c = sprintf('false_nearest -d1 -m1 -M1,4 -t10 -V0 %s',fn);
-        case 'boxcount', c = sprintf('boxcount -d1 -M1,4 -Q10 %s',fn);
-        case 'lyap_r',   c = sprintf('lyap_r -d1 -m3 -t10 -s20 %s',fn);
-        case 'poincare', c = sprintf('poincare -d1 -m3 -q1 -C0 %s',fn);
-        case 'c1',      c = sprintf('c1 -d1 -m2 -M3 -t10 -n50 -o %s.c1 %s',fn,fn);
+        case 'd2',      c = sprintf('d2 -d1 -M1,3 -t10 "%s"',fn);
+        case 'nstat_z', c = sprintf('nstat_z -# 3 -d1 -m2 "%s"',fn);
+        case 'false_nearest', c = sprintf('false_nearest -d1 -m1 -M1,4 -t10 -V0 "%s"',fn);
+        case 'boxcount', c = sprintf('boxcount -d1 -M1,4 -Q10 "%s"',fn);
+        case 'lyap_r',   c = sprintf('lyap_r -d1 -m3 -t10 -s20 "%s"',fn);
+        case 'lyap_spec', c = sprintf('lyap_spec -m1,3 -d1 -k30 "%s"',fn);
+        case 'nrlazy',   c = sprintf('nrlazy -m1,3 -d1 -i1 -v0.5 "%s"',fn);
+        case 'ripser',   c = sprintf('ripser --format point-cloud --dim 1 "%s"',fn);
+        case 'c1',      c = sprintf('c1 -d1 -m2 -M3 -t10 -n50 -o "%s.c1" "%s"',fn,fn);
         otherwise,      c = sprintf('%s -h',n);
     end
     [st,out] = system([c ' 2>&1']);
@@ -242,23 +297,26 @@ for i = 1:numel(report)
     fprintf('  %-9s %s\n',n,ternS(ok,'runs','DID NOT RUN'));
     if ~ok, report(i).detail = firstLine(out); end
 end
-for e = {'','.c2','.d2','.h2','.c1'}
-    if exist([fn e{1}],'file') == 2, delete([fn e{1}]); end
-end
 
 nBuilt = sum(strcmp({report.status},'built'));
 fprintf('\n=================================================\n');
-fprintf('  built %u of 10 programs into %s\n',nBuilt,outDir);
-if nBuilt == 10
+fprintf('  built %u of %u programs into %s\n',nBuilt,size(progs,1),outDir);
+if nBuilt == size(progs,1)
     fprintf('  Re-run startup, then HCTSA2_CheckInstall to confirm.\n');
-elseif nBuilt >= 2
-    fprintf(2,'  The Fortran programs are missing; NL_TISEAN_c1 will not run.\n');
+else
+    % (HCTSA2 2.2.1: name what is actually missing and what that costs. This used
+    % to blame the Fortran programs for any shortfall, whatever failed.)
+    notBuilt = report(~strcmp({report.status},'built'));
+    fprintf(2,'  Not built, so these operations will not run:\n');
+    for i = 1:numel(notBuilt)
+        fprintf(2,'    %-14s %-8s %s\n',notBuilt(i).name,notBuilt(i).status,usedBy(notBuilt(i).name));
+    end
 end
 fprintf('=================================================\n\n');
 end
 
 %-------------------------------------------------------------------------------
-function [gcc,gfortran,ar,ranlib] = findTools()
+function [gcc,gfortran,ar,ranlib,gxx] = findTools()
 root = '';
 try
     cc = mex.getCompilerConfigurations('C','Selected');
@@ -266,7 +324,7 @@ try
 catch
 end
 if isempty(root), root = getenv('MW_MINGW64_LOC'); end
-gcc = pick(root,'gcc'); gfortran = pick(root,'gfortran');
+gcc = pick(root,'gcc'); gfortran = pick(root,'gfortran'); gxx = pick(root,'g++');
 ar = pick(root,'ar');   ranlib = pick(root,'ranlib');
 end
 
@@ -326,6 +384,25 @@ old = getenv('PATH');
 c = onCleanup(@() setenv('PATH',old));
 setenv('PATH',[binDir pathsep old]);
 [st,msg] = system([cmd ' 2>&1']);
+end
+
+function s = usedBy(prog)
+% The operations that cannot run without PROG. NL_Dimensions, NL_GPCorrSum and
+% NL_LargestLyap also need false_nearest for their 'fnn' embeddings (see the
+% table in HCTSA2_CheckInstall).
+switch prog
+    case 'd2',            s = 'NL_d2, NL_Dimensions, NL_GPCorrSum';
+    case 'nstat_z',       s = 'SY_nstat_z';
+    case 'false_nearest', s = 'NL_FNN, NL_Dimensions, NL_GPCorrSum, NL_LargestLyap and every operation with an ''fnn'' embedding';
+    case 'boxcount',      s = 'NL_BoxCountEntropyRate, NL_Dimensions';
+    case 'lyap_r',        s = 'NL_LargestLyap';
+    case 'lyap_spec',     s = 'NL_LyapSpec';
+    case 'nrlazy',        s = 'PP_SchreiberDenoise';
+    case {'c1','c2d'},    s = 'NL_c1';
+    case {'c2g','c2t'},   s = 'NL_d2';
+    case 'ripser',        s = 'NL_PersistentHomology';
+    otherwise,            s = '';
+end
 end
 
 function s = mk(name,status,detail)

@@ -1,21 +1,46 @@
-function out = MF_hmm_fit(y, trainp, numStates, randomSeed)
-% MF_hmm_fit    Fits a Hidden Markov Model to sequential data.
+function out = MF_hmm_Fit(y, trainp, numStates)
+% MF_hmm_Fit   A hidden Markov model fitted to the first part of the series, and how well it describes the rest.
 %
-% Actually highly stochastic, so for reproducible results helps to reset the
-% random seed...
+% Fits a hidden Markov model (HMM) with Gaussian emissions to the first trainp
+% proportion of the time series, then evaluates its likelihood on the remainder.
+% The emissions of all states share one variance (a tied covariance). The model is
+% trained with at most 30 cycles of EM (Baum-Welch), or until convergence.
 %
-% ---INPUTS:
-% y, the input time series
-% trainp, the proportion of data to train on, 0 < trainp < 1
-% numStates, the number of states in the HMM
-
+% The fit is deterministic. EM is run from six fixed starting points (state means at
+% the quantiles (k-1/2)/numStates of the training data, or evenly spaced within one
+% standard deviation of its mean; a variance equal to that of the training data; and
+% probabilities 0.5, 0.9 and 0.99 of staying in a state); the fit with the highest
+% training log-likelihood (of the training data under the fit's final parameters) is
+% kept (ZG_hmm_fit). The
+% shared variance cannot fall below 1% of the variance of the training data, so that
+% states placed on a few repeated values do not give unbounded likelihoods.
+%
 % Uses Zoubin Gharamani's implementation of HMMs for real-valued Gaussian
 % observations:
 % http://www.gatsby.ucl.ac.uk/~zoubin/software.html
 % or, specifically:
 % http://www.gatsby.ucl.ac.uk/~zoubin/software/hmm.tar.gz
 %
-% Uses ZG_hmm (renamed from hmm) and ZG_hmm_cl (renamed from hmm_cl)
+% Uses ZG_hmm (renamed from hmm), ZG_hmm_cl (renamed from hmm_cl), and ZG_hmm_fit
+%
+% ---INPUTS:
+% y, the input time series
+% trainp, the proportion of data to train on, 0 < trainp < 1 (default: 0.8)
+% numStates, the number of states in the HMM (default: 3)
+%
+% ---OUTPUTS:
+% Mu_1, Mu_2, Mu_3: the state means, sorted from lowest to highest (one per state)
+% meanMu, rangeMu, maxMu, minMu: mean, range, maximum, and minimum of the state means
+% Cov: the variance of the emissions, shared by all states
+% Pmeandiag: mean of the diagonal of the transition matrix (probability of staying
+%       in a state)
+% stdmeanP: standard deviation across states of the mean probability of moving into
+%       each state
+% maxP, stdP: maximum and standard deviation of the transition probabilities
+% LLtrainpersample: the log-likelihood per sample of the training part under the
+%       fitted model
+% LLtestpersample: the log-likelihood per sample of the test part
+% LLdifference: LLtestpersample - LLtrainpersample
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
@@ -46,7 +71,7 @@ function out = MF_hmm_fit(y, trainp, numStates, randomSeed)
 % ------------------------------------------------------------------------------
 
 % Check required function files exist:
-if ~exist(fullfile('ZG_hmm', 'ZG_hmm_cl'), 'file') || ~exist(fullfile('ZG_hmm', 'ZG_hmm_cl'), 'file')
+if ~exist('ZG_hmm', 'file') || ~exist('ZG_hmm_cl', 'file') || ~exist('ZG_hmm_fit', 'file')
 	error('Could not find the required HMM fitting functions (Zoubin Gharamani''s code)');
 end
 
@@ -65,15 +90,6 @@ if nargin < 3 || isempty(numStates)
 	numStates = 3; % use 3 states
 end
 
-if nargin < 4
-	randomSeed = [];
-end
-
-% -------------------------------------------------------------------------------
-% Deal with random seeds
-% -------------------------------------------------------------------------------
-BF_ResetSeed(randomSeed); % reset the random seed if specified
-
 % ------------------------------------------------------------------------------
 %% Train the HMM
 % ------------------------------------------------------------------------------
@@ -90,8 +106,8 @@ if Ntrain < N
 end
 
 % Train HMM with <numStates> states for 30 cycles of EM (or until
-% convergence); default termination tolerance
-[Mu, Cov, P, Pi, LL] = ZG_hmm(ytrain, Ntrain, numStates, 30);
+% convergence), from fixed starting points; default termination tolerance
+[Mu, Cov, P, Pi, LL] = ZG_hmm_fit(ytrain, numStates, 30);
 
 % ------------------------------------------------------------------------------
 %% Output statistics on the training
@@ -115,12 +131,10 @@ out.Cov = Cov;
 out.Pmeandiag = mean(diag(P));
 out.stdmeanP = std(mean(P));
 out.maxP = max(P(:));
-out.meanP = mean(P(:)); % I guess this is just 1/numStates? A constant so not a useful output.
 out.stdP = std(P(:));
 
 % Within-sample log-likelihood
-out.LLtrainpersample = max(LL) / Ntrain; % loglikelihood per sample
-out.nit = length(LL); % number of iterations
+out.LLtrainpersample = LL / Ntrain; % log-likelihood per sample of the fitted model
 
 % ------------------------------------------------------------------------------
 %% Calculate log likelihood for the test data

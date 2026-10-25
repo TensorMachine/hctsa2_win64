@@ -1,13 +1,27 @@
 function out = DN_CustomSkewness(y, whatSkew)
-% DN_CustomSkewness     Custom skewness measures
+% DN_CustomSkewness   Custom skewness measures.
 %
-% Compute the Pearson or Bowley skewness
+% Computes a Pearson or Bowley measure of the asymmetry of the distribution of
+% values. All are 0 for a symmetric distribution, and positive when the longer
+% tail is on the right.
 %
 % ---INPUTS:
 % y, the input time series
+% whatSkew, the skewness measure to calculate:
+%           'pearsonMode': Pearson's first skewness coefficient,
+%                   (mean - mode)/std, with the mode estimated by the
+%                   half-sample mode (BF_HalfSampleMode), which needs no bins
+%           'pearson' or 'pearsonMedian': Pearson's second skewness
+%                   coefficient, 3*(mean - median)/std
+%           'bowley': Bowley's quartile skewness, (Q3 + Q1 - 2*Q2)/(Q3 - Q1)
 %
-% whatSkew, the skewness measure to calculate, either 'pearson' or 'bowley'
+% ---OUTPUTS:
+% a scalar: the chosen skewness measure.
 %
+% ---NOTES:
+% The mode of a histogram depends on the number and edges of its bins, so the
+% half-sample mode is used instead: closed-form, robust, and without a smoothing
+% parameter.
 % cf. https://mathworld.wolfram.com/PearsonsSkewnessCoefficients.html
 
 % ------------------------------------------------------------------------------
@@ -42,7 +56,7 @@ function out = DN_CustomSkewness(y, whatSkew)
 switch whatSkew
 	case 'pearsonMode'
 		% Pearson's First Skewness Coefficient: Pearson mode skewness
-		out = (mean(y) - DN_HistogramMode(y, 'auto')) / std(y);
+		out = (mean(y) - BF_HalfSampleMode(y)) / std(y);
 	case {'pearson', 'pearsonMedian'}
 		% Pearson's Second Skewness Coefficient
 		out = 3 * (mean(y) - median(y)) / std(y);

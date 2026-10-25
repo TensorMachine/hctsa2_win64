@@ -1,34 +1,91 @@
-function out = NL_TakensEstimator(y, Nref, rad, past, embedParams, randomSeed)
-% NL_TakensEstimator   Taken's estimator for correlation dimension.
+function out = NL_TakensEstimator(y, Nref, c0, past, embedParams, randomSeed)
+% NL_TakensEstimator   Takens' estimator of the correlation dimension, at the length scale enclosing a fixed fraction of pairs.
 %
-% cf. "Detecting strange attractors in turbulence", F. Takens.
-% Lect. Notes Math. 898 p366 (1981)
+% Estimates the correlation dimension, D, of a time-delay embedding of y with Takens'
+% estimator, at an upper length scale eup set by the data: eup is the c0 quantile of the
+% max-norm distances between pairs of delay vectors (pairs closer in time than the Theiler
+% window, and repeated points, are excluded). With r_ij the n pair distances below eup,
+%   D = (n - 1) / sum( ln(eup / r_ij) ).
+% Under the estimator's model, C(r) proportional to r^D below eup, the ln(eup / r_ij) are
+% independent exponential variables with rate D given eup (Takens 1985; with eup an order
+% statistic of the distances, Hill 1975), so their sum is Gamma(n, D) and (n - 1)/sum is the
+% unbiased estimate of D (the maximum-likelihood form n/sum is biased upward by n/(n - 1);
+% Borovkova et al. 1999).
 %
-% Uses the TISEAN routines d2 and c2t (Takens' estimator from correlation sum
-% data) rather than TSTOOL's takens_estimator, which this operation used
-% previously. d2 estimates the correlation sum across embedding dimensions
-% 1:m (only the dimension-m block is used here); c2t then reads off Takens'
-% maximum-likelihood dimension estimate as a function of length scale from
-% that correlation-sum data, and the value at an upper length scale of rad
-% standard deviations of y is taken as the output (matching Kantz &
-% Schreiber's recommendation of using half a standard deviation, already
-% used the same way in NL_TISEAN_d2.m's takens05 -- TSTOOL's own rad
-% parameter was instead defined as a proportion of "attractor size", so this
-% is an equivalent-in-spirit but not numerically identical length-scale
-% convention).
+% Setting eup by a fraction of pairs, rather than as a fixed radius, keeps it at a small
+% scale that always holds the same share of pairs, whatever the embedding dimension and the
+% spread of the embedded points, and its target (the scale below which a fraction c0 of
+% pairs lie) does not depend on the length of the series. (At a fixed radius, noise-like
+% series embedded in several dimensions have no pairs at all at small scales.) Takens'
+% estimator is a reasonable dimension estimate when evaluated at the upper end of the
+% scaling range (Hegger, Kantz & Schreiber 1999), which for a low-dimensional attractor lies
+% at small scales.
+%
+% Details:
+% - Pairs of delay vectors closer than tol = 1e-12*(max(y) - min(y)) are repeated points:
+%   they carry no length-scale information, and a positive fraction of them makes the
+%   estimator inconsistent (Borovkova et al. 1999), so they are left out.
+% - Distances closer than tol are equal. If the values of y lie on a lattice, i.e., all
+%   differences between distinct values are within 1% of integer multiples of a common step
+%   q (the smallest difference divided by the smallest k = 1, ..., 100 that fits, well above
+%   tol, with q fitted to the differences by least squares; quantized data, also when stored
+%   with rounding), distances closer than q/2 are equal, since finer differences are not
+%   resolved by the data. Equal distances are merged into levels after sorting (not snapped
+%   to a grid), each level taking its smallest value; pairs at the level of eup lie at eup.
+%   The tolerances are relative to the data, so shifting, rescaling or reflecting y leaves
+%   the output unchanged, apart from distances within round-off of tol.
+% - The output is NaN if fewer than 3 distinct distances lie below eup: the data then do
+%   not resolve the length scale (eup lies within two resolution steps of the smallest
+%   distance), and the estimate is set by the lattice of the values rather than by the
+%   dynamics.
+% - The output is NaN if the estimate exceeds 2*m for an m-dimensional embedding: a set with
+%   a scaling region below eup has a dimension of at most m, and finite-sample and
+%   finite-scale effects keep estimates for sets with a scaling region well below 2*m.
+%   Larger values arise when the correlation sum rises much faster than r^m below eup, as
+%   when the pairs outside the Theiler window are all far apart (a Theiler window that is
+%   a large fraction of a nonstationary series), so there is no scaling region at that
+%   scale.
+% - The output is NaN if c0 times the number of pairs that are not repeated points is
+%   below 33, the smallest number of pairs for which the 95% sampling interval of the
+%   estimate (for independent pairs) spans less than a factor of two.
+% - The pairs are (i,j) with i among the first Nref delay vectors and j > i + past.
 %
 % ---INPUTS:
 % y, the input time series
-% Nref, the number of reference points (can be -1 to use all points)
-% rad, the upper length scale to read off the dimension estimate, in standard
-%       deviations of y (cf. TSTOOL's rad, a proportion of attractor size)
-% past, the Theiler window
-% embedParams, the embedding parameters for BF_Embed, in the form {tau,m}
-% randomSeed, whether (and how) to reset the random seed, using BF_ResetSeed
-%               (relevant if an embedding-dimension method requiring
-%               randomization is used)
+% Nref, the number of reference points (the first Nref delay vectors; -1 uses all points;
+%       default: -1)
+% c0, the fraction of pairs (other than repeated points) that lie below the upper length
+%     scale, eup
+%     (default: 0.01)
+% past, the Theiler window: {'ac', k} for k times the first zero-crossing of the
+%       autocorrelation function, or a number of samples (see BF_TheilerWindow; default:
+%       {'ac', 1})
+% embedParams, the embedding parameters for BF_Embed, in the form {tau,m}, where tau
+%              is a number of samples or 'ac', 'ac1e' or 'mi' (see BF_GetTau) and m
+%              is a number of dimensions, or 'fnn' or {'fnn',th} (false nearest
+%              neighbors at threshold th, at most floor(2*log10(N)); see BF_Embed)
+%              (default: {'ac','fnn'})
+% randomSeed, whether (and how) to reset the random seed, using BF_ResetSeed (relevant if
+%             an embedding-dimension method requiring randomization is used)
 %
-% ---OUTPUT: the Taken's estimator of the correlation dimension, d2.
+% ---OUTPUTS:
+% A scalar: the estimate of the correlation dimension (NaN if the series is constant or
+% cannot be embedded, the Theiler window cannot be set, c0 times the number of pairs that
+% are not repeated points is below 33, fewer than 3 distinct distances lie below eup, or
+% the estimate exceeds twice the embedding dimension; see Details).
+%
+% ---REFERENCES:
+% F. Takens, "On the numerical determination of the dimension of an attractor", in
+% B.L.J. Braaksma, H.W. Broer and F. Takens (eds.), Dynamical Systems and
+% Bifurcations (Groningen, 1984), Lecture Notes in Mathematics 1125, 99-106,
+% Springer, Berlin (1985). DOI: 10.1007/BFb0075637
+% B.M. Hill, "A simple general approach to inference about the tail of a distribution",
+% Ann. Statist. 3(5), 1163-1174 (1975). DOI: 10.1214/aos/1176343247
+% S. Borovkova, R. Burton and H. Dehling, "Consistency of the Takens estimator for the
+% correlation dimension", Ann. Appl. Probab. 9(2), 376-390 (1999).
+% DOI: 10.1214/aoap/1029962747
+% R. Hegger, H. Kantz and T. Schreiber, "Practical implementation of nonlinear time series
+% methods: The TISEAN package", Chaos 9(2), 413-435 (1999). DOI: 10.1063/1.166424
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -69,18 +126,22 @@ if nargin < 2 || isempty(Nref)
 	Nref = -1; % use all points
 end
 
-% 2) Upper length scale (standard deviations of y) at which to read off the
-% dimension estimate from the correlation-sum data:
-if nargin < 3 || isempty(rad)
-	rad = 0.05;
+% 2) Fraction of pairs below the upper length scale
+if nargin < 3 || isempty(c0)
+	c0 = 0.01;
+end
+if ~(isscalar(c0) && c0 > 0 && c0 < 1)
+	error('c0, the fraction of pairs below the upper length scale, must be in (0,1)');
 end
 
 % 3) Theiler window
 if nargin < 4 || isempty(past)
-	past = 1; % just exclude current point
+	past = {'ac', 1};
 end
-if (past > 0) && (past < 1)
-	past = floor(N * past); % specify a fraction of the time series length...
+past = BF_TheilerWindow(y, past, N);
+if isnan(past) % the autocorrelation function never crosses zero
+	warning('No autocorrelation zero-crossing to set the Theiler window')
+	out = NaN; return
 end
 
 % 4) Embedding parameters
@@ -98,124 +159,147 @@ if nargin < 6
 	randomSeed = []; % default
 end
 
-% ------------------------------------------------------------------------------
-%% Resolve the embedding parameters (tau, m)
-% ------------------------------------------------------------------------------
-tm = BF_Embed(y, embedParams{1}, embedParams{2}, true, randomSeed);
-tau = tm(1);
-m = tm(2);
+minPairs = 33; % fewest pairs below eup for an estimate
 
 % ------------------------------------------------------------------------------
-%% Write the file for TISEAN to work with
+%% Embed
 % ------------------------------------------------------------------------------
-filePath = BF_WriteTempFile(y);
-% --- temporary-file safety net ------------------------------------------------
-% Everything from here to the matching catch runs with the temporary file
-% guaranteed to be removed, whichever way control leaves.
-%
-% This is a try/catch rather than a cleanup call before each error(), because
-% enumerating exits is exactly what failed before: an earlier attempt covered
-% the return statements and the end of the body and missed all 3 error()
-% calls in this file, so a real run still littered the temporary directory. A
-% try/catch cannot miss one, and it also covers what this function does not
-% raise itself -- an indexing slip, a textscan failure, a called function that
-% throws -- which no amount of enumeration would have caught.
-%
-% The body below is deliberately NOT re-indented: indentation is cosmetic in
-% MATLAB, and shifting hundreds of lines would bury a five-line fix in a
-% whitespace diff.
-try
-
-
-% Map TSTOOL's Nref convention (-1 = use all points) onto TISEAN's d2
-% (-N 0 = use all pairs):
-if Nref == -1
-	NrefTISEAN = 0;
+Y = BF_Embed(y, embedParams{1}, embedParams{2}, false, randomSeed);
+if isscalar(Y) && isnan(Y)
+	warning('Could not embed this time series with these embedding parameters');
+	out = NaN; return
+end
+Nemb = size(Y, 1);
+if Nref == -1 || Nref >= Nemb
+	nRef = Nemb;
 else
-	NrefTISEAN = Nref;
+	nRef = Nref;
 end
 
-% ------------------------------------------------------------------------------
-%% Run the TISEAN codes, d2 then c2t
-% ------------------------------------------------------------------------------
-% d2 over embedding dimensions 1:m (only the m-th is used below). Note:
-% "-M<m>,<m>" (i.e. asking for a single, fixed embedding dimension) triggers
-% a bug in this TISEAN build where it reports "0 lines read" and produces no
-% output at all; "-M1,<m>" (a genuine range, as NL_TISEAN_d2.m already uses)
-% works correctly, so that's used here too and the dimension-m block is
-% picked out afterwards. The swept range of length scales is left at d2's
-% default (spans the full data interval, so comfortably covers the
-% rad-standard-deviations cutoff used below):
-[~, res] = BF_RunTisean(sprintf('d2 -d%u -M1,%u -t%u -N%u %s', tau, m, past, NrefTISEAN, filePath), true);
-if exist([filePath '.stat'], 'file'), delete([filePath '.stat']); end
-if exist([filePath '.d2'], 'file'), delete([filePath '.d2']); end
-if exist([filePath '.h2'], 'file'), delete([filePath '.h2']); end
-
-if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
-	if exist([filePath '.c2'], 'file'), delete([filePath '.c2']); end
-	error('Call to TISEAN function ''d2'' failed.');
+% Pairs closer than tol = 1e-12 of the range of y are repeated points, left out
+span = max(y) - min(y); % no max-norm distance exceeds the range of y
+if ~(span > 0)
+	out = NaN; return % constant series
 end
-
-[~, res] = BF_RunTisean(sprintf('c2t %s.c2', filePath));
-delete([filePath '.c2']);
-
-if isempty(res) || ~isempty(regexp(res, 'command not found', 'once'))
-	error('Call to TISEAN function ''c2t'' failed.');
+tol = 1e-12 * span;
+% Quantized values: if the differences between distinct values are all within 1% of
+% integer multiples of a common step q (the smallest difference divided by the smallest
+% k = 1, ..., 100 that fits, well above tol), distances closer than q/2 are not resolved
+% by the data
+gaps = diff(unique(y(:)));
+gaps = gaps(gaps > tol);
+if isempty(gaps)
+	out = NaN; return % constant to within tol
 end
-
-% ------------------------------------------------------------------------------
-%% Parse the c2t output and read off the estimate at rad standard deviations
-% ------------------------------------------------------------------------------
-s = textscan(res, '%[^\n]'); s = s{1};
-% Windows TISEAN executables emit CRLF; strip the CR before parsing.
-s = strtrim(regexprep(s,'\r',''));
-
-% Do NOT slice at a "writing to stdout" marker. That line is stderr output,
-% which BF_RunTisean now discards -- and even when it was captured, Windows
-% buffering could place it AFTER the data, so slicing threw every row away.
-% This is the same failure that was diagnosed and fixed in NL_TISEAN_d2, where
-% the identical pattern discarded a complete c2 curve. The '#m=' blocks below
-% are genuine stdout content and locate the data on their own.
-wi = strmatch('writing to stdout', s);
-if ~isempty(wi)
-	s = s(wi + 1:end);
-end
-
-% There should be one '#m=' block per embedding dimension 1:m; take the
-% last one (dimension m, the one actually requested):
-w = strmatch('#m=', s);
-if length(w) ~= m
-	error('TISEAN routine ''c2t'' returned an unexpected number of data blocks.');
-end
-w(end + 1) = length(s) + 1;
-ss = s(w(m) + 1:w(m + 1) - 1);
-
-rc = zeros(length(ss), 2); % [length scale r, Takens estimate]
-nn = 0;
-for jj = 1:length(ss)
-	tmp = textscan(ss{jj}, '%f%f');
-	if all(cellfun(@isempty, tmp))
-		break % a trailing comment line
+q = 0;
+for k = 1:100
+	step = min(gaps) / k;
+	if step <= 1000*tol, break; end
+	mult = floor(gaps/step + 0.5);
+	if all(abs(gaps - step*mult) <= 0.01*step)
+		q = sum(gaps.*mult) / sum(mult.^2);
+		break
 	end
-	nn = nn + 1;
-	rc(nn, :) = horzcat(tmp{:});
 end
-rc = rc(1:nn, :);
+mergeTol = max(tol, q/2); % distances closer than this are equal
 
-eup = rad * std(y); % upper length scale, in standard deviations of y
-theIndex = find(rc(:, 1) > eup, 1, 'first');
-if isempty(theIndex)
-	out = NaN;
+% ------------------------------------------------------------------------------
+%% One pass: count the pairs, and collect the distances below a guessed radius
+% ------------------------------------------------------------------------------
+% The c0 quantile is located on a histogram of all distances, but only the distances
+% below the quantile are needed: collect those below a guessed radius (a bin edge) with
+% the count of all pairs, then recover the histogram below the guess from the collected
+% distances. If the guess is too small (fewer than K collected), double it and repeat.
+numBins = 200;
+edges = tol * logspace(0, log10(2*span/tol + 1), numBins + 1);
+% Guess from the distances between a subsample of reference points and all others
+sub = unique(round(linspace(1, nRef, min(nRef, 20))));
+ps = [];
+for c = sub
+	ps = [ps; SUB_distances(Y, c, c, past, tol, Inf)]; %#ok<AGROW>
+end
+if isempty(ps)
+	rGuess = Inf;
 else
-	out = rc(theIndex, 2);
+	ps = sort(ps);
+	rGuess = 2*ps(min(numel(ps), ceil(2*c0*numel(ps))));
+end
+while true
+	g = find(edges >= rGuess, 1, 'first'); % guess radius: a bin edge
+	if isempty(g) || g > numBins
+		g = numBins + 1;
+	end
+	rGuess = edges(g);
+	numPos = 0;
+	p = [];
+	for c = 1:SUB_chunkSize(Nemb):nRef
+		[d, nP] = SUB_distances(Y, c, min(c + SUB_chunkSize(Nemb) - 1, nRef), past, tol, rGuess);
+		numPos = numPos + nP;
+		p = [p; d]; %#ok<AGROW>
+	end
+	K = ceil(c0 * numPos); % the c0 quantile is the K-th smallest distance
+	if K < minPairs
+		warning('Too few pairs (%u below the %g quantile) to estimate a dimension', K, c0);
+		out = NaN; return
+	end
+	if g == numBins + 1 || numel(p) >= K
+		break
+	end
+	rGuess = 2*rGuess;
+end
+if g == numBins + 1 % all distances collected (rGuess = edges(end) exceeds all of them)
+	counts = histcounts(p, edges);
+else
+	counts = histcounts(p, edges(1:g)); % bins below the guess, complete
+end
+b = find(cumsum(counts) >= K, 1, 'first');
+rMax = edges(b + 1);
+p = sort(p(p < rMax));
+
+% Merge distances closer than mergeTol into levels (each takes its smallest value); eup
+% is the level of the K-th distance
+level = [0; cumsum(diff(p) > mergeTol)];
+value = p([true; diff(level) > 0]);
+k = level(K); % the number of levels below eup
+if k < 3
+	warning('Fewer than 3 distinct pair distances below the upper length scale');
+	out = NaN; return % the data are too discrete at this scale
 end
 
-
-BF_CleanTempFiles(filePath); % normal completion
-
-catch tiseanCleanupErr
-    BF_CleanTempFiles(filePath);
-    rethrow(tiseanCleanupErr);
+% ------------------------------------------------------------------------------
+%% The estimate
+% ------------------------------------------------------------------------------
+eup = value(k + 1); % (levels are numbered from 0)
+r = value(level(level < k) + 1); % the pairs below eup, at the values of their levels
+out = (numel(r) - 1) / sum(log(eup ./ r));
+m = size(Y, 2);
+if out > 2*m
+	warning('Dimension estimate %g exceeds twice the embedding dimension %u', out, m);
+	out = NaN; % no scaling region at this scale
 end
-% --- end temporary-file safety net --------------------------------------------
+
+end
+% ------------------------------------------------------------------------------
+function s = SUB_chunkSize(Nemb)
+	% Reference points per block (about 2.5 million distances at a time)
+	s = max(1, floor(2.5e6 / Nemb));
+end
+% ------------------------------------------------------------------------------
+function [d, nPos] = SUB_distances(Y, i1, i2, past, tol, rMax)
+	% Max-norm distances above tol and below rMax between reference points i1:i2 and
+	% the delay vectors j > i + past, and the number of those above tol
+	Nemb = size(Y, 1);
+	j1 = i1 + past + 1;
+	if j1 > Nemb
+		d = zeros(0, 1); nPos = 0; return
+	end
+	ii = (i1:i2)';
+	jj = j1:Nemb;
+	D = abs(Y(ii, 1) - Y(jj, 1)');
+	for k = 2:size(Y, 2)
+		D = max(D, abs(Y(ii, k) - Y(jj, k)'));
+	end
+	pos = (jj > ii + past) & (D > tol);
+	nPos = nnz(pos);
+	d = D(pos & (D < rMax)); d = d(:);
 end

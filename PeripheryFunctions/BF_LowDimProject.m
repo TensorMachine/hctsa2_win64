@@ -8,7 +8,7 @@ function [lowDimComponents,componentLabels] = BF_LowDimProject(dataMatrix,whatAl
 % Operations, table detailing the columns of dataMatrix (optional)
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -49,8 +49,8 @@ end
 numFeatures = size(dataMatrix,2);
 switch whatAlgorithm
 case {'pca','PCA'}
-    fprintf(1,'Calculating 2-dimensional principal components of the %u x %u data matrix...\n', ...
-                        size(dataMatrix,1),size(dataMatrix,2));
+    fprintf(1,'Calculating %u-dimensional principal components of the %u x %u data matrix...\n', ...
+                        numComponents,size(dataMatrix,1),size(dataMatrix,2));
 
     % Use pca to compute the first two principal components:
     % (project data into space of PC scores, Y)
@@ -61,10 +61,24 @@ case {'pca','PCA'}
                     '(Could take some time...)'],100*mean(isnan(dataMatrix(:))))
         % Data matrix contains NaNs; try the pairwise rows approximation to the
         % covariance matrix:
-        [pcCoeff,lowDimComponents,~,~,percVar] = pca(BF_NormalizeMatrix(dataMatrix,'zscore'),...
-                                    'Rows','pairwise','NumComponents',numComponents);
-        % If this fails (covariance matrix not positive definite), can try the
-        % (...,'algorithm','als') option in pca... (or toolbox for probabilistic PCA)
+        % If this fails (covariance matrix not positive definite), HCTSA2 falls
+        % back to pca's alternating-least-squares algorithm, made for missing data
+        try
+            dataZ = BF_NormalizeMatrix(dataMatrix,'zscore');
+            [pcCoeff,lowDimComponents,~,~,percVar,mu] = pca(dataZ,...
+                                        'Rows','pairwise','NumComponents',numComponents);
+            % (HCTSA2: pca scores every row that has a NaN as NaN, which drops
+            % those time series from the plot. They are projected with each
+            % missing value at its column's mean, i.e. 0 after centring.)
+            hasNaN = any(isnan(lowDimComponents),2);
+            dataC = bsxfun(@minus,dataZ(hasNaN,:),mu);
+            dataC(isnan(dataC)) = 0;
+            lowDimComponents(hasNaN,:) = dataC*pcCoeff;
+        catch pcaErr
+            warning('Pairwise PCA failed (%s); using pca''s ''als'' algorithm instead.',pcaErr.message)
+            [pcCoeff,lowDimComponents,~,~,percVar] = pca(BF_NormalizeMatrix(dataMatrix,'zscore'),...
+                                        'algorithm','als','NumComponents',numComponents);
+        end
     end
     fprintf(1,'---Done.\n');
 
@@ -72,19 +86,23 @@ case {'pca','PCA'}
     % Display the features loading strongly into the first two components:
     if ~isempty(Operations)
         numTopLoadFeat = min(numFeatures,20); % display this many features loading onto each PC
-        LowDimDisplayTopLoadings(numTopLoadFeat,2,pcCoeff,lowDimComponents,dataMatrix,Operations);
+        LowDimDisplayTopLoadings(numTopLoadFeat,min(2,size(pcCoeff,2)),pcCoeff,lowDimComponents,dataMatrix,Operations);
     end
 
     % Text labels for each component:
-    componentLabels = cell(2,1);
-    for i = 1:2
+    % (HCTSA2: one label per component computed; was always 2)
+    componentLabels = cell(size(lowDimComponents,2),1);
+    for i = 1:size(lowDimComponents,2)
         componentLabels{i} = sprintf('PC-%u (%.2f%% var)',i,percVar(i));
     end
 
 case {'tSNE','tsne'}
     defaultNumPCs = 100;
     numPCAComponents = min(size(dataMatrix,2),defaultNumPCs);
-    rng('default') % for reproducibility
+    % For reproducibility; HCTSA2: the caller's random stream is restored afterwards
+    rngOnEntry = rng;
+    restoreRng = onCleanup(@() rng(rngOnEntry)); %#ok<NASGU>
+    rng('default')
 
     if numPCAComponents < size(dataMatrix,2)
         fprintf(1,['Computing a two-dimensional t-SNE embedding (using barnes-hut',...

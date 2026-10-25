@@ -1,13 +1,18 @@
-function data = DVV_dvv(x, m, Nsub, nd, Ntv)
+function data = DVV_dvv(x, m, Nsub, nd, Ntv, tau, refDV)
 % Delay Vector Variance method for real and complex signals
 %
 %
-% USAGE: C = dvv (X, m, Nsub, nd, Ntv)
+% USAGE: C = dvv (X, m, Nsub, nd, Ntv, tau)
 %	X       original real-valued or complex time series
 %	m       delay embedding dimension
 %	Ntv     number of points on horizontal axes
 %	Nsub	number of reference DVs to consider
 %	nd      Span over which to perform DVV
+%	tau     time delay between delay-vector elements, in samples (default 1).
+%	        hctsa modification: the original fixed tau = 1.
+%	refDV   (optional) indices (1 to N - m*tau) of the Nsub reference delay vectors.
+%	        hctsa modification: by default they are drawn at random (randsample),
+%	        as in the original.
 %
 %
 %   A Delay Vector Variance (DVV) toolbox for MATLAB
@@ -49,15 +54,14 @@ end
 if nargin < 5 || isempty(Ntv)
 	Ntv = 25*nd;
 end
-if nargin < 6 || isempty(numSurr)
-    numSurr = 10;
+if nargin < 6 || isempty(tau)
+    tau = 1; % time delay (samples) between the elements of each delay vector
 end
 
 % ------------------------------------------------------------------------------
 % Initial Conditions
 % ------------------------------------------------------------------------------
 N = length(x);              % Length of input vector
-tau = 1;                    % Time delay parameter
 d = zeros(N-m*tau, Nsub);
 y = zeros(Ntv,1);
 
@@ -67,63 +71,86 @@ if size(x,2) > size(x,1)
 end
 
 % Generate Nsub subset from existing DV's, randomly
-ref = randsample(N - m*tau,Nsub) + m*tau;
+if nargin < 7 || isempty(refDV)
+    ref = randsample(N - m*tau,Nsub) + m*tau;
+else
+    ref = refDV(:) + m*tau; % (the target index of each reference delay vector)
+end
 
 % Compute pairwise distances between reference DVs and all DVs
-count = 0;
-acc = 0;
-for i = 1:Nsub
-    for j = m*tau+1:N
-        d(j-m*tau,i) = norm (x(ref(i)-m*tau:tau:ref(i)-tau) - x(j-m*tau:tau:j-tau));
-        if (ref(i) ~= j)
-            acc = acc + d(j-m*tau,i);
-            count = count + 1;
-        end
-    end
+% (hctsa modification: the original evaluated norm() once per (reference,
+% point) pair -- Nsub x (N - m*tau) scalar calls, and this function is run
+% once per surrogate too -- which dominated NL_DVV's cost. Build the delay
+% vectors once and use pdist2; d, avg and variance are exactly as before.)
+Nd = N - m*tau;
+Y = zeros(Nd, m); % delay vectors: row r holds x(r : tau : r + (m-1)*tau), i.e., the DV of point j = r + m*tau
+for k = 1:m
+    Y(:,k) = x((1:Nd) + (k-1)*tau);
 end
+d = pdist2(Y, Y(ref - m*tau, :)); % Nd x Nsub: d(j - m*tau, i) = ||DV_ref(i) - DV_j||
 
-% Mean and std variation calculation of input data
-avg = acc/count;
-count = 0;
-acc = 0;
-for i = 1:Nsub
-    for j = m*tau + 1:N
-        if (ref(i) ~= j)
-            acc = acc + (d(j-m*tau,i)-avg).^2;
-            count = count + 1;
-        end
-    end
-end
-variance = sqrt(acc/(count-1));
+% Mean and std variation calculation of input data, over all (reference,
+% point) pairs except each reference's pairing with itself (distance 0):
+count = Nsub*Nd - Nsub;
+avg = sum(d(:))/count;
+variance = sqrt((sum((d(:)-avg).^2) - Nsub*avg^2)/(count-1));
 
 % Calculates the range vector consisting of Ntv equally spaced regions
 n = (1:Ntv)-1;
 rd = avg-nd*variance + (2*nd*variance*n)/(Ntv-1);
 
 % Creates sets of DV's, for each ref element of subset and value rd, which have norms closer than distance rd to ref
-for n = 1:length(rd)
-    if rd(n) > 0
-        tot = 0;
-        count = 0;
-        for k = 1:Nsub
-            IND = find(d(:,k) <= rd(n)) + m*tau;
-            IND = IND(IND~=k);
-            % Only those variance values are considered for which the corresponding
-            % sets have atleast 30 DVs
-            if (length(IND) >= 30)
-                tot = tot + var(x(IND));
-                count = count+1;
-            end
-        end
-        if (~count)
-            y(n) = NaN;
-        else
-            y(n) = tot/(count*var(x));
-        end
-    else
-        y(n) = NaN;
+% (hctsa modification: the original looped over every (rd, reference) pair
+% with a find() and a var() over the selected targets. Equivalent here:
+% for each reference, sort its distances once; the set within each rd is then
+% a leading run of the sorted targets, whatever the order among equal
+% distances. The set around a reference excludes the reference vector itself;
+% the original instead excluded the target with raw index k, the loop counter
+% rather than ref(k).)
+% (hctsa modification: the variance of each set is computed in two passes,
+% the mean and then the mean squared deviation from it (Chan, Golub and
+% LeVeque, Am. Stat. 37, 242 (1983)), which cannot be negative and is exactly
+% 0 for equal targets. A variance below tol^2, with tol = 1e-12 of the range of
+% x, is that of targets equal up to rounding, and is 0.)
+tol = 1e-12 * (max(x) - min(x));
+tot = zeros(1, Ntv);
+count = zeros(1, Ntv);
+rdRow = rd(:)';
+% (hctsa modification: the variance of each leading run of sorted targets comes
+% from prefix sums of the mean-shifted targets, and the counts within each rd
+% from one histogram of the sorted distances. Prefix sums lose accuracy when a
+% set's variance is small relative to the spread of x, so below 1e-4 of the
+% mean square of the shifted x (error ~1e-12 relative) the two-pass var() is
+% used, as before; this also keeps the tol clamp exact.)
+xc = x - mean(x);
+vSmall = 1e-4 * mean(xc.^2);
+rdUp = rdRow + eps(rdRow); % next double above rd (rd > 0 where used): ds <= rd  <=>  ds < rdUp
+for k = 1:Nsub
+    [ds, o] = sort(d(:,k));
+    notSelf = (o ~= ref(k) - m*tau); % (the reference vector itself)
+    ds = ds(notSelf);
+    xs = x(o(notSelf) + m*tau);
+    % number of targets within each rd (1 x Ntv), counting ds <= rd
+    c = cumsum(histcounts(ds, [-Inf, rdUp, Inf]));
+    c = c(1:Ntv);
+    % Only those variance values are considered for which the corresponding
+    % sets have atleast 30 DVs
+    ok = find((c >= 30) & (rdRow > 0));
+    if isempty(ok), continue; end
+    xk = xc(o(notSelf) + m*tau);
+    cn = c(ok)';
+    cs1 = cumsum(xk(1:max(cn)));
+    cs2 = cumsum(xk(1:max(cn)).^2);
+    vv = ((cs2(cn) - cs1(cn).^2 ./ cn) ./ (cn - 1))';
+    for jj = find(~(vv >= vSmall)) % small or NaN: two-pass
+        vv(jj) = var(xs(1:cn(jj)));
     end
+    vv(vv <= tol^2) = 0;
+    tot(ok) = tot(ok) + vv;
+    count(ok) = count(ok) + 1;
 end
+y = nan(Ntv, 1);
+y(count > 0) = (tot(count > 0) ./ (count(count > 0) * var(x)))';
 
 % Horizontal axis
 T = (rd'-avg)/variance;

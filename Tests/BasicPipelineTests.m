@@ -11,32 +11,58 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
         precomputedMatNormName = 'HCTSA_Bonn_EEG_N.mat'
         precomputedCatch22Mat = 'HCTSA_catch22_expected.mat';
         timeSeriesINP = 'INP_unit_test.mat';
-        requiredFiles;
+        % (HCTSA2 2.2.1) false when the 50 MB Bonn file is not in Tests; the
+        % tests that need it are then skipped (assumeBonnFixture).
+        bonnAvailable = false;
     end
 
     methods(TestClassSetup)
 
+        function suppressFigureWindows(testCase)
+            % Render figures off-screen for the duration of the test class so
+            % the plotting tests (TS_PlotTimeSeries, TS_PlotDataMatrix,
+            % TS_PlotLowDim, TS_SimSearch, ...) don't pop windows and steal
+            % focus, and so CI runs headless-clean. Figures are still created
+            % and closed exactly as before; only their visibility changes.
+            oldState = get(groot, 'defaultFigureVisible');
+            set(groot, 'defaultFigureVisible', 'off');
+            testCase.addTeardown(@() set(groot, 'defaultFigureVisible', oldState));
+        end
+
         function runStartup(testCase)
+            % (HCTSA2 2.2.1) Paths come from this file's own location, so the
+            % class runs from any current folder; the tests name their files
+            % relative to Tests, so work in it. Logs start afresh each run.
+            testFolder = fileparts(mfilename('fullpath'));
+            testCase.applyFixture(matlab.unittest.fixtures.CurrentFolderFixture(testFolder));
             try
-                run("../startup.m")
+                run(fullfile(fileparts(testFolder), 'startup.m'))
                 pass = true;
             catch
                 pass = false;
             end
             testCase.fatalAssertTrue(pass, 'HCTSA failed to startup successfully.')
-            % set the required files for benchmarking
-            testCase.requiredFiles = {testCase.timeSeriesINP, testCase.precomputedMatNameOG, testCase.precomputedCatch22Mat};
-            
+            logFiles = {testCase.logFileName, testCase.failedOpFileName};
+            for i = 1:numel(logFiles)
+                if isfile(testCase.inTestFolder(logFiles{i}))
+                    delete(testCase.inTestFolder(logFiles{i}));
+                end
+            end
         end
 
         function makeCopyofMat(testCase)
             % make a copy of the base .mat file
-            duplicatedFileName = testCase.precomputedMatName;
-            originalFileName = testCase.precomputedMatNameOG;
+            duplicatedFileName = testCase.inTestFolder(testCase.precomputedMatName);
+            originalFileName = testCase.inTestFolder(testCase.precomputedMatNameOG);
 
-            doesOGExist = exist(originalFileName, 'file') == 2;
-            testCase.fatalAssertTrue(doesOGExist, 'Original HCTSA mat file not found.')
-        
+            % (HCTSA2 2.2.1) This fork leaves the 50 MB Bonn file out and only
+            % some tests use it: note whether it is there instead of aborting
+            % the whole class (see assumeBonnFixture).
+            testCase.bonnAvailable = exist(originalFileName, 'file') == 2;
+            if ~testCase.bonnAvailable
+                return
+            end
+
             copyfile(originalFileName, duplicatedFileName);
             doesDuplicateExist = exist(duplicatedFileName, 'file') == 2;
             testCase.fatalAssertTrue(doesDuplicateExist, 'Duplicated HCTSA .mat file not found.')
@@ -44,9 +70,10 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function checkRequiredFiles(testCase)
             % check that all the files required for unit tests exist
-            req_files = testCase.requiredFiles;
+            % (the Bonn file is checked per test, by assumeBonnFixture)
+            req_files = {testCase.timeSeriesINP, testCase.precomputedCatch22Mat};
             for i = 1:numel(req_files)
-                testCase.fatalAssertTrue(exist(req_files{i}, 'file') == 2, ...
+                testCase.fatalAssertTrue(exist(testCase.inTestFolder(req_files{i}), 'file') == 2, ...
                     sprintf('Required file "%s" does not exist.', req_files{i}));
             end
         end
@@ -56,12 +83,22 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
     methods(TestClassTeardown)
         % clean up any remaining artifcats after unit tests have finished. 
          function cleanupTestClass(testCase)
-                allMatFiles = dir('*.mat');
+                % (HCTSA2 2.2.1) Only ever deletes in this file's own folder, and
+                % never the fixtures, whatever the current folder is and
+                % whether or not class setup got this far.
+                testFolder = fileparts(mfilename('fullpath'));
+                allMatFiles = dir(fullfile(testFolder, '*.mat'));
                 allMatFiles = {allMatFiles.name};
-                filesToDelete = setdiff(allMatFiles, testCase.requiredFiles);
+                % HCTSA2: hctsa2_reference_input.mat and (3.0.0) hctsa2_testdata.mat,
+                % HCTSA2_TestRun's data, are tracked files of this fork that live in
+                % Tests/ too; never delete them.
+                keepFiles = {testCase.timeSeriesINP, testCase.precomputedMatNameOG, ...
+                    testCase.precomputedCatch22Mat, 'hctsa2_reference_input.mat', ...
+                    'hctsa2_testdata.mat'};
+                filesToDelete = setdiff(allMatFiles, keepFiles);
                 for i = 1:numel(filesToDelete)
-                    if exist(filesToDelete{i}, 'file') == 2
-                        delete(filesToDelete{i});
+                    if exist(fullfile(testFolder, filesToDelete{i}), 'file') == 2
+                        delete(fullfile(testFolder, filesToDelete{i}));
                     end
                 end
                 % tidy up
@@ -119,6 +156,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
                 t = (0:N-1)/fs;
                 x = 1.0 * sin(2*pi*f*t);
                 x_noisy = x + 0.1 * randn(size(x));
+                executionTime = NaN; % (HCTSA2 2.2.1) defined even if the call below throws
                 try
                     startTime = tic;
                     featVector = TS_CalculateFeatureVector(x_noisy');
@@ -159,7 +197,10 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
             % compare to expected output
             actual_output = load(matName, 'TS_DataMat').TS_DataMat;
             expected_output = load(testCase.precomputedCatch22Mat, 'TS_DataMat').TS_DataMat;
-            testCase.verifyEqual(actual_output, expected_output, 'Expected output != actual output, catch22.', "RelTol", 0.1)
+            % Tightened from RelTol=0.1 (10%, loose enough to hide real regressions)
+            % down to 1e-4; loosen again if legitimate cross-platform/mex numerical
+            % differences make this too strict.
+            testCase.verifyEqual(actual_output, expected_output, 'Expected output != actual output, catch22.', "RelTol", 1e-4)
 
         end
 
@@ -211,11 +252,221 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
             quality_labels = load("HCTSA.mat", "TS_Quality").TS_Quality;
             fatal_error_ops_ids = quality_labels == 1;
             fatal_error_ops_table = ops_all(fatal_error_ops_ids, :);
-            writetable(fatal_error_ops_table, testCase.failedOpFileName);
+            writetable(fatal_error_ops_table, testCase.inTestFolder(testCase.failedOpFileName));
+        end
+
+        function test_TS_Compute_split_equals_single(testCase)
+            % Regression test for the special-value round-trip bug: computing an
+            % HCTSA dataset in a single TS_Compute call must yield a byte-identical
+            % TS_DataMat to computing it in several calls over disjoint
+            % time-series ID ranges (as batched / resumed / runslice-style runs
+            % do). Previously a single call stored special/error cells as the
+            % literal 0 while a batched call reloaded earlier rows via
+            % TS_LoadData and wrote them back as NaN -- so the same computation
+            % gave a different on-disk TS_DataMat depending on how it was split.
+            % TS_Compute now stores special cells as NaN in every case.
+
+            inpFile = 'INP_split_test.mat';
+            singleFile = 'HCTSA_split_single.mat';
+            splitFile  = 'HCTSA_split_multi.mat';
+
+            % A constant series guarantees some special-valued (quality>0) cells
+            % under catch22; the rest exercise ordinary values:
+            rng(42);
+            timeSeriesData = {randn(200,1); 2.5*ones(150,1); cumsum(randn(300,1)); sin((1:250)'/3)};
+            labels = {'rand_ts';'constant_ts';'randomwalk_ts';'sine_ts'};
+            keywords = {'a';'b';'c';'d'};
+            save(inpFile,'timeSeriesData','labels','keywords');
+
+            for f = {singleFile, splitFile}
+                if exist(f{1},'file'), delete(f{1}); end
+                TS_Init(inpFile,'catch22',false,f{1});
+            end
+
+            % One call vs. two calls over disjoint ts-id ranges:
+            TS_Compute(false,[],[],'missing',singleFile,'fast');
+            TS_Compute(false,1:2,[],'missing',splitFile,'fast');
+            TS_Compute(false,3:4,[],'missing',splitFile,'fast');
+
+            a = load(singleFile);
+            b = load(splitFile);
+
+            testCase.assertTrue(any(a.TS_Quality(:) > 0), ...
+                'Test is vacuous: no special-valued cells were produced.');
+            testCase.verifyEqual(b.TS_Quality, a.TS_Quality, ...
+                'TS_Quality differs between split and single compute.');
+            testCase.verifyEqual(isnan(b.TS_DataMat), isnan(a.TS_DataMat), ...
+                'NaN pattern of TS_DataMat differs between split and single compute.');
+            testCase.verifyEqual(b.TS_DataMat, a.TS_DataMat, 'RelTol', 0, ...
+                'TS_DataMat differs between split and single compute.');
+            % Special/error cells must be stored on disk as NaN:
+            testCase.verifyTrue(all(isnan(a.TS_DataMat(a.TS_Quality > 0))), ...
+                'Special-valued cells not stored as NaN after single compute.');
+            testCase.verifyTrue(all(isnan(b.TS_DataMat(b.TS_Quality > 0))), ...
+                'Special-valued cells not stored as NaN after split compute.');
+        end
+
+        function test_TS_Compute_autosave(testCase)
+            % autosaveEvery writes partial progress mid-run without changing the
+            % final result. Default (Inf) writes only once, at the end.
+            inpFile = 'INP_autosave_test.mat';
+            offFile = 'HCTSA_autosave_off.mat';
+            onFile  = 'HCTSA_autosave_on.mat';
+
+            rng(11);
+            timeSeriesData = {randn(200,1); cumsum(randn(250,1)); sin((1:220)'/4); ...
+                randn(180,1); 3*ones(160,1); abs(randn(240,1))};
+            labels = {'ts1';'ts2';'ts3';'ts4';'ts5';'ts6'};
+            keywords = repmat({'k'},6,1);
+            save(inpFile,'timeSeriesData','labels','keywords');
+
+            for f = {offFile, onFile}
+                if exist(f{1},'file'), delete(f{1}); end
+                TS_Init(inpFile,'catch22',false,f{1});
+            end
+
+            TS_Compute('none',[],[],'missing',offFile,'fast');                 % default: save once
+            logText = evalc("TS_Compute('none',[],[],'missing',onFile,'fast',[],0.001);"); % autosave aggressively
+
+            testCase.verifySubstring(logText, 'Autosaved progress', ...
+                'autosaveEvery did not produce any mid-run autosave.');
+
+            off = load(offFile);
+            on  = load(onFile);
+            testCase.verifyEqual(on.TS_DataMat, off.TS_DataMat, 'RelTol', 0, ...
+                'Autosaving changed the computed TS_DataMat.');
+            testCase.verifyEqual(on.TS_Quality, off.TS_Quality, ...
+                'Autosaving changed the computed TS_Quality.');
+        end
+
+        function test_TS_Compute_series_parallel_equals_serial(testCase)
+            % parallelHow='series' (parfor over time series) must give a
+            % byte-identical result to parallelHow='none' (serial). Also checks
+            % the backwards-compatible logical aliases (false->'none',
+            % true->'operations') and that 'series' resumes an interrupted run.
+            %
+            % Opt-in: set the environment variable HCTSA_TEST_PARALLEL to run
+            % it. Off by default because (a) CI has no Parallel Computing
+            % Toolbox (there 'series' just falls back to serial anyway) and
+            % (b) some MATLAB installs cannot start a parpool from inside a
+            % matlab.unittest run at all -- an environment bug, not an hctsa
+            % one. Exercise this path directly from a script when in doubt.
+            testCase.assumeTrue(~isempty(getenv('HCTSA_TEST_PARALLEL')), ...
+                'Set HCTSA_TEST_PARALLEL to run the series-parallel test.');
+            testCase.assumeTrue(logical(license('test','Distrib_Computing_Toolbox')), ...
+                'Parallel Computing Toolbox not available -- skipping series-parallel test.');
+
+            inpFile = 'INP_series_test.mat';
+            serialFile = 'HCTSA_series_serial.mat';
+            seriesFile = 'HCTSA_series_parallel.mat';
+            aliasFile  = 'HCTSA_series_alias.mat';
+
+            rng(7);
+            timeSeriesData = {randn(200,1); 2.5*ones(150,1); cumsum(randn(300,1)); ...
+                sin((1:250)'/3); randn(180,1)+1; abs(randn(220,1))};
+            labels = {'ts1';'ts2';'ts3';'ts4';'ts5';'ts6'};
+            keywords = repmat({'k'},6,1);
+            save(inpFile,'timeSeriesData','labels','keywords');
+
+            for f = {serialFile, seriesFile, aliasFile}
+                if exist(f{1},'file'), delete(f{1}); end
+                TS_Init(inpFile,'catch22',false,f{1});
+            end
+
+            TS_Compute('none',   [],[],'missing',serialFile,'fast');
+            TS_Compute('series', [],[],'missing',seriesFile,'fast');
+            TS_Compute(false,    [],[],'missing',aliasFile,'fast'); % logical alias -> 'none'
+
+            a = load(serialFile);
+            b = load(seriesFile);
+            c = load(aliasFile);
+
+            testCase.assertTrue(any(a.TS_Quality(:) > 0), ...
+                'Test is vacuous: no special-valued cells were produced.');
+            testCase.verifyEqual(b.TS_Quality, a.TS_Quality, ...
+                'TS_Quality differs between series-parallel and serial compute.');
+            testCase.verifyEqual(b.TS_DataMat, a.TS_DataMat, 'RelTol', 0, ...
+                'TS_DataMat differs between series-parallel and serial compute.');
+            testCase.verifyEqual(c.TS_DataMat, a.TS_DataMat, 'RelTol', 0, ...
+                'Logical false first argument is not equivalent to ''none''.');
+            testCase.verifyTrue(all(isnan(b.TS_DataMat(b.TS_Quality > 0))), ...
+                'Special-valued cells not stored as NaN after series-parallel compute.');
+
+            % Resume: wipe some rows and recompute 'missing' in series mode:
+            b.TS_DataMat(4:6,:) = NaN;
+            b.TS_Quality(4:6,:) = NaN;
+            b.TS_CalcTime(4:6,:) = NaN;
+            save(seriesFile,'-struct','b');
+            TS_Compute('series',[],[],'missing',seriesFile,'fast');
+            bResumed = load(seriesFile);
+            testCase.verifyEqual(bResumed.TS_DataMat, a.TS_DataMat, 'RelTol', 0, ...
+                'series-parallel did not correctly resume an interrupted run.');
+        end
+
+        function test_TS_Combine_nway_equals_pairwise(testCase)
+            % The many-file form TS_Combine({f1,...,fN},...) of G disjoint
+            % subsets must give the same combined matrices and TimeSeries.ID
+            % ordering as accumulating the subsets pairwise through the two-file
+            % form of TS_Combine.
+            testCase.assumeBonnFixture();
+            src = testCase.precomputedMatName; % computed HCTSA (copy of OG)
+            raw = load(src);
+            allIDs = raw.TimeSeries.ID;
+            edges = round(linspace(0,numel(allIDs),5)); % 4 disjoint blocks
+
+            % Build the subset files by raw indexing (independent of TS_Subset):
+            subFiles = cell(1,4);
+            for k = 1:4
+                subFiles{k} = sprintf('HCTSA_combine_part%u.mat',k);
+                if exist(subFiles{k},'file'), delete(subFiles{k}); end
+                its = ismember(allIDs, allIDs(edges(k)+1:edges(k+1)));
+                S = raw;
+                S.TimeSeries = raw.TimeSeries(its,:);
+                S.TS_DataMat = raw.TS_DataMat(its,:);
+                S.TS_Quality = raw.TS_Quality(its,:);
+                S.TS_CalcTime = raw.TS_CalcTime(its,:);
+                save(subFiles{k},'-struct','S','-v7.3');
+            end
+
+            % Pairwise accumulation via TS_Combine (compare_tsids = true):
+            pairFile = 'HCTSA_combine_pairwise.mat';
+            if exist(pairFile,'file'), delete(pairFile); end
+            copyfile(subFiles{1},pairFile);
+            for k = 2:4
+                TS_Combine(pairFile, subFiles{k}, true, false, pairFile, true);
+            end
+
+            % One-shot N-way combine (cell array as the first argument):
+            manyFile = 'HCTSA_combine_many.mat';
+            if exist(manyFile,'file'), delete(manyFile); end
+            TS_Combine(subFiles, manyFile, true, true);
+
+            p = load(pairFile);
+            m = load(manyFile);
+
+            testCase.verifyEqual(m.TimeSeries.ID, p.TimeSeries.ID, ...
+                'TimeSeries.ID ordering differs between N-way and pairwise combine.');
+            testCase.verifyEqual(sort(m.TimeSeries.ID), sort(allIDs), ...
+                'N-way combine did not recover every original time series exactly once.');
+            testCase.verifyEqual(m.TS_DataMat, p.TS_DataMat, 'RelTol', 0, ...
+                'TS_DataMat differs between N-way and pairwise combine.');
+            testCase.verifyEqual(m.TS_Quality, p.TS_Quality, ...
+                'TS_Quality differs between N-way and pairwise combine.');
+            testCase.verifyEqual(m.TS_CalcTime, p.TS_CalcTime, 'RelTol', 0, ...
+                'TS_CalcTime differs between N-way and pairwise combine.');
+
+            % Also equals the original (rows reordered by sorted ID):
+            [~,ord] = sort(allIDs);
+            testCase.verifyEqual(m.TS_DataMat, raw.TS_DataMat(ord,:), 'RelTol', 0, ...
+                'N-way combined TS_DataMat does not match the original.');
+
+            for k = 1:4, delete(subFiles{k}); end
+            delete(pairFile); delete(manyFile);
         end
 
         function test_TS_InspectQuality(testCase)
-            % simple check of whether or not the function runs. 
+            % simple check of whether or not the function runs.
+            testCase.assumeBonnFixture();
             try
                 TS_InspectQuality('summary', testCase.precomputedMatName);
                 close()
@@ -229,6 +480,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_Normalize(testCase)
             % check whether TS_Normalize executes successfully (w. default)
+            testCase.assumeBonnFixture();
             expectedNormMatFile = testCase.precomputedMatNormName;
 
             if exist(expectedNormMatFile, 'file')
@@ -250,6 +502,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_PlotTimeSeries(testCase)
             % basic check - does the function run
+            testCase.assumeBonnFixture();
             try
                 TS_PlotTimeSeries(testCase.precomputedMatName)
                 close()
@@ -264,6 +517,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_PlotDataMatrix(testCase)
             % basic check - does the function run
+            testCase.assumeBonnFixture();
             try
                 TS_PlotDataMatrix('whatData', testCase.precomputedMatNormName) % uses norm data
                 close()
@@ -278,6 +532,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_Subset(testCase)
             %  basic check - does the function run without errors? 
+            testCase.assumeBonnFixture();
             newFilteredMatName = 'HCTSA_locDepFiltered.mat';
             % delte new filtered mat if already exists before unit test
             if exist(newFilteredMatName, 'file')
@@ -302,8 +557,76 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
             delete(newFilteredMatName)
         end
 
+        function test_TS_Subset_roundtrip(testCase)
+            % TS_Subset must produce a file whose matrices/tables exactly equal
+            % the manually-indexed source, carry forward auxiliary variables,
+            % and NOT drag along a full-size copy of the source (the old
+            % copyfile + save('-append') path bloated -v7.3 subset files with
+            % the overwritten full matrices' dead space).
+            testCase.assumeBonnFixture();
+            src = testCase.precomputedMatName; % computed HCTSA (copy of OG)
+            outFile = 'HCTSA_subset_roundtrip.mat';
+            if exist(outFile,'file'), delete(outFile); end
+
+            raw = load(src);
+            tsKeep = raw.TimeSeries.ID(1:50);
+            opKeep = raw.Operations.ID(1:1000);
+
+            TS_Subset(src, tsKeep, opKeep, true, outFile);
+            testCase.assertTrue(exist(outFile,'file') == 2, 'Subset file not created.');
+
+            sub = load(outFile);
+            its = ismember(raw.TimeSeries.ID, tsKeep);
+            iop = ismember(raw.Operations.ID, opKeep);
+
+            testCase.verifyEqual(sub.TS_DataMat, raw.TS_DataMat(its,iop), 'RelTol', 0, ...
+                'TS_DataMat subset does not match manual indexing.');
+            testCase.verifyEqual(sub.TS_Quality, raw.TS_Quality(its,iop), ...
+                'TS_Quality subset does not match manual indexing.');
+            testCase.verifyEqual(sub.TS_CalcTime, raw.TS_CalcTime(its,iop), ...
+                'TS_CalcTime subset does not match manual indexing.');
+            testCase.verifyEqual(sub.TimeSeries.ID, raw.TimeSeries.ID(its), ...
+                'TimeSeries.ID subset does not match manual indexing.');
+            testCase.verifyEqual(sub.Operations.ID, raw.Operations.ID(iop), ...
+                'Operations.ID subset does not match manual indexing.');
+            testCase.verifyTrue(isfield(sub,'MasterOperations'), ...
+                'MasterOperations not carried forward into the subset file.');
+
+            % Special/error cells carried through from the source unchanged
+            % (not NaN-ified by the subset step):
+            testCase.verifyEqual(isnan(sub.TS_DataMat), isnan(raw.TS_DataMat(its,iop)), ...
+                'Subset step altered the NaN pattern of TS_DataMat.');
+
+            % Every stored (ts x op) matrix must be subset-sized in the file:
+            w = whos('-file', outFile);
+            dm = w(strcmp({w.name},'TS_DataMat'));
+            testCase.verifyEqual(dm.size, [50 1000], ...
+                'TS_DataMat in the subset file is not subset-sized.');
+
+            % ...and the file itself must not be a near-copy of the source:
+            d = dir(src);      srcBytes = d.bytes;
+            d = dir(outFile);  subBytes = d.bytes;
+            testCase.verifyLessThan(subBytes, 0.5*srcBytes, ...
+                'Subset file is close to the source file size (full-file copy / dead space).');
+
+            % In-memory subset from a pre-loaded struct (doSave defaults false):
+            [dm2,ts2,op2] = TS_Subset(raw, tsKeep, opKeep);
+            testCase.verifyEqual(ts2.ID, raw.TimeSeries.ID(its), ...
+                'Struct-source subset: TimeSeries.ID mismatch.');
+            testCase.verifyEqual(op2.ID, raw.Operations.ID(iop), ...
+                'Struct-source subset: Operations.ID mismatch.');
+            % Returned matrix is NaN-ified for special cells (TS_LoadData convention):
+            expected = raw.TS_DataMat(its,iop);
+            expected(~isfinite(expected) | raw.TS_Quality(its,iop) > 0) = NaN;
+            testCase.verifyEqual(dm2, expected, 'RelTol', 0, ...
+                'Struct-source subset: returned TS_DataMat mismatch.');
+
+            delete(outFile);
+        end
+
         function test_TS_PlotLowDim(testCase)
             % basic check - does the function run without errors
+            testCase.assumeBonnFixture();
             try
                 TS_PlotLowDim(testCase.precomputedMatNormName, 'pca')
                 close()
@@ -318,6 +641,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_LabelGroups(testCase)
             % basic check - does the function run without errors
+            testCase.assumeBonnFixture();
             try
                 TS_LabelGroups(testCase.precomputedMatNormName, {'eyesOpen', 'seizure'});
                 pass = true;
@@ -330,6 +654,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
         function test_GiveMeDefaultClassificationParams(testCase)
             % test the default classification params when using different
             % labels (2 class problem)
+            testCase.assumeBonnFixture();
             TS_LabelGroups(testCase.precomputedMatNormName, {'eyesOpen', 'eyesClosed'});
             try
                 cfnParams = GiveMeDefaultClassificationParams(testCase.precomputedMatNormName);
@@ -360,6 +685,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_Classify(testCase)
             % test default settings
+            testCase.assumeBonnFixture();
             TS_LabelGroups(testCase.precomputedMatNormName, {'eyesOpen', 'seizure', 'eyesClosed', 'epileptogenic', 'hippocampus'});
             try
                 TS_Classify(testCase.precomputedMatNormName, struct(), '', doPlot=false);
@@ -383,6 +709,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_CompareFeatureSets(testCase)
             % basic checks - does the function run without error
+            testCase.assumeBonnFixture();
             TS_LabelGroups(testCase.precomputedMatNormName, {'epileptogenic','hippocampus'});
             cfnParams = GiveMeDefaultClassificationParams(testCase.precomputedMatNormName);
             % use params for fast evaluation/basic checks for successful
@@ -401,6 +728,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_ClassifyLowDim(testCase)
             % basic checks - does the function run without error
+            testCase.assumeBonnFixture();
             TS_LabelGroups(testCase.precomputedMatNormName, {'epileptogenic','hippocampus'});
             cfnParams = GiveMeDefaultClassificationParams(testCase.precomputedMatNormName);
             cfnParams.numFolds = 2;
@@ -417,6 +745,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_TopFeatures(testCase)
             % basic checks - does the function run without error
+            testCase.assumeBonnFixture();
             TS_LabelGroups(testCase.precomputedMatNormName, {'epileptogenic','hippocampus'})
             try
                 TS_TopFeatures(testCase.precomputedMatNormName,'classification', struct(), 'whatPlots',{'histogram'});
@@ -430,6 +759,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_FeatureSummary(testCase)
             % basic checks - does the function run without error
+            testCase.assumeBonnFixture();
             TS_LabelGroups(testCase.precomputedMatNormName, {'epileptogenic','hippocampus'})
             try
                 TS_FeatureSummary(95, testCase.precomputedMatNormName, true, false);
@@ -443,6 +773,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_SimSearch(testCase)
             % basic checks - does the function run without error
+            testCase.assumeBonnFixture();
             try
                 TS_SimSearch('whatData', testCase.precomputedMatNormName);
                 close();
@@ -466,6 +797,7 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
 
         function test_TS_SingleFeature(testCase)
             % basic checks - does the function run without error
+            testCase.assumeBonnFixture();
             opID = 500; % choose a random operation
             makeViolin = false;
             try
@@ -481,29 +813,50 @@ classdef BasicPipelineTests < matlab.unittest.TestCase
     end
 
     methods(Access = private)
+        function assumeBonnFixture(testCase)
+            % (HCTSA2 2.2.1) Skip (not fail) a test that needs upstream's Bonn
+            % EEG benchmark file when it has not been copied into Tests.
+            testCase.assumeTrue(testCase.bonnAvailable, ...
+                sprintf('%s (50 MB, upstream''s Bonn EEG benchmark) is not in Tests; see INSTALL.md.', ...
+                testCase.precomputedMatNameOG));
+        end
+
+        function fullName = inTestFolder(~, fileName)
+            % (HCTSA2 2.2.1) Absolute path of a file in this file's own folder.
+            fullName = fullfile(fileparts(mfilename('fullpath')), fileName);
+        end
+
         function writeToLog(testCase, message)
-            logFile = fopen(testCase.logFileName, 'a');
+            logFile = fopen(testCase.inTestFolder(testCase.logFileName), 'a');
             fprintf(logFile, '%s\n', message);
             fclose(logFile);
         end
 
         function printLogFile(testCase)
-            logFile = fopen(testCase.logFileName, 'r');
-            logData = textscan(logFile, '%s', 'Delimiter', '\n');
-            fclose(logFile);
+            % (HCTSA2 2.2.1) Either file is missing when its test did not run
+            % (failed, filtered or skipped); the teardown must not fail then.
+            logPath = testCase.inTestFolder(testCase.logFileName);
+            failedPath = testCase.inTestFolder(testCase.failedOpFileName);
             fprintf('\n==============================================================\n');
             fprintf('                    Unit Test Log                      \n');
             fprintf('==============================================================\n\n');
-            % print the contents of the custom log file
-            for i = 1:length(logData{1})
-                fprintf('%s\n', logData{1}{i});
+            if isfile(logPath)
+                logFile = fopen(logPath, 'r');
+                logData = textscan(logFile, '%s', 'Delimiter', '\n');
+                fclose(logFile);
+                % print the contents of the custom log file
+                for i = 1:length(logData{1})
+                    fprintf('%s\n', logData{1}{i});
+                end
             end
             % print the table of fatal error operations
             fprintf('\n==============================================================\n');
             fprintf('      Noisy Sinusoid Benchmark Fatal Error Summary               \n');
             fprintf('==============================================================\n\n');
-            failed_operations = readtable(testCase.failedOpFileName);
-            disp(failed_operations);
+            if isfile(failedPath)
+                failed_operations = readtable(failedPath);
+                disp(failed_operations);
+            end
             
         end
     end

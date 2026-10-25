@@ -1,35 +1,13 @@
 function out = NL_FractalDimensions(y, kmin, kmax, Nref, gstart, gend, past, steps, embedParams, randomSeed)
-% NL_FractalDimensions    Fractal dimension spectrum, D(q), of a time series.
+% NL_FractalDimensions   The spectrum of generalized (fractal) dimensions of the delay embedding, estimated from nearest-neighbor distances.
 %
-% ---INPUTS:
-% y, column vector of time series data
-% kmin, minimum number of neighbours for each reference point
-% kmax, maximum number of neighbours for each reference point
-% Nref, number of randomly-chosen reference points (-1: use all points)
-% gstart, starting value for moments
-% gend, end value for moments
-% past [opt], number of samples to exclude before an after each reference
-%             index (default=0)
-% steps [opt], number of moments to calculate (default=32);
-% embedParams, how to embed the time series using a time-delay reconstruction
-% randomSeed [opt], whether (and how) to reset the random seed, using
-%             BF_ResetSeed, before choosing reference points (relevant
-%             whenever Nref ~= -1, since that involves a random subsample of
-%             points). Defaults to 'default' (a fixed seed) so this operation
-%             is reproducible by default rather than genuinely stochastic
-%             run-to-run.
-%
-% ---OUTPUTS: include basic statistics of D(q) and q, statistics from a linear fit,
-% and an exponential fit of the form D(q) = Aexp(Bq) + C.
-%
-% Computed natively in MATLAB. This operation previously used TSTOOL's
-% 'fracdims', whose actual computation (tstoolbox/@signal/fracdims.m is
-% just a thin wrapper; the real work is in the compiled
-% mex-dev/GeneralizedDimensionEstimation/gendimest.cpp, vendored in this
-% repo under Toolboxes/OpenTSTOOL) turned out to be a well-defined,
-% published, citable method rather than an undocumented black box:
-% "Generalized Dimensions from Nearest Neighbor Information", P. Schram
-% and W. van der Water. Reproduced exactly here:
+% Estimates D(q), the generalized dimension of the time-delay embedding as a
+% function of the order of the moment, from the distances of reference points to
+% their nearest neighbors, using the method of W. van de Water and P. Schram,
+% "Generalized dimensions from near-neighbor information" (Phys. Rev. A 37(8),
+% 3118-3125, 1988), as implemented in TSTOOL's 'fracdims' (whose computation is in
+% the compiled mex-dev/GeneralizedDimensionEstimation/gendimest.cpp). It is
+% reproduced exactly here in native MATLAB:
 %
 % For each of Nref reference points, find the distances to its 1st..kmax-th
 % nearest neighbors (excluding a Theiler window of "past" samples). For
@@ -45,7 +23,54 @@ function out = NL_FractalDimensions(y, kmin, kmax, Nref, gstart, gend, past, ste
 % measured moments M(kmin:kmax) under a robust (log(1+0.5*e^2)) error,
 % found via nested 1-D minimization (MATLAB's fminbnd stands in directly
 % for the original's hand-rolled Brent's-method minimizer -- the same
-% algorithm). Finally q(gamma) = 1 - gamma/D(gamma).
+% algorithm). The error has a fixed width (1) in the units of the moments, so
+% D(gamma) depends on the scale of the series. Finally q(gamma) = 1 - gamma/D(gamma).
+% The outputs summarize D and q across the moments, and a straight-line fit of
+% D against q.
+%
+% D(gamma) is identified only where the error has a minimum inside the search
+% interval for D, and the moments are not zero: a minimum at either end of the
+% interval (for instance at the upper end when the moments do not grow with k,
+% as on a periodic orbit) is no estimate, nor is a fit to moments that are zero
+% (to within 1e-12 of the range of y; every kth neighbor coincides with its
+% reference point, so the error is flat in D), and the outputs are then NaN.
+%
+% ---INPUTS:
+% y, column vector of time series data
+% kmin, minimum number of neighbours for each reference point
+% kmax, maximum number of neighbours for each reference point
+% Nref, number of reference points, spread evenly over the embedded series (a
+%       deterministic low-discrepancy subset; -1: use all points; a number between
+%       0 and 1: that proportion of the embedded points)
+% gstart, starting value for moments
+% gend, end value for moments
+% past [opt], Theiler window of samples to exclude before and after each
+%             reference index: {'ac', k} for k times the first zero-crossing
+%             of the autocorrelation function, or a number of samples (see
+%             BF_TheilerWindow; default: {'ac', 1})
+% steps [opt], number of moments to calculate (default=32);
+% embedParams, how to embed the time series using a time-delay reconstruction,
+%              as {tau,m} (inputs to BF_Embed): tau is a number of samples, 'ac'
+%              (first zero-crossing of the autocorrelation function), 'ac1e' (floor
+%              of its first 1/e crossing) or 'mi' (the smaller of the first minimum
+%              of the Kraskov automutual information and the 'ac1e' delay; see
+%              BF_GetTau); m is a number of dimensions, or 'fnn' or {'fnn',th}
+%              (chosen by false nearest neighbors at threshold th, at most
+%              floor(2*log10(N)); see BF_Embed). Default: {'ac','fnn'}
+% randomSeed [opt], not used by the choice of reference points, which is deterministic;
+%             passed on to the embedding (BF_Embed). Defaults to 'default'.
+%
+% ---OUTPUTS:
+% rangeDq, maxDq, meanDq: range, maximum and mean of D across the moments
+% maxq, rangeq, meanq: maximum, range and mean of q across the moments
+% linfit_a, linfit_b: slope and intercept of a linear fit of D against q
+% linfit_rmsqres: root-mean-square residual of that fit
+% All are NaN if D is not identified at every moment order.
+%
+% ---REFERENCES:
+% W. van de Water and P. Schram, "Generalized dimensions from near-neighbor
+% information", Phys. Rev. A 37(8), 3118-3125 (1988). DOI: 10.1103/PhysRevA.37.3118
+%
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
@@ -76,13 +101,6 @@ function out = NL_FractalDimensions(y, kmin, kmax, Nref, gstart, gend, past, ste
 % ------------------------------------------------------------------------------
 
 % ------------------------------------------------------------------------------
-% Check a curve-fitting toolbox license is available:
-% ------------------------------------------------------------------------------
-% Curve Fitting Toolbox gate removed for hctsa 2.0. This operation does not
-% actually use it: every fit() call in the file is commented out, so the gate
-% blocked the operation for a dependency it never exercises.
-
-% ------------------------------------------------------------------------------
 %% Preliminaries
 % ------------------------------------------------------------------------------
 N = length(y); % Length of time series
@@ -103,7 +121,7 @@ if nargin < 3 || isempty(kmax)
 	fprintf(1, 'Using default maximum number of neighbours, kmax = %u\n', kmax);
 end
 
-% (3) Number of randomly-chosen reference points, Nref
+% (3) Number of reference points, Nref
 if nargin < 4 || isempty(Nref)
 	Nref = 0.2; % default:  20% of the time series length
 	fprintf(1, 'Using default number of reference points: Nref = %f\n', Nref);
@@ -126,8 +144,12 @@ end
 
 % (6) past
 if nargin < 7 || isempty(past)
-	past = 10; % default
-	fprintf(1, 'Using default past correlation exclusion window value, past = %u\n', past);
+	past = {'ac', 1};
+end
+past = BF_TheilerWindow(y, past);
+if isnan(past) % the autocorrelation function never crosses zero
+	warning('No autocorrelation zero-crossing to set the Theiler window')
+	out = NaN; return
 end
 
 % (7) steps
@@ -141,7 +163,7 @@ if nargin < 9 || isempty(embedParams)
 	fprintf(1, 'Using default embedding parameters of autocorrelation for tau and cao method for m\n');
 end
 
-% (9) Random seed, for reproducibility of the random reference-point subsample
+% (9) Random seed (for the embedding)
 if nargin < 10 || isempty(randomSeed)
 	randomSeed = 'default';
 end
@@ -152,9 +174,13 @@ end
 Y = BF_Embed(y, embedParams{1}, embedParams{2}, false, randomSeed);
 
 if isscalar(Y) && isnan(Y) % embedding failed
-	error('Embedding of the %u-sample time series failed', N)
+	% BF_Embed already signals data-dependent embedding failure via NaN
+	% (e.g. series too short for the requested tau/m); propagate that here
+	% rather than escalating it to an error.
+	warning('Embedding of the %u-sample time series failed', N)
+	out = NaN; return
 end
-[N_embed, m] = size(Y);
+[N_embed, ~] = size(Y);
 
 if kmax >= N_embed
 	% Analogous to TSTOOL's own "too many neighbors ... requested" failure:
@@ -167,18 +193,19 @@ end
 if Nref == -1 || Nref >= N_embed
 	refIdx = 1:N_embed;
 else
-	BF_ResetSeed(randomSeed); % for reproducibility of this random subsample
-	refIdx = randperm(N_embed, Nref);
+	refIdx = BF_SpreadPerm(N_embed); % (deterministic; the first Nref points are spread evenly over the series)
+	refIdx = refIdx(1:Nref)';
 end
 R = length(refIdx);
 
 % ------------------------------------------------------------------------------
 %% For each reference point, find distances to its 1st..kmax-th nearest
 %% neighbors (KD-tree, Theiler-window-aware, same approach as
-%% NL_localdensity.m/NL_ReturnTime.m)
+%% NL_LocalDensity.m/NL_ReturnTime.m)
 % ------------------------------------------------------------------------------
 kFetch = min(N_embed - 1, kmax + 2 * past + 5);
 [idx, dist] = knnsearch(Y, Y(refIdx, :), 'K', kFetch + 1);
+tol = 1e-12 * (max(y) - min(y)); % distances below this are zero up to rounding
 
 distances = zeros(R, kmax); % distances(i,k) = i-th reference point's distance to its k-th nearest neighbor
 for ii = 1:R
@@ -222,10 +249,17 @@ for gi = 1:numGammas
 		mom = mean(distances.^g, 1).^(1 / g);
 	end
 
+	if any(mom(kmin:kmax) <= tol)
+		out = NaN; return % zero moments: the error is flat in D
+	end
 	DMin = max(0.05, -g / kmin);
 	DMax = 128;
 	errFcn = @(D) SUB_DimError(D, g, kmin, kmax, mom, innerOpts);
 	Dq(gi) = fminbnd(errFcn, DMin, DMax, outerOpts);
+	if min(Dq(gi) - DMin, DMax - Dq(gi)) <= 10 * outerOpts.TolX
+		% (the minimum lies at an end of the search interval: D is not identified)
+		out = NaN; return
+	end
 	q(gi) = 1 - g / Dq(gi);
 end
 
@@ -233,7 +267,7 @@ end
 % Plot the results in a figure:
 % ------------------------------------------------------------------------------
 if doPlot
-	figure('color', 'w'); box('on');
+	figure('color', 'w'); box('on'); %#ok<UNRCH>
 	plot(q, Dq, 'o-k');
 end
 
@@ -250,10 +284,7 @@ out.rangeq = range(q);
 out.meanq = mean(q);
 
 % ---Fit linear
-% q and Dq are both columns here (this used to rely on TSTOOL's spacing()
-% returning q as a row, transposing Dq to match; with q now a column too,
-% that stray transpose would turn "p_fit - Dq'" into an N-by-N broadcast
-% instead of an N-by-1 residual, so it's dropped):
+% q and Dq are both columns here (so the residual p_fit - Dq is N-by-1):
 p = polyfit(q, Dq, 1);
 p_fit = q * p(1) + p(2);
 res = p_fit - Dq;

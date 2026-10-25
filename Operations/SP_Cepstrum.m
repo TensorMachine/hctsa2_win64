@@ -1,0 +1,266 @@
+function out = SP_Cepstrum(y, maxPeriod, minPeriod)
+% SP_Cepstrum   Harmonic (comb) structure of the power spectrum, from the real cepstrum.
+%
+% Computes the real cepstrum, the inverse Fourier transform of the log magnitude
+% spectrum (after subtracting a degree-4 polynomial in frequency from the log
+% spectrum, fitted excluding the zero-frequency bin, to remove its smooth
+% envelope), and summarizes its dominant peak.
+%
+% The cepstrum asks whether the peaks in the spectrum are harmonically related
+% to one another, which none of hctsa's other spectral operations ask.
+% SP_Summaries counts and characterizes spectral peaks, but those statistics are
+% identical for a signal with a fundamental plus five harmonics and one with five
+% arbitrarily-placed peaks. A harmonic series is a comb of peaks evenly spaced by
+% the fundamental frequency f0, which is itself a periodicity in the spectrum;
+% taking the spectrum of the log spectrum collapses that whole comb into a single
+% cepstral peak at a quefrency ('frequency' spelled backwards; the cepstral axis
+% has units of time) equal to the fundamental period 1/f0.
+%
+% The spectral autocorrelation fields of SP_Summaries (ac1/ac2/tau) do not cover
+% this: they are evaluated at lags of 1-2 frequency bins and at the ACF's first
+% zero crossing, all far too short-lag to detect harmonic spacing, which is
+% typically tens of bins. The cepstrum is also different from time-domain
+% periodicity operations (PD_PeriodicityWang, CO_AutoCorr on the raw series): it
+% is computed from the log spectrum, so it is blind to phase and responds to
+% multiplicative rather than additive structure, which is why it remains
+% sensitive to a harmonic series sitting on top of a strong 1/f background.
+%
+% ---INPUTS:
+% y, the input time series
+% maxPeriod, the longest fundamental period (in samples) to search for (default:
+%            100). A fixed number of samples, not a fraction of the series
+%            length, so that the quefrency statistics do not partly restate N.
+%            Series shorter than 4*maxPeriod return NaN.
+% minPeriod, the shortest fundamental period (in samples) to search for (default:
+%            4). The low-quefrency end of the cepstrum encodes the smooth
+%            spectral envelope (overall tilt) and is excluded. A period of 4
+%            samples is also about the shortest that can support a harmonic
+%            series: the second harmonic of f0 = 0.25 cycles/sample is already
+%            at the Nyquist frequency.
+%
+% ---OUTPUTS:
+% period, the estimated fundamental period in samples (quefrency of the dominant
+%         cepstral peak); only meaningful when CPP/peakRatio indicate a genuine peak
+% peak, the height of that peak (not registered as a feature)
+% CPP, the cepstral peak prominence: the peak height above a linear regression fit
+%         through the cepstrum across the search range
+% peakRatio, the peak height above the mean cepstrum over the search range, in
+%         units of the standard deviation of the cepstrum over that range
+% rahmonicRatio, the cepstrum at twice the peak quefrency above the fitted
+%         baseline, relative to the peak above the baseline (a genuine harmonic
+%         comb repeats at multiples of the fundamental period; an isolated fluke
+%         does not). NaN if the peak is not above the baseline or twice its
+%         quefrency is out of range.
+% meanCeps, the mean of the cepstrum over the search range
+% stdCeps, the standard deviation of the cepstrum over the search range (not
+%         registered as a feature)
+%
+% ---NOTES: What this does and does not detect:
+% Because it detects a *comb*, this operation responds to harmonic
+% richness, not to periodicity as such -- which is what makes it
+% complementary to time-domain periodicity operations rather than a
+% duplicate of them:
+%   - A pure sinusoid, however strongly periodic, has no harmonics and
+%     hence no comb: it scores near the noise floor here, while a
+%     time-domain autocorrelation would flag it very strongly.
+%   - Detecting a fundamental requires enough harmonics spread across
+%     the band: a fundamental with only a few harmonics, confined to the
+%     low-frequency end of the spectrum, can be missed. CPP grows with
+%     the number of comb teeth.
+%   - Failure is quiet rather than confidently wrong: when a comb is
+%     missed, CPP stays near its null level, so a weak CPP indicates
+%     'no comb found' rather than endorsing a spurious period. The
+%     `period` output is only meaningful when CPP/peakRatio indicate a
+%     genuine peak.
+%
+% ---OUTPUTS:
+% The estimated fundamental period (quefrency of the dominant cepstral
+% peak) and the height of that peak; the cepstral peak prominence (CPP),
+% the standard robust measure, being the peak height above a linear
+% regression fit through the cepstrum across the search range (this
+% normalizes away the overall cepstral trend, so it does not simply
+% track the spectrum's dynamic range); the peak height in units of the
+% standard deviation of the cepstrum over the search range; the
+% rahmonic ratio, comparing the cepstrum at twice the peak quefrency to
+% the peak itself (a genuine harmonic comb repeats at multiples of the
+% fundamental period, so a real periodicity shows a secondary 'rahmonic'
+% peak, whereas an isolated fluke does not); and the mean and standard
+% deviation of the cepstrum over the search range.
+%
+% Of these, period/CPP/peakRatio/rahmonicRatio/meanCeps are registered as
+% hctsa features. `peak` and `stdCeps` are computed (CPP and peakRatio
+% are derived from them) but not registered: raw `peak` is largely
+% redundant with CPP, the standard published formulation, which does not
+% simply track the cepstrum's overall scale; `stdCeps` serves mainly as
+% the normalizer inside peakRatio.
+%
+% The registered fields capture harmonic-comb structure (a fundamental together
+% with its harmonics) that is not otherwise captured by hctsa's periodicity and
+% autocorrelation features; rahmonicRatio is the most distinct of them.
+
+% ------------------------------------------------------------------------------
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% <http://www.benfulcher.com>
+%
+% If you use this code for your research, please cite the following two papers:
+%
+% (1) B.D. Fulcher and N.S. Jones, "hctsa: A Computational Framework for Automated
+% Time-Series Phenotyping Using Massive Feature Extraction, Cell Systems 5: 527 (2017).
+% DOI: 10.1016/j.cels.2017.10.001
+%
+% (2) B.D. Fulcher, M.A. Little, N.S. Jones, "Highly comparative time-series
+% analysis: the empirical structure of time series and their methods",
+% J. Roy. Soc. Interface 10(83) 20130048 (2013).
+% DOI: 10.1098/rsif.2013.0048
+%
+% This function is free software: you can redistribute it and/or modify it under
+% the terms of the GNU General Public License as published by the Free Software
+% Foundation, either version 3 of the License, or (at your option) any later
+% version.
+%
+% This program is distributed in the hope that it will be useful, but WITHOUT
+% ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+% FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+% details.
+%
+% You should have received a copy of the GNU General Public License along with
+% this program. If not, see <http://www.gnu.org/licenses/>.
+% ------------------------------------------------------------------------------
+
+% ------------------------------------------------------------------------------
+%% Check inputs, set defaults:
+% ------------------------------------------------------------------------------
+if size(y, 2) > size(y, 1)
+    y = y'; % Time series must be a column vector
+end
+
+if nargin < 2 || isempty(maxPeriod)
+    maxPeriod = 100;
+end
+if nargin < 3 || isempty(minPeriod)
+    minPeriod = 4;
+end
+
+if minPeriod < 2
+    error('minPeriod = %u is below the Nyquist limit (a period needs >= 2 samples)', minPeriod);
+end
+if maxPeriod <= minPeriod
+    error('maxPeriod (%u) must exceed minPeriod (%u)', maxPeriod, minPeriod);
+end
+
+N = length(y);
+minCycles = 4; % need several cycles of the longest period searched for a meaningful estimate
+if N < minCycles * maxPeriod
+    warning(['Time series (N = %u) too short to search for periods up to %u samples ' ...
+             '(need >= %u)'], N, maxPeriod, minCycles * maxPeriod);
+    out = NaN; return
+end
+
+if all(y == y(1)) % constant series has an all-zero spectrum -> log(0)
+    warning('Constant time series has no spectral (or cepstral) structure');
+    out = NaN; return
+end
+
+% ------------------------------------------------------------------------------
+%% Real cepstrum
+% ------------------------------------------------------------------------------
+% c(q) = IFFT{ log|FFT(y)| }. Taking the log *before* the second
+% transform is what makes this multiplicative-structure-sensitive: a
+% harmonic comb multiplies the spectral envelope, and the log turns that
+% product into a sum, so the comb separates from the envelope into a
+% distinct (high-quefrency) part of the cepstrum.
+NFFT = 2^nextpow2(N);
+X = fft(y, NFFT);
+logMag = log(abs(X) + eps); % eps guards spectral nulls (|X| exactly 0)
+
+% Remove the smooth spectral envelope before transforming. Without this,
+% the low-quefrency end of the cepstrum is dominated by the overall
+% shape of the spectrum (its tilt / 1-f slope) rather than by harmonic
+% structure, and for strongly-coloured spectra that envelope leaks far
+% enough up the quefrency axis to produce outright false positives:
+% before this step, pure 1/f noise -- which has no periodicity
+% whatsoever -- scored a *higher* peak-to-spread ratio (5.35) than a
+% genuine 5-harmonic comb (3.60), and a true period of 64 samples was
+% missed entirely in favour of an envelope artefact at low quefrency.
+% A low-order polynomial in frequency is exactly the 'smooth envelope'
+% component, so subtracting a fitted one leaves the comb ripple that the
+% cepstrum is meant to detect. Order 4 is enough to absorb a 1-f-style
+% tilt and gentle curvature without being flexible enough to start
+% fitting the ripple itself. The fit excludes the zero-frequency (DC) bin: a
+% z-scored series has (almost) no power there, so log|X| at DC is a huge
+% negative outlier (about -30) that would otherwise bend the fitted envelope.
+envOrder = 4;
+nHalf = floor(NFFT / 2) + 1;
+halfLogMag = logMag(1:nHalf);
+fIdx = (0:nHalf - 1)' / (nHalf - 1); % normalized frequency axis for conditioning
+pEnv = polyfit(fIdx(2:end), halfLogMag(2:end), envOrder);
+halfDetrended = halfLogMag - polyval(pEnv, fIdx);
+% The zero-frequency bin is set to the envelope (0 after detrending): for a z-scored
+% series |X| there is rounding noise (log|X| anywhere from about -36 to -28), which
+% would add an arbitrary constant, (log|X(0)| - envelope)/NFFT, to the whole cepstrum.
+halfDetrended(1) = 0;
+
+% Mirror back to a full Hermitian-symmetric spectrum so the cepstrum is real:
+logMagDetrended = [halfDetrended; flipud(halfDetrended(2:end - 1))];
+c = real(ifft(logMagDetrended));
+
+% Quefrency index q (1-based) corresponds to a period of (q-1) samples,
+% so a period of p samples sits at index p+1:
+qIdx = (minPeriod:maxPeriod)' + 1;
+if qIdx(end) > floor(NFFT / 2)
+    % Shouldn't be reachable given the length check above, but the
+    % cepstrum is only meaningful over its first half (it is symmetric):
+    qIdx = qIdx(qIdx <= floor(NFFT / 2));
+end
+cSearch = c(qIdx);
+periods = qIdx - 1; % period in samples corresponding to each search index
+
+% ------------------------------------------------------------------------------
+%% Dominant cepstral peak
+% ------------------------------------------------------------------------------
+[peakVal, iPeak] = max(cSearch);
+out.period = periods(iPeak); % estimated fundamental period, in samples
+out.peak = peakVal;
+
+% Basic distributional context over the search range:
+out.meanCeps = mean(cSearch);
+out.stdCeps = std(cSearch);
+
+% Peak height in units of the cepstrum's own spread over the search range
+% (scale-free, unlike `peak` itself):
+if out.stdCeps > 0
+    out.peakRatio = (peakVal - out.meanCeps) / out.stdCeps;
+else
+    out.peakRatio = NaN;
+end
+
+% ------------------------------------------------------------------------------
+%% Cepstral peak prominence (CPP)
+% ------------------------------------------------------------------------------
+% The standard robust formulation: the peak's height above a linear
+% regression through the cepstrum over the search range. Subtracting the
+% fitted trend removes the overall decay of the cepstrum with quefrency,
+% so CPP measures how much the peak stands out from its local
+% background rather than how large the cepstrum is overall.
+pFit = polyfit(periods, cSearch, 1);
+baseline = polyval(pFit, periods);
+out.CPP = peakVal - baseline(iPeak);
+
+% ------------------------------------------------------------------------------
+%% Rahmonic structure
+% ------------------------------------------------------------------------------
+% A true fundamental period p produces cepstral energy at 2p, 3p, ...
+% ('rahmonics'), because a harmonic comb in the spectrum is itself
+% periodic. An isolated spurious peak does not. Compare the cepstrum at
+% twice the peak quefrency to the peak, both measured against the fitted
+% baseline so the comparison isn't dominated by the cepstral trend:
+q2 = 2 * out.period + 1;
+peakAboveBase = peakVal - baseline(iPeak);
+if q2 <= floor(NFFT / 2) && peakAboveBase > 0
+    rahmonicAboveBase = c(q2) - polyval(pFit, 2 * out.period);
+    out.rahmonicRatio = rahmonicAboveBase / peakAboveBase;
+else
+    out.rahmonicRatio = NaN;
+end
+
+end

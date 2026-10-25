@@ -30,7 +30,15 @@ if nargin < 1
 end
 
 % Get the gitInfo for the given directory under git version control
-gitInfo = getGitInfo();
+% (HCTSA2: provenance is optional; a git layout this parser does not understand
+% must not stop TS_Init)
+try
+    gitInfo = getGitInfo();
+catch gitErr
+    warning('TS_AddGitInfo:failed','Could not read git information (%s); continuing without it.',...
+                gitErr.message);
+    gitInfo = struct();
+end
 
 % Also append this information to the hctsa .mat file provided (if )
 if nargin == 2 && ~isempty(whatData)
@@ -113,23 +121,32 @@ function gitInfo = getGitInfo()
     text = fileread(fullfile(whatDir,'.git','HEAD'));
     parsed = textscan(text,'%s');
 
-    if ~strcmp(parsed{1}{1},'ref:') || ~length(parsed{1})>1
+    if ~strcmp(parsed{1}{1},'ref:') || numel(parsed{1}) < 2
         % the HEAD is not in the expected format.
         warning('git HEAD in %s in unexpected format',whatDir)
         return
     end
 
-    path = parsed{1}{2};
-    [pathstr, name, ext] = fileparts(path);
-    branchName = name;
+    refPath = parsed{1}{2}; % e.g., refs/heads/master
+    % (HCTSA2: the full branch name; fileparts cut 'release-2.2' to 'release-2'
+    % and 'feature/x' to 'x')
+    branchName = regexprep(refPath,'^refs/heads/','');
 
     % Save branchname
     gitInfo.branch = branchName;
 
-    % Read in SHA1
-    SHA1text = fileread(fullfile(whatDir,'.git',pathstr,[name ext]));
-    SHA1 = textscan(SHA1text,'%s');
-    gitInfo.hash = SHA1{1}{1};
+    % Read in SHA1: from the loose ref file, or (HCTSA2) from .git/packed-refs,
+    % where git gc / git pack-refs move it
+    looseRef = fullfile(whatDir,'.git',refPath);
+    if exist(looseRef,'file')
+        SHA1 = textscan(fileread(looseRef),'%s');
+        gitInfo.hash = SHA1{1}{1};
+    else
+        packed = fileread(fullfile(whatDir,'.git','packed-refs'));
+        tok = regexp(packed,['^([0-9a-f]{40}) ' regexptranslate('escape',refPath) '\s*$'],...
+                        'tokens','once','lineanchors');
+        gitInfo.hash = tok{1};
+    end
 
     % Read in config file
     config = fileread(fullfile(whatDir,'.git','config'));

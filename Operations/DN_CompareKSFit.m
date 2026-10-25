@@ -1,22 +1,54 @@
 function out = DN_CompareKSFit(x, whatDistn)
-% DN_CompareKSFit       Fits a distribution to data.
+% DN_CompareKSFit   Compares a fitted distribution with the smoothed distribution of the data.
 %
-% Returns simple statistics on the discrepancy between the
-% kernel-smoothed distribution of the time-series values, and the distribution
-% fitted to it by some model: Gaussian (using normfifit from Matlab's
-% Statistics Toolbox), Extreme Value (evfifit), Uniform (unififit), Beta
-% (betafifit), Rayleigh (raylfifit), Exponential (expfifit), Gamma (gamfit),
-% LogNormal (lognfifit), and Weibull (wblfifit).
+% Fits a standard distribution to the data (by maximum likelihood, using
+% Statistics Toolbox functions), and compares it with a kernel-smoothed
+% estimate of the distribution of the values (BF_KSDensity, a Gaussian kernel with
+% a normal-reference bandwidth; "KS" here means kernel-smoothed, not
+% Kolmogorov-Smirnov). Both curves are evaluated on a
+% common grid of 1000 points that covers the smoothed distribution and the body
+% of the fitted distribution (out to where it falls to 1/100 of its peak, found
+% by root finding; or, for a positive-only distribution whose density is
+% unbounded or maximal at 0, from 0 to its 0.99 quantile). The smoothed
+% distribution is evaluated at the grid points, and the fitted distribution as
+% its mean density over each grid cell (its probability in the cell divided by
+% the cell width), which stays finite where the density diverges. They are then
+% compared by the area between them, the separation of their peaks, their
+% overlap, and the relative entropy.
+%
+% The exponential and Rayleigh distributions require non-negative values, and
+% the gamma, log-normal and Weibull distributions require positive values;
+% NaN is returned if the data do not satisfy this (and for a constant series
+% in the Rayleigh and exponential cases). For the beta distribution, the data
+% are first rescaled to lie inside (0, 1), and all outputs are then in rescaled
+% units.
 %
 % ---INPUTS:
 % x, the input data vector
 % whatDistn, the type of distribution to fit to the data:
-%           'norm' (normal), 'ev' (extreme value), 'uni' (uniform),
-%           'beta' (Beta), 'rayleigh' (Rayleigh), 'exp' (exponential),
-%           'gamma' (Gamma), 'logn' (Log-Normal), 'wbl' (Weibull).
+%           'norm' (Gaussian; normfit), 'ev' (extreme value; evfit),
+%           'uni' (uniform; unifit), 'beta' (beta; betafit),
+%           'rayleigh' (Rayleigh; raylfit), 'exp' (exponential; expfit),
+%           'gamma' (gamma; gamfit), 'logn' (log-normal; lognfit),
+%           'wbl' (Weibull; wblfit).
 %
-% ---OUTPUTS: include the absolute area between the two distributions, the peak
-% separation, overlap integral, and relative entropy.
+% ---OUTPUTS:
+% adiff, the absolute area between the two distributions (0 for a perfect
+%       match, at most 2).
+% peaksepy, the separation in height between the peaks: the maximum of the
+%       fitted distribution minus that of the smoothed distribution.
+% peaksepx, the separation in position between the peaks: the position of the
+%       peak of the fitted distribution minus that of the smoothed distribution
+%       (NaN for the uniform, which has no peak).
+% olapint, the overlap integral of the two distributions, multiplied by the
+%       standard deviation of the data so that it does not depend on their
+%       scale.
+% relent, the relative entropy (Kullback-Leibler divergence), in nats, of the
+%       fitted distribution from the smoothed distribution.
+%
+% ---NOTES:
+% adiff, olapint and relent do not depend on the scale of the data, but
+% peaksepy and peaksepx do.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -52,50 +84,44 @@ function out = DN_CompareKSFit(x, whatDistn)
 % ------------------------------------------------------------------------------
 
 % Fit the distribution 'whatDistn' to the input data, x.
-xStep = std(x) / 100; % set a step size
+xStep = std(x) / 100; % initial stride when searching outward for the edges of the fitted distribution
+q99 = []; % right edge set by a quantile (densities unbounded or maximal at zero)
 
 switch whatDistn
 	case 'norm'
 		[a, b] = normfit(x);
-		peaky = normpdf(a, a, b);
-		thresh = peaky / 100; % stop when gets to 1/100 of peak value
-		xf(1) = mean(x);
-		ange = 10;
-		while ange > thresh, xf(1) = xf(1) - xStep; ange = normpdf(xf(1), a, b); end
-		xf(2) = mean(x);
-		ange = 10;
-		while ange > thresh, xf(2) = xf(2) + xStep; ange = normpdf(xf(2), a, b); end
+		pdfFn = @(z) normpdf(z, a, b);
+		cdfLo = @(z) normcdf(z, a, b);
+		cdfUp = @(z) normcdf(z, a, b, 'upper');
+		thresh = pdfFn(a) / 100; % the edges are where the density falls to 1/100 of its peak
+		leftStart = a; rightStart = a;
 
 	case 'ev'
 		a = evfit(x);
-		peaky = evpdf(a(1), a(1), a(2)); thresh = peaky / 100;
-		xf(1) = 0;
-		ange = 10;
-		while ange > thresh, xf(1) = xf(1) - xStep; ange = evpdf(xf(1), a(1), a(2)); end
-		xf(2) = 0;
-		ange = 10;
-		while ange > thresh, xf(2) = xf(2) + xStep; ange = evpdf(xf(2), a(1), a(2)); end
+		pdfFn = @(z) evpdf(z, a(1), a(2));
+		cdfLo = @(z) evcdf(z, a(1), a(2));
+		cdfUp = @(z) evcdf(z, a(1), a(2), 'upper');
+		thresh = pdfFn(a(1)) / 100;
+		leftStart = a(1); rightStart = a(1);
 
 	case 'uni'
 		[a, b] = unifit(x);
-		peaky = unifpdf(mean(x), a, b); thresh = peaky / 100;
-		xf(1) = 0;
-		ange = 10;
-		while ange > thresh, xf(1) = xf(1) - xStep; ange = unifpdf(xf(1), a, b); end
-		xf(2) = 0;
-		ange = 10;
-		while ange > thresh, xf(2) = xf(2) + xStep; ange = unifpdf(xf(2), a, b); end
+		pdfFn = @(z) unifpdf(z, a, b);
+		cdfLo = @(z) unifcdf(z, a, b);
+		cdfUp = @(z) unifcdf(z, a, b, 'upper');
+		thresh = pdfFn(mean(x)) / 100;
+		leftStart = mean(x); rightStart = mean(x);
 
 	case 'beta'
 		% clumsily scale to the range (0,1)
 		x = (x - min(x) + 0.01 * std(x)) / (max(x) - min(x) + 0.02 * std(x));
 		xStep = std(x) / 100; % will need a new step size for the rescaled data
 		a = betafit(x);
+		pdfFn = @(z) betapdf(z, a(1), a(2));
+		cdfLo = @(z) betacdf(z, a(1), a(2));
+		cdfUp = @(z) betacdf(z, a(1), a(2), 'upper');
 		thresh = 1E-5; % ok -- consistent since all scaled to the same range
-		xf(1) = mean(x); ange = 10;
-		while ange > thresh, xf(1) = xf(1) - xStep; ange = betapdf(xf(1), a(1), a(2)); end
-		xf(2) = mean(x); ange = 10;
-		while ange > thresh, xf(2) = xf(2) + xStep; ange = betapdf(xf(2), a(1), a(2)); end
+		leftStart = mean(x); rightStart = mean(x);
 
 	case 'rayleigh'
 		if any(x < 0)
@@ -104,14 +130,13 @@ switch whatDistn
 		elseif all(x == x(1))
 			fprintf(1, 'Data are a constant\n');
 			out = NaN; return
-		else % fit a Rayleigh distribution to the positive-only data
-			a = raylfit(x);
-			peaky = raylpdf(a, a); thresh = peaky / 100;
-			xf(1) = 0;
-			xf(2) = a;
-			ange = 10;
-			while ange > thresh, xf(2) = xf(2) + xStep; ange = raylpdf(xf(2), a); end
 		end
+		a = raylfit(x);
+		pdfFn = @(z) raylpdf(z, a);
+		cdfLo = @(z) raylcdf(z, a);
+		cdfUp = @(z) raylcdf(z, a, 'upper');
+		thresh = pdfFn(a) / 100; % (the peak is at the scale parameter)
+		leftStart = []; rightStart = a;
 
 	case 'exp'
 		if any(x < 0)
@@ -120,70 +145,84 @@ switch whatDistn
 		elseif all(x == x(1))
 			fprintf(1, 'Data are a constant\n');
 			out = NaN; return
-		else a = expfit(x);
-			peaky = exppdf(0, a); thresh = peaky / 100;
-			xf(1) = 0;
-			xf(2) = 0;
-			ange = 10;
-			while ange > thresh, xf(2) = xf(2) + xStep; ange = exppdf(xf(2), a); end
 		end
+		a = expfit(x);
+		pdfFn = @(z) exppdf(z, a);
+		cdfLo = @(z) expcdf(z, a);
+		cdfUp = @(z) expcdf(z, a, 'upper');
+		thresh = pdfFn(0) / 100; % (the peak is at zero)
+		leftStart = []; rightStart = 0;
 
 	case 'gamma'
-		if any(x < 0)
-			fprintf(1, 'The data contains negative values, but Gamma is a positive-only distribution.\n');
+		if any(x <= 0)
+			% (the gamma likelihood is degenerate at an exact zero: log(0) enters it)
+			fprintf(1, 'The data are not positive, but Gamma is a positive-only distribution.\n');
 			out = NaN; return
-		else a = gamfit(x);
-			if a(1) < 1
-				thresh = gampdf(0, a(1), a(2)) / 100;
-			else
-				peaky = gampdf((a(1) - 1) * a(2), a(1), a(2)); thresh = peaky / 100;
-			end
-			xf(1) = 0;
-			xf(2) = a(1) * a(2);
-			ange = 10;
-			while ange > thresh, xf(2) = xf(2) + xStep; ange = gampdf(xf(2), a(1), a(2)); end
+		end
+		a = gamfit(x);
+		pdfFn = @(z) gampdf(z, a(1), a(2));
+		cdfLo = @(z) gamcdf(z, a(1), a(2));
+		cdfUp = @(z) gamcdf(z, a(1), a(2), 'upper');
+		leftStart = [];
+		if a(1) < 1 % the density is unbounded at zero
+			q99 = gaminv(0.99, a(1), a(2));
+		else
+			rightStart = (a(1) - 1) * a(2); % the mode
+			thresh = pdfFn(rightStart) / 100;
 		end
 
 	case 'logn'
 		if any(x <= 0)
 			fprintf(1, 'The data are not positive, but Log-Normal is a positive-only distribution.\n');
 			out = NaN; return
-		else
-			a = lognfit(x);
-			peaky = lognpdf(exp(a(1) - a(2)^2), a(1), a(2)); thresh = peaky / 100;
-			xf(1) = 0;
-			xf(2) = exp(a(1) - a(2)^2);
-			ange = 10;
-			while ange > thresh, xf(2) = xf(2) + xStep; ange = lognpdf(xf(2), a(1), a(2)); end
 		end
+		a = lognfit(x);
+		pdfFn = @(z) lognpdf(z, a(1), a(2));
+		cdfLo = @(z) logncdf(z, a(1), a(2));
+		cdfUp = @(z) logncdf(z, a(1), a(2), 'upper');
+		rightStart = exp(a(1) - a(2)^2); % the mode
+		thresh = pdfFn(rightStart) / 100;
+		leftStart = [];
 
 	case 'wbl'
 		if any(x <= 0)
 			fprintf(1, 'The data are not positive, but Weibull is a positive-only distribution.\n');
 			out = NaN; return
+		end
+		a = wblfit(x);
+		pdfFn = @(z) wblpdf(z, a(1), a(2));
+		cdfLo = @(z) wblcdf(z, a(1), a(2));
+		cdfUp = @(z) wblcdf(z, a(1), a(2), 'upper');
+		leftStart = [];
+		if a(2) <= 1 % the density is unbounded (shape < 1) or maximal (shape = 1) at zero
+			q99 = wblinv(0.99, a(1), a(2));
 		else
-			a = wblfit(x);
-			if a(2) <= 1;
-				thresh = wblpdf(0, a(1), a(2));
-			else
-				peaky = wblpdf(a(1) * ((a(2) - 1) / a(2))^(1 / a(2)), a(1), a(2));
-				thresh = peaky / 100;
-			end
-			xf(1) = 0;
-			xf(2) = 0;
-			ange = 10;
-			while ange > thresh, xf(2) = xf(2) + xStep; ange = wblpdf(xf(2), a(1), a(2)); end
+			rightStart = a(1) * ((a(2) - 1) / a(2))^(1 / a(2)); % the mode
+			thresh = pdfFn(rightStart) / 100;
 		end
 
 	otherwise
 		error('Unknown distribution: %s.', whatDistn)
 end
-% xtmafit=[floor(xtmafit(1)*10)/10 ceil(xtmafit(end)*10)/10];
+
+% The range [xf(1), xf(2)] of the body of the fitted distribution: where its density
+% falls to thresh, found by root finding outward from the peak; for the positive-only
+% distributions the left edge is 0, and the right edge is the 0.99 quantile when the
+% density is unbounded or maximal at 0 (for an exponential, exactly where it falls to
+% 1/100 of its peak).
+if ~isempty(q99)
+	xf = [0, q99];
+elseif isempty(leftStart)
+	xf = [0, SUB_DensityEdge(pdfFn, rightStart, 1, xStep, thresh)];
+else
+	xf = [SUB_DensityEdge(pdfFn, leftStart, -1, xStep, thresh), ...
+			SUB_DensityEdge(pdfFn, rightStart, 1, xStep, thresh)];
+end
 
 % ------------------------------------------------------------------------------
 % Estimate smoothed empirical distribution
 % ------------------------------------------------------------------------------
-[f, xi] = ksdensity(x);
+[f, xi] = BF_KSDensity(x);
 xi = xi(f > 1E-6); % only keep values greater than 1E-6
 if isempty(xi)
 	out = NaN; return
@@ -198,38 +237,24 @@ x1 = min([xf(1), xi(1)]);
 x2 = max([xf(2), xi(end)]);
 
 % ------------------------------------------------------------------------------
-%% Rerun both over the same range
+%% Evaluate both over the same grid
 % ------------------------------------------------------------------------------
-% (Inefficient, but easier to do it this way)
 xi = linspace(x1, x2, 1000);
-f = ksdensity(x, xi); % the smoothed empirical distribution
-switch whatDistn
-	case 'norm'
-		ffit = normpdf(xi, a, b);
-	case 'ev'
-		ffit = evpdf(xi, a(1), a(2));
-	case 'uni'
-		ffit = unifpdf(xi, a, b);
-	case 'beta'
-		%         if x1<0,x1=1E-5;end
-		%         if x2>1,x2=1-1E-5;end
-		ffit = betapdf(xi, a(1), a(2));
-	case 'rayleigh'
-		%         if x1<0,x1=0;end
-		ffit = raylpdf(xi, a);
-	case 'exp'
-		%         if x1<0,x1=0;end
-		ffit = exppdf(xi, a);
-	case 'gamma'
-		%         if x1<0,x1=0;end
-		ffit = gampdf(xi, a(1), a(2));
-	case 'logn'
-		%         if x1<0,x1=0;end
-		ffit = lognpdf(xi, a(1), a(2));
-	case 'wbl'
-		%         if x1<0,x1=0;end
-		ffit = wblpdf(xi, a(1), a(2));
-end
+dx = xi(2) - xi(1);
+f = BF_KSDensity(x, xi); % the smoothed empirical distribution
+% The fitted distribution as its mean density over each grid cell [xi - dx/2, xi + dx/2]
+% (its probability in the cell divided by dx), which stays finite where the density
+% diverges (a gamma or Weibull with shape < 1 at 0) and does not depend on where the
+% grid points fall relative to a jump (e.g., the ends of a uniform). The probability
+% is a difference of the lower-tail CDF below the median and of the upper-tail CDF
+% above it, so that tail cells keep their relative precision.
+lower = cdfLo(xi + dx/2) - cdfLo(xi - dx/2);
+upper = cdfUp(xi - dx/2) - cdfUp(xi + dx/2);
+useLower = cdfLo(xi) <= 0.5;
+ffit = zeros(size(xi));
+ffit(useLower) = lower(useLower) / dx;
+ffit(~useLower) = upper(~useLower) / dx;
+ffit = max(ffit, 0); % (rounding)
 
 % now the two cover the same range in x
 
@@ -238,7 +263,7 @@ end
 % ------------------------------------------------------------------------------
 
 % ADIFF: returns absolute area between the curves
-out.adiff = sum(abs(f - ffit) * (xi(2) - xi(1)));
+out.adiff = sum(abs(f - ffit) * dx);
 
 % PEAKSEPY: returns the seperation (in y) between the maxima of each distrn
 % NOT A GREAT STATISTIC FOR GENERAL DISTRIBUTIONS -- scales with variance
@@ -248,15 +273,52 @@ out.peaksepy = max2 - max1;
 
 % PEAKSEPX: returns the seperation (in x) between the maxima of each distrn
 % NOT A VERY WELL POSED STATISTIC FOR GENERAL DISTRIBUTIONS since this scales with variance
-[~, i1] = max(f);
-[~, i2] = max(ffit);
-out.peaksepx = xi(i2) - xi(i1);
+if strcmp(whatDistn, 'uni')
+	out.peaksepx = NaN; % a uniform density is flat: it has no peak position
+else
+	[~, i1] = max(f);
+	[~, i2] = max(ffit);
+	out.peaksepx = xi(i2) - xi(i1);
+end
 
-% OLAPINT: returns the overlap integral between the two curves; normalized by variance
-out.olapint = sum(f .* ffit * (xi(2) - xi(1))) * std(x);
+% OLAPINT: returns the overlap integral between the two curves; multiplying by
+% std(x) makes this scale-invariant (a PDF's overlap integral scales as 1/std
+% under rescaling of x, so this cancels that out -- multiplying by var(x)
+% instead would not be scale-invariant)
+out.olapint = sum(f .* ffit * dx) * std(x);
 
 % RELENT: returns the relative entropy of the two distributions
-r = (ffit ~= 0);
-out.relent = sum(f(r) .* log(f(r) ./ ffit(r)) * (xi(2) - xi(1)));
+% By convention 0*log(0/y) := 0, so also exclude points where f == 0 -- otherwise
+% log(0/ffit) = -Inf and 0*(-Inf) evaluates to NaN rather than contributing zero.
+r = (ffit ~= 0) & (f ~= 0);
+out.relent = sum(f(r) .* log(f(r) ./ ffit(r)) * dx);
 
+end
+
+% ------------------------------------------------------------------------------
+function xEdge = SUB_DensityEdge(pdfFn, xStart, direction, xStep, thresh)
+	% The point beyond xStart (direction = +1 or -1) at which a unimodal density falls to
+	% thresh: the distance from xStart is doubled, from xStep, until the density is at most
+	% thresh, and the crossing in that last interval is found by root finding (fzero; for a
+	% density with a jump, such as the uniform, this is the jump). xStart if the density
+	% is already at most thresh there.
+	if ~(pdfFn(xStart) > thresh)
+		xEdge = xStart;
+		return
+	end
+	inside = xStart;
+	stride = xStep;
+	for k = 1:200
+		outside = xStart + direction * stride;
+		if ~isfinite(outside)
+			break
+		end
+		if ~(pdfFn(outside) > thresh)
+			xEdge = fzero(@(z) pdfFn(z) - thresh, sort([inside, outside]));
+			return
+		end
+		inside = outside;
+		stride = 2 * stride;
+	end
+	error('Could not bracket the edge of the fitted distribution');
 end

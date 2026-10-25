@@ -1,49 +1,67 @@
-function [tsData,labels,groups] = HCTSA2_Ingest(dataFile,opt)
-% (Type tests use isa(x,'categorical') and isa(x,'string') rather than
-% iscategorical/isstring. The two forms are equivalent in MATLAB, but only isa
-% exists in Octave -- which is where this code is developed and smoke-tested, so
-% the equivalent form keeps that possible without changing MATLAB behaviour.)
-% HCTSA2_Ingest   Read time series out of a .mat in whatever shape it arrives.
+function [tsData,labels,groups,dropped] = HCTSA2_Ingest(data,opt)
+% HCTSA2_Ingest   Read time series out of a .mat, a .csv, or a variable.
 %
-%   [tsData,labels,groups] = HCTSA2_Ingest('mydata.mat',opt)
+%   [tsData,labels,groups,dropped] = HCTSA2_Ingest('mydata.mat',opt)
+%   [tsData,labels,groups,dropped] = HCTSA2_Ingest(X,opt)     % matrix, cell or table
 %
 % OPT is a struct that may carry: DataVar, Labels, Groups, IdVar, TimeVar,
-% ValueVar, ClassVar. Missing fields are filled with defaults, so a bare
-% struct() is fine.
+% ValueVar, ClassVar, Format ('auto' | 'long' | 'wide'). Missing fields are
+% filled with defaults, so a bare struct() is fine.
 %
 % Handles four layouts:
 %   - LONG-FORMAT TABLE  (id, time, value, class) -- one row per observation
 %   - wide table         (one column per series)
-%   - numeric matrix     (rows = series)
+%   - numeric matrix     (rows = series; long format is detected too)
 %   - cell array         (one vector per series)
+%
+% Missing values: NaN/Inf at either end of a series is padding and is trimmed.
+% A series with NaN/Inf inside it, nothing left after trimming, or more than
+% 50,000 samples (hctsa's limit) is dropped and listed in DROPPED (a struct of
+% two cell columns, Name and Reason; struct2table makes it a table), rather than
+% silently spliced or skipped later.
 %
 % Shared by HCTSA2_Analyse and HCTSA2_SamplingSafeFeatures so both read data
 % identically.
+%
+% (Type tests use isa(x,'categorical') and isa(x,'string') rather than
+% iscategorical/isstring: equivalent in MATLAB, and also available in Octave,
+% where parts of this code are smoke-tested.)
 
 defaults = struct('DataVar','','Labels',{{}},'Groups',[], ...
-                  'IdVar',[],'TimeVar',[],'ValueVar',[],'ClassVar',[]);
+                  'IdVar',[],'TimeVar',[],'ValueVar',[],'ClassVar',[],'Format','auto');
 fn = fieldnames(defaults);
 for i = 1:numel(fn)
-    if ~isfield(opt,fn{i}) || (isempty(opt.(fn{i})) && ~ischar(defaults.(fn{i})))
-        if ~isfield(opt,fn{i}), opt.(fn{i}) = defaults.(fn{i}); end
-    end
+    if ~isfield(opt,fn{i}), opt.(fn{i}) = defaults.(fn{i}); end
 end
+opt.Format = validatestring(char(opt.Format),{'auto','long','wide'});
 
-[tsData,labels,groups] = localIngest(dataFile,opt);
+[tsData,labels,groups] = localIngest(data,opt);
+[tsData,labels,groups,dropped] = localMissing(tsData,labels,groups);
+if isempty(tsData)
+    error('HCTSA2_Analyse:noUsableSeries', ...
+        'No usable time series: all %u were dropped (see the list above).',numel(dropped.Name));
+end
 end
 
 %===============================================================================
-function [tsData,labels,groups] = localIngest(dataFile,opt)
-% Find the time series in an arbitrary .mat. Handles four layouts:
-%   - LONG-FORMAT TABLE  (id, time, value, class) -- one row per observation
-%   - wide table         (one column per series)
-%   - numeric matrix     (rows = series)
-%   - cell array         (one vector per series)
+function [tsData,labels,groups] = localIngest(data,opt)
 
-if exist(dataFile,'file') ~= 2
-    error('HCTSA2_Analyse:noFile','Could not find %s',dataFile);
+if ischar(data) || (isa(data,'string') && isscalar(data))
+    dataFile = char(data);
+    if exist(dataFile,'file') ~= 2
+        error('HCTSA2_Analyse:noFile','Could not find %s',dataFile);
+    end
+    [~,~,ext] = fileparts(dataFile);
+    if strcmpi(ext,'.csv')
+        D = struct('data',readtable(dataFile));
+    else
+        D = load(dataFile);
+    end
+else
+    % in-memory data: groups and labels must be given as values
+    D = struct('data',{data});
+    dataFile = '(variable)';
 end
-D = load(dataFile);
 fn = fieldnames(D);
 
 raw = [];
@@ -83,7 +101,8 @@ if isa(raw,'timetable'), raw = timetable2table(raw); end
 
 if isa(raw,'table')
     [tsData,labels,groups] = localFromTable(raw,opt);
-elseif isnumeric(raw) && isLongFormatMatrix(raw)
+elseif isnumeric(raw) && ~strcmp(opt.Format,'wide') && ...
+        (strcmp(opt.Format,'long') || isLongFormatMatrix(raw))
     % A numeric matrix can be long format too: (id, time, value[, class]) with
     % one row per observation. Without this test such a matrix is transposed by
     % the branch below and read as a handful of very long series -- a 5030-by-4
@@ -112,11 +131,22 @@ else
 end
 n = numel(tsData);
 
+% The variable named for groups is never a candidate for the series names
+groupVarName = '';
+if ischar(opt.Groups) || (isa(opt.Groups,'string') && isscalar(opt.Groups))
+    groupVarName = char(opt.Groups);
+end
+
 if ~isempty(opt.Labels), labels = opt.Labels; end
 if isempty(labels)
+    % Series names: the first cellstr with one UNIQUE entry per series that is
+    % not a keyword or class-label variable (a cellstr of group names has
+    % repeats, and would make TS_Init fail on duplicate names)
+    skip = [{'keywords',groupVarName},{'groups','y','classes','class','group'}];
     for i = 1:numel(fn)
         v = D.(fn{i});
-        if iscellstr(v) && numel(v) == n && ~strcmpi(fn{i},'keywords') %#ok<ISCLSTR>
+        if iscellstr(v) && numel(v) == n && ~any(strcmpi(fn{i},skip)) && ... %#ok<ISCLSTR>
+                numel(unique(v)) == n
             labels = v; break
         end
     end
@@ -124,12 +154,13 @@ end
 if isempty(labels)
     labels = arrayfun(@(i) sprintf('Series_%u',i),1:n,'UniformOutput',false);
 end
+labels = cellstr(labels);
 
 if ~isempty(opt.Groups)
     groups = opt.Groups;
-    if ischar(groups)
-        if isfield(D,groups), groups = D.(groups);
-        else, error('HCTSA2_Analyse:noGroupVar','No variable %s in %s',groups,dataFile);
+    if ~isempty(groupVarName)
+        if isfield(D,groupVarName), groups = D.(groupVarName);
+        else, error('HCTSA2_Analyse:noGroupVar','No variable %s in %s',groupVarName,dataFile);
         end
     end
 end
@@ -148,16 +179,63 @@ if isempty(groups)
          'Pass Groups to enable it.']);
     groups = ones(n,1);
 end
+if numel(groups) ~= n
+    error('HCTSA2_Analyse:groupCount','%u group labels for %u time series.',numel(groups),n);
+end
+groups = groups(:);
+end
+
+%===============================================================================
+function [tsData,labels,groups,dropped] = localMissing(tsData,labels,groups)
+% Trim non-finite padding at both ends; drop series with non-finite values
+% inside, nothing left, or more than hctsa's 50,000 samples; list what was dropped.
+maxL = 50000; % TS_ReadInputFile's limit
+n = numel(tsData);
+labels = labels(:);
+reason = repmat({''},n,1);
+nTrimmed = 0;
+for i = 1:n
+    x = tsData{i};
+    ok = isfinite(x);
+    if ~any(ok)
+        reason{i} = 'no finite values';
+        continue
+    end
+    first = find(ok,1,'first'); last = find(ok,1,'last');
+    if first > 1 || last < numel(x)
+        nTrimmed = nTrimmed + 1;
+        x = x(first:last);
+        tsData{i} = x;
+    end
+    if ~all(isfinite(x))
+        reason{i} = sprintf('%u NaN/Inf values inside the series',sum(~isfinite(x)));
+    elseif numel(x) > maxL
+        reason{i} = sprintf('%u samples (hctsa accepts up to %u)',numel(x),maxL);
+    end
+end
+if nTrimmed > 0
+    fprintf('    %u series had NaN/Inf padding at an end, which was trimmed.\n',nTrimmed);
+end
+isDropped = ~cellfun(@isempty,reason);
+dropped = struct('Name',{labels(isDropped)},'Reason',{reason(isDropped)});
+if any(isDropped)
+    warning('HCTSA2_Analyse:droppedSeries','%u of %u series dropped at ingest:',sum(isDropped),n);
+    for i = find(isDropped)'
+        fprintf('      %s: %s\n',labels{i},reason{i});
+    end
+end
+tsData = tsData(~isDropped);
+labels = labels(~isDropped);
+groups = groups(~isDropped);
 end
 
 %===============================================================================
 function [tsData,labels,groups] = localFromTable(T,opt)
 % Reshape a table into one vector per series.
 %
-% Long format is detected by an ID column that repeats. Columns are taken
-% POSITIONALLY by default -- (id, time, value, class) -- because column names
-% vary between datasets; override with IdVar/TimeVar/ValueVar/ClassVar, each of
-% which accepts a name or a column index.
+% Columns are taken POSITIONALLY by default -- (id, time, value, class) --
+% because column names vary between datasets; override with
+% IdVar/TimeVar/ValueVar/ClassVar, each of which accepts a name or a column index.
 
 vn = T.Properties.VariableNames;
 idVar    = localPickVar(opt.IdVar,1,vn);
@@ -165,7 +243,18 @@ timeVar  = localPickVar(opt.TimeVar,2,vn);
 valVar   = localPickVar(opt.ValueVar,3,vn);
 classVar = localPickVar(opt.ClassVar,4,vn);
 
-isLong = ~isempty(idVar) && height(T) > numel(unique(T.(idVar)));
+switch opt.Format
+case 'long'
+    isLong = true;
+case 'wide'
+    isLong = false;
+otherwise
+    % Long format needs an id column of few, repeated values (the same rule as
+    % for numeric matrices). Any repeat at all was enough before, so a wide table
+    % whose first column held integer or quantised data was read as long format.
+    userCols = ~isempty(opt.IdVar) || ~isempty(opt.TimeVar) || ~isempty(opt.ValueVar);
+    isLong = userCols || (~isempty(idVar) && numel(vn) >= 3 && isLongIdColumn(T.(idVar)));
+end
 
 if ~isLong
     fprintf('    table looks WIDE (one column per series)\n');
@@ -173,8 +262,7 @@ if ~isLong
     cols = vn(num);
     tsData = cell(numel(cols),1);
     for i = 1:numel(cols)
-        v = double(T.(cols{i}));
-        tsData{i} = v(isfinite(v));
+        tsData{i} = double(T.(cols{i}));   % missing values: see localMissing
     end
     labels = cols;
     groups = [];
@@ -261,10 +349,10 @@ for i = 1:nSeries
         if isa(cv,'categorical'), cv = string(cv); end
         if isnumeric(cv)
             u = unique(cv);
-            groups{i} = u(1);
+            groups{i} = cv(1);
         else
             u = unique(string(cv));
-            groups{i} = char(u(1));
+            groups{i} = char(string(cv(1)));
         end
         if numel(u) > 1
             warning('HCTSA2_Analyse:mixedClass', ...
@@ -315,12 +403,25 @@ tf = false;
 if ~ismatrix(M) || size(M,1) < 20, return; end
 nc = size(M,2);
 if nc < 3 || nc > 4, return; end
-c1 = M(:,1);
-if any(~isfinite(c1)), return; end
-if any(abs(c1 - round(c1)) > 0), return; end          % ids are integers
-u = unique(c1);
-if numel(u) < 2 || numel(u) > size(M,1)/10, return; end % repeated many times
-tf = true;
+tf = isLongIdColumn(M(:,1));
+end
+
+%===============================================================================
+function tf = isLongIdColumn(c1)
+% A series-id column: integer (or text/categorical) values, at least 2 distinct,
+% each repeated -- at most one distinct value per 10 rows.
+tf = false;
+n = numel(c1);
+if n < 20, return; end
+if isnumeric(c1) || islogical(c1)
+    c1 = double(c1);
+    if any(~isfinite(c1)), return; end
+    if any(abs(c1 - round(c1)) > 0), return; end      % ids are integers
+    u = unique(c1);
+else
+    u = unique(string(c1));
+end
+tf = numel(u) >= 2 && numel(u) <= n/10;
 end
 
 %===============================================================================
@@ -344,6 +445,7 @@ if ~isempty(userVal)
     if isnumeric(userVal)
         if userVal >= 1 && userVal <= numel(vn), name = vn{userVal}; end
     else
+        userVal = char(userVal);
         if any(strcmp(vn,userVal)), name = userVal;
         else, error('HCTSA2_Analyse:badVar','No column named %s',userVal);
         end
@@ -352,4 +454,3 @@ elseif defaultIdx >= 1 && defaultIdx <= numel(vn)
     name = vn{defaultIdx};
 end
 end
-

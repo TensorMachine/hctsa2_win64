@@ -1,16 +1,60 @@
-function out = SB_MotifThree(y, cgHow)
-% SB_MotifThree     Motifs in a coarse-graining of a time series to a 3-letter alphabet
+function out = SB_MotifThree(y, cgHow, tau)
+% SB_MotifThree   Motifs in a coarse-graining of a time series to a 3-letter alphabet.
 %
-% (As SB_MotifTwo but with a 3-letter alphabet)
+% As SB_MotifTwo but with a 3-letter alphabet. The time series (or its increments) is
+% coarse-grained into three symbols, a, b and c, each used about equally often (a
+% equiprobable alphabet), and the probabilities of all words of length 1, 2, 3 and 4
+% (counted at every position, overlapping) are returned with the Shannon entropy
+% of the word distribution at each length.
 %
 % ---INPUTS:
-% y, time series to analyze
-% cgHow, the coarse-graining method to use:
-%       (i) 'quantile': equiprobable alphabet by time-series value
-%       (ii) 'diffquant': equiprobably alphabet by time-series increments
+% y, the time series to analyze
+% cgHow, the coarse-graining method to use (default: 'quantile'):
+%    (i) 'quantile': equiprobable alphabet by time-series value (a: lowest third,
+%        c: highest third)
+%    (ii) 'diffquant': equiprobable alphabet by time-series increments (a: the
+%        most negative third of the increments, c: the most positive third)
+% tau, the time delay at which to symbolize consecutive words (default: 1, i.e.,
+%    consecutive samples). The series is first downsampled by tau (using resample).
+%    Can also be a string that sets it from the series: 'ac' (the first zero-crossing
+%    of the autocorrelation function, matching the lag used by SB_TransitionMatrix),
+%    'ac1e' (the floor of its first 1/e crossing), or 'mi' (the smaller of the first
+%    minimum of the Kraskov automutual information and the 'ac1e' delay; see
+%    BF_GetTau). All three are capped at floor(N/50) for a series of length N.
+%    Useful since words at consecutive samples of a smooth, oversampled
+%    signal can be dominated by trivial local structure.
 %
 % ---OUTPUTS:
-% Statistics on words of length 1, 2, 3, and 4.
+% A structure with fields:
+% Probabilities of the symbols (length-1 words), as a proportion of the
+% sequence:
+% a, b, c
+% Probabilities of words of length 2 (the 9 two-letter words):
+% aa, ab, ac, ba, bb, bc, ca, cb, cc
+% Probabilities of words of length 3 (the 27 three-letter words):
+% aaa, aab, aac, aba, abb, abc, aca, acb, acc, baa, bab, bac, bba, bbb, bbc,
+%     bca, bcb, bcc, caa, cab, cac, cba, cbb, cbc, cca, ccb, ccc
+% Probabilities of words of length 4 (the 81 four-letter words):
+% aaaa, aaab, aaac, aaba, aabb, aabc, aaca, aacb, aacc, abaa, abab, abac,
+%     abba, abbb, abbc, abca, abcb, abcc, acaa, acab, acac, acba, acbb,
+%     acbc, acca, accb, accc, baaa, baab, baac, baba, babb, babc, baca,
+%     bacb, bacc, bbaa, bbab, bbac, bbba, bbbb, bbbc, bbca, bbcb, bbcc,
+%     bcaa, bcab, bcac, bcba, bcbb, bcbc, bcca, bccb, bccc, caaa, caab,
+%     caac, caba, cabb, cabc, caca, cacb, cacc, cbaa, cbab, cbac, cbba,
+%     cbbb, cbbc, cbca, cbcb, cbcc, ccaa, ccab, ccac, ccba, ccbb, ccbc,
+%     ccca, cccb, cccc
+% Entropies of the word distributions, in nats, with a Miller-Madow correction for
+% the finite number of words (see f_entropy below):
+% h, entropy of single symbols
+% hh, entropy of words of length 2
+% hhh, entropy of words of length 3
+% hhhh, entropy of words of length 4
+% NaN (instead of a structure) is returned if tau cannot be determined.
+%
+% ---NOTES:
+% In f_entropy, the textbook Miller-Madow degrees of freedom (occupied bins - 1)
+% are reduced by wordLength*(alphabetSize - 1), because the coarse-graining
+% fixes the marginal frequencies of the symbols.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -44,6 +88,35 @@ function out = SB_MotifThree(y, cgHow)
 if nargin < 2 || isempty(cgHow)
 	cgHow = 'quantile';
 end
+if nargin < 3 || isempty(tau)
+	tau = 1;
+end
+if ischar(tau) && ismember(tau, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		out = NaN; return
+	end
+	% Cap the data-driven delay at 2% of the series length (as for 'ac'), so that the
+	% downsampled series stays long enough to count words/transitions
+	if tau > length(y) / 50
+		tau = floor(length(y) / 50);
+	end
+end
+if strcmp(tau, 'ac') % determine tau from first zero of autocorrelation
+	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	% Cap the data-driven delay at 2% of the series length so that the
+	% downsampled series stays long enough to count words/transitions
+	if tau > length(y) / 50
+		tau = floor(length(y) / 50);
+	end
+end
+if isnan(tau)
+	out = NaN; return
+end
+if tau > 1 % symbolize words at this lag by downsampling first
+	y = resample(y, 1, tau);
+end
 
 % -------------------------------------------------------------------------------
 % Coarse-grain the data y -> yt
@@ -54,7 +127,7 @@ switch cgHow
 	case 'diffquant'
 		yt = SB_CoarseGrain(diff(y), 'quantile', numLetters);
 	otherwise
-		error('Unknown coarse-graining method ''%s''');
+		error('Unknown coarse-graining method ''%s''', cgHow);
 end
 % So we have a vector yt with entries in {1,2,3}
 
@@ -75,7 +148,7 @@ end
 out.a = out1(1); % proportion of a
 out.b = out1(2); % proportion of b
 out.c = out1(3); % proportion of c
-out.h = f_entropy(out1); % entropy of this result
+out.h = f_entropy(out1, N, 1, 3); % entropy (Miller-Madow, marginal-constrained df)
 
 % ------------------------------------------------------------------------------
 %% Words of length 2
@@ -101,7 +174,7 @@ out.aa = out2(1, 1); out.ab = out2(1, 2); out.ac = out2(1, 3);
 out.ba = out2(2, 1); out.bb = out2(2, 2); out.bc = out2(2, 3);
 out.ca = out2(3, 1); out.cb = out2(3, 2); out.cc = out2(3, 3);
 
-out.hh = f_entropy(out2); % entropy of this result
+out.hh = f_entropy(out2, N - 1, 2, 3); % entropy (Miller-Madow, marginal-constrained df)
 
 % ------------------------------------------------------------------------------
 %% Words of length 3
@@ -137,7 +210,7 @@ out.caa = out3(3, 1, 1); out.cab = out3(3, 1, 2); out.cac = out3(3, 1, 3);
 out.cba = out3(3, 2, 1); out.cbb = out3(3, 2, 2); out.cbc = out3(3, 2, 3);
 out.cca = out3(3, 3, 1); out.ccb = out3(3, 3, 2); out.ccc = out3(3, 3, 3);
 
-out.hhh = f_entropy(out3); % entropy of this result
+out.hhh = f_entropy(out3, N - 2, 3, 3); % entropy (Miller-Madow, marginal-constrained df)
 
 % ------------------------------------------------------------------------------
 %% Words of length 4
@@ -203,13 +276,28 @@ out.ccaa = out4(3, 3, 1, 1); out.ccab = out4(3, 3, 1, 2); out.ccac = out4(3, 3, 
 out.ccba = out4(3, 3, 2, 1); out.ccbb = out4(3, 3, 2, 2); out.ccbc = out4(3, 3, 2, 3);
 out.ccca = out4(3, 3, 3, 1); out.cccb = out4(3, 3, 3, 2); out.cccc = out4(3, 3, 3, 3);
 
-out.hhhh = f_entropy(out4); % entropy of this result
+out.hhhh = f_entropy(out4, N - 3, 4, 3); % entropy (Miller-Madow, marginal-constrained df)
 
 % -------------------------------------------------------------------------------
-function h = f_entropy(x)
-	% entropy of a set of counts, log(0)=0
-	r = (x > 0);
-	h = -sum(x(r) .* log(x(r)));
+function h = f_entropy(p, numSamples, wordLength, alphabetSize)
+	% Miller-Madow-corrected entropy of a probability array, in nats (log(0)=0).
+	%
+	% The naive plug-in estimator -sum(p.*log(p)) is biased downwards by
+	% (df)/(2n), and the textbook form takes df = (occupied bins - 1). That
+	% over-corrects here, because the coarse-graining fixes the marginals: with
+	% an equiprobable alphabet each of the wordLength positions is constrained
+	% to uniform, removing wordLength*(alphabetSize-1) degrees of freedom. For
+	% words of length 1 that leaves df = 0 exactly -- the plug-in is already
+	% exact, since a quantile split puts a fixed count in each bin with no
+	% sampling variation at all.
+	r = (p > 0);
+	h = -sum(p(r) .* log(p(r)));
+	if nargin > 3 && numSamples > 0
+		df = sum(r(:)) - 1 - wordLength * (alphabetSize - 1);
+		if df > 0
+			h = h + df / (2 * numSamples);
+		end
+	end
 end
 
 end

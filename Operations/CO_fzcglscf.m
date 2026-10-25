@@ -1,19 +1,25 @@
-function out = CO_fzcglscf(y, alpha, beta, maxtau)
-% CO_fzcglscf   The first zero-crossing of the generalized self-correlation function
+function out = CO_FZCGLSCF(y, alpha, beta, maxtau)
+% CO_FZCGLSCF   The first zero-crossing of the generalized self-correlation function.
 %
-% Returns the first zero-crossing of the generalized self-correlation function
-% introduced in Duarte Queiros and Moyano in Physica A, Vol. 383, pp. 10--15
-% (2007) in the paper "Yet on statistical properties of traded volume:
-% Correlation and mutual information at different value magnitudes"
-% Uses CO_glscf to calculate the generalized self-correlations.
-% Keeps calculating until the function finds a minimum, and returns this lag.
+% Returns the lag at which the generalized self-correlation function of Queiros and
+% Moyano (see CO_GLSCF), the correlation between |y(t)|^alpha and |y(t+tau)|^beta,
+% first changes sign as tau = 1, 2, ... increases. The crossing is placed by linear
+% interpolation between the two lags either side. If the function never
+% changes sign, the output is maxtau.
 %
 % ---INPUTS:
-% y, the input time series.
-% alpha, the parameter alpha.
-% beta, the parameter beta.
-% maxtau [opt], a maximum time delay to search up to (default is the time-series
-%                length).
+% y, the input time series
+% alpha, the parameter alpha
+% beta, the parameter beta
+% maxtau, [optional] the maximum time delay to search up to (default: the length of
+%         the time series)
+%
+% ---OUTPUTS:
+% out, a scalar: the (interpolated) lag of the first zero-crossing, or maxtau.
+%
+% ---REFERENCES:
+% Queiros and Moyano, "Yet on statistical properties of traded volume: Correlation and
+% mutual information at different value magnitudes", Physica A 383, 10--15 (2007).
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -59,11 +65,11 @@ for i = 1:maxtau
 	% y1 = abs(y(1:end-tau));
 	% y2 = abs(y(1+tau:end));
 
-	glscfs(i) = CO_glscf(y, alpha, beta, tau);
+	glscfs(i) = CO_GLSCF(y, alpha, beta, tau);
 
 	if (i > 1) && (glscfs(i) * glscfs(i - 1) < 0)
 		% Draw a straight line between these two and look at where hits zero
-		out = i - 1 + glscfs(i) / (glscfs(i) - glscfs(i - 1));
+		out = i - 1 + glscfs(i - 1) / (glscfs(i - 1) - glscfs(i));
 		return
 	end
 end

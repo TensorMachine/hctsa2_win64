@@ -1,25 +1,109 @@
-function out = NL_DVV(x, m, numDVs, nd, Ntv, numSurr, randomSeed)
-% NL_DVV    Delay Vector Variance method for real and complex signals.
+function out = NL_DVV(x, m, numDVs, nd, Ntv, numSurr, randomSeed, tau)
+% NL_DVV   How well nearby delay vectors predict their target value, compared with surrogates.
 %
-% Uses predictability of the signal in phase space to characterize the
-% time series.
-%
-% This function uses the original code from the DVV toolbox to do the computation
-% and produces statistics on the outputs -- comparing the DVV curves for both
-% the real and the surrogate data.
+% Delay vector variance (DVV) method for real and complex signals, using the
+% original code of the DVV toolbox (below). A delay vector is a run of m
+% values (spaced tau apart) and its target is the value tau samples after the
+% last of them. For each of
+% numDVs randomly chosen reference vectors, the variance of the targets of all
+% delay vectors within a distance rd of the reference is found (only if at
+% least 30 vectors lie within rd). The mean of these variances over the
+% references, divided by the variance of the series, is the target variance;
+% it is computed at Ntv values of rd that span the mean distance between delay
+% vectors plus or minus nd standard deviations. The same curve is found for
+% numSurr iterative amplitude-adjusted Fourier transform (IAAFT) surrogates,
+% and the outputs summarize the data curve and its difference from the mean
+% surrogate curve.
 %
 % ---USAGE:
-% outputStats = NL_DVV(x, m, numDVs, nd, Ntv, numSurr, randomSeed)
+% outputStats = NL_DVV(x, m, numDVs, nd, Ntv, numSurr, randomSeed, tau)
 %
 % ---INPUTS:
-% x:            Original real-valued or complex time series
-% m:            Delay embedding dimension
-% Ntv:          Number of points on horizontal axes
-% numDVs:       Number of reference DVs to consider
-% nd:           Span over which to perform DVV
-% Ntv:          Number of points on the horizontal axis
-% numSurr:      Number of surrogates to compare to
-% randomSeed:   How to control the random seed for reproducibility
+% x, original real-valued or complex time series
+% m, delay embedding dimension (default: 3)
+% numDVs, number of reference delay vectors to consider (default: 100)
+% nd, span over which to perform DVV, in standard deviations of the distances
+%     between delay vectors (default: 2)
+% Ntv, number of points on the horizontal (distance) axis (default: 25*nd)
+% numSurr, number of surrogates to compare to (default: 10)
+% randomSeed, the seed of the random draws (see BF_RandomSeed): 'default' or
+%       empty for seed 0, or an integer (default: 'default')
+% tau, the time delay between delay-vector elements: an integer number of samples
+%      (default: 1), or 'ac1e' or 'mi' to set it from the series (see BF_GetTau).
+%      The same delay is used for the data and the surrogates. With tau = 1 an
+%      oversampled series' delay vectors span only a small part of a correlation
+%      time, so the statistics mostly measure smoothness; an adaptive delay makes
+%      them much less dependent on the sampling rate.
+%
+% ---OUTPUTS: statistics of the curve of target variance against standardized
+% distance (the "data curve", using only distances at which it is defined):
+% trend, slope of a linear fit to the data curve
+% max, min, mean: maximum, minimum and mean of the data curve
+% meanDiff, stdDiff: mean and standard deviation of the successive differences
+%           of the data curve (stdDiff is computed but not registered: it depends
+%           mostly on the choice of reference vectors)
+% trendDiff, slope of a linear fit to the successive differences
+% rmsDiffSurr, meanDiffSurr: root-mean-square and mean difference between the
+%           data curve and the mean surrogate curve
+% numZeroCrossings, number of sign changes of that difference (computed but not
+%           registered: it depends mostly on the random draws)
+% trendSurr, slope of a linear fit to the mean surrogate curve
+% meanDiffTrendSurr, trendSurr minus trend
+% meanNormCDF, mean over distances of the Gaussian cumulative probability of the
+%           data curve value, given the mean and standard deviation across the
+%           surrogates (over the distances at which the surrogate values differ;
+%           NaN if they never do)
+% dataSurrCorr, trendDataSurr: correlation between the data curve and the mean
+%           surrogate curve, and slope of the mean surrogate curve against the
+%           data curve (NaN if the data curve is constant; computed but not
+%           registered as features; see below)
+%
+% The target variance of a set is computed in two passes (mean, then mean squared
+% deviation), so it is never negative; a variance below the square of 1e-12 of the
+% range of x comes from targets that are equal up to rounding, and is 0.
+%
+% ---REFERENCES:
+% T. Gautama, D.P. Mandic and M.M. Van Hulle, "The delay vector variance method for
+% detecting determinism and nonlinearity in time series", Physica D 190(3-4),
+% 167-176 (2004). DOI: 10.1016/j.physd.2003.11.001
+% T.F. Chan, G.H. Golub and R.J. LeVeque, "Algorithms for computing the sample
+% variance: analysis and recommendations", Am. Stat. 37(3), 242-247 (1983) (the
+% two-pass variance). DOI: 10.1080/00031305.1983.10483115
+%
+% ---NOTES:
+% The random choices (the reference delay vectors and the starting permutation of
+% each surrogate) come from BF_Random, the portable generator that gives the same
+% numbers in every language, so the outputs are reproducible across MATLAB
+% releases and implementations. With seed s and b0 = s*(2*numSurr + 1), the
+% stream with seed b0 gives the data's reference vectors (the first numDVs entries
+% of a random permutation of the delay vectors, i.e., sampling without
+% replacement), seeds b0 + i (i = 1..numSurr) give the starting permutation of
+% surrogate i, and seeds b0 + numSurr + i its reference vectors. The set of delay
+% vectors around a reference vector excludes the reference itself.
+%
+% Surrogates are generated by Toolboxes/DVV_Toolbox/DVV_surrogate.m, which
+% hctsa patches in-place (real-valued branch only) for speed: the original
+% always runs its full 1000-iteration IAAFT budget for every surrogate (its
+% convergence check essentially never triggers -- MSE oscillates rather than
+% converging, a known property of vanilla IAAFT). See DVV_surrogate.m's own
+% docstring for details of the fix.
+%
+% Several surrogate-comparison fields (e.g., rmsDiffSurr, meanDiffSurr, meanNormCDF,
+% numZeroCrossings) separate chaotic generators from linear-stochastic controls, with
+% the sign the method predicts (real data sits below the surrogate ensemble for
+% deterministic systems), and are not simply redundant with CO_TC3, CO_trev,
+% SD_Surrogates or SD_SurrogateTest.
+%
+% Two fields are computed but not registered as features:
+% - trendDataSurr: tests showed it did not separate deterministic from
+%   linear-stochastic series.
+% - dataSurrCorr: fundamentally ill-conditioned, not just noisy. It's the
+%   Pearson correlation between the real and surrogate-mean DVV curves
+%   across Ntv points; whenever either curve is close to flat (always true
+%   for linear/noise data by design, and often true for the 10-surrogate
+%   mean curve even for genuinely chaotic data, just by which surrogates
+%   got drawn), the correlation becomes numerically unstable and can flip
+%   sign for the SAME underlying generator.
 %
 % A Delay Vector Variance (DVV) toolbox for MATLAB
 % (c) Copyright Danilo P. Mandic 2008
@@ -85,39 +169,73 @@ end
 if nargin < 7
 	randomSeed = [];
 end
+if nargin < 8 || isempty(tau)
+	tau = 1;
+end
 
 % ------------------------------------------------------------------------------
 % Preliminaries
 % ------------------------------------------------------------------------------
-BF_ResetSeed(randomSeed); % Reset the random seed if specified
+seed = BF_RandomSeed(randomSeed); % integer seed of the portable random stream (BF_Random)
+
+% Time delay: an integer, or 'ac1e'/'mi' resolved from the series by BF_GetTau
+if ischar(tau) || isstring(tau)
+	tau = BF_GetTau(x, char(tau));
+end
+if isnan(tau)
+	out = NaN; return % no delay can be set (e.g. a constant series)
+end
+
+% DVV_dvv draws numDVs reference delay vectors without replacement from the
+% N - m*tau available, so a short series cannot supply them (data-dependent):
+if length(x) - m*tau < numDVs
+	warning('Time series (N = %u) too short to draw %u reference delay vectors at m = %u, tau = %u', length(x), numDVs, m, tau);
+	out = NaN; return
+end
+
+% ------------------------------------------------------------------------------
+% Random draws (portable stream, one seeded block per draw):
+% ------------------------------------------------------------------------------
+N = length(x);
+Nd = N - m*tau; % number of delay vectors (each with a target)
+b0 = seed * (2*numSurr + 1);
+refs = zeros(numDVs, numSurr + 1); % reference delay vectors: data, then each surrogate
+perms = zeros(N, numSurr); % starting permutation of each surrogate
+p = BF_Random(Nd, b0, 'perm');
+refs(:, 1) = p(1:numDVs);
+for i = 1:numSurr
+	perms(:, i) = BF_Random(N, b0 + i, 'perm');
+	p = BF_Random(Nd, b0 + numSurr + i, 'perm');
+	refs(:, i + 1) = p(1:numDVs);
+end
 
 % ------------------------------------------------------------------------------
 % Run DVV on input data:
 % ------------------------------------------------------------------------------
-if beVocal, fprintf(1, 'dvv on data...'); end
-dvv_data = DVV_dvv(x, m, numDVs, nd, Ntv);
-if beVocal, fprintf(1, ' Done.\n'); end
+if beVocal, fprintf(1, 'dvv on data...'); end %#ok<UNRCH>
+dvv_data = DVV_dvv(x, m, numDVs, nd, Ntv, tau, refs(:, 1));
+if beVocal, fprintf(1, ' Done.\n'); end %#ok<UNRCH>
 
 % ------------------------------------------------------------------------------
 % Generate surrogate data and run DVV on the surrogates
 % ------------------------------------------------------------------------------
-if beVocal, fprintf(1, 'Generating %u surrogates...', numSurr); end
-x_surr = DVV_surrogate(x, numSurr);
-if beVocal, fprintf(1, ' Done.\n'); end
+if beVocal, fprintf(1, 'Generating %u surrogates...', numSurr); end %#ok<UNRCH>
+x_surr = DVV_surrogate(x, numSurr, perms);
+if beVocal, fprintf(1, ' Done.\n'); end %#ok<UNRCH>
 
-if beVocal, fprintf(1, 'Computing dvv for surrogates...'); end
+if beVocal, fprintf(1, 'Computing dvv for surrogates...'); end %#ok<UNRCH>
 dvv_surr = zeros(Ntv, 2, numSurr);
 for i = 1:numSurr
-	dvv_surr(:, :, i) = DVV_dvv(x_surr(:, i), m, numDVs, nd, Ntv);
+	dvv_surr(:, :, i) = DVV_dvv(x_surr(:, i), m, numDVs, nd, Ntv, tau, refs(:, i + 1));
 end
 mean_dvv_surr = mean(dvv_surr, 3);
-if beVocal, fprintf(1, ' Done.\n'); end
+if beVocal, fprintf(1, ' Done.\n'); end %#ok<UNRCH>
 
 % ------------------------------------------------------------------------------
 % Plotting:
 % ------------------------------------------------------------------------------
 if doPlot
-	f = figure('color', 'w'); box('on');
+	f = figure('color', 'w'); box('on'); %#ok<UNRCH>
 	subplot(1, 2, 1); hold on
 	plot(dvv_data(:, 1), dvv_data(:, 2), '.-k')
 	plot(mean_dvv_surr(:, 1), mean_dvv_surr(:, 2), '.-r')
@@ -140,6 +258,10 @@ end
 
 dvv_data_notNaN = dvv_data(~isnan(dvv_data(:, 2)), :);
 
+% Target variances are 0 below the square of 1e-12 of the range of x (see
+% DVV_dvv), which on the normalized scale of the curves is:
+tolV = (1e-12 * range(x))^2 / var(x);
+
 % Is there a trend in the data?
 out.trend = GiveMeGradient(dvv_data_notNaN(:, 1), dvv_data_notNaN(:, 2));
 
@@ -160,7 +282,11 @@ out.rmsDiffSurr = sqrt(mean((dvv_data(notNaN, 2) - mean_dvv_surr(notNaN, 2)).^2)
 out.meanDiffSurr = mean(dvv_data(notNaN, 2) - mean_dvv_surr(notNaN, 2));
 
 % What's the correlation between the original and surrogate DVV values
-out.dataSurrCorr = corr(dvv_data(notNaN, 2), mean_dvv_surr(notNaN, 2));
+if range(dvv_data(notNaN, 2)) <= tolV
+	out.dataSurrCorr = NaN; % a constant data curve has no correlation
+else
+	out.dataSurrCorr = corr(dvv_data(notNaN, 2), mean_dvv_surr(notNaN, 2));
+end
 
 % Trend in DVV scatter plot
 out.trendDataSurr = GiveMeGradient(dvv_data(notNaN, 2), mean_dvv_surr(notNaN, 2));
@@ -172,18 +298,27 @@ out.numZeroCrossings = sum(BF_SignChange(dvv_data(notNaN, 2) - mean_dvv_surr(not
 out.trendSurr = GiveMeGradient(mean_dvv_surr(notNaN, 1), mean_dvv_surr(notNaN, 2));
 out.meanDiffTrendSurr = out.trendSurr - out.trend;
 
-% Mean probability assuming Gaussian distribution of test stat for surrogates:
-probs = zeros(sum(notNaN), 1);
+% Mean probability assuming Gaussian distribution of test stat for surrogates,
+% over the distances at which the surrogates spread (a Gaussian of zero width
+% gives no probability):
+probs = NaN(sum(notNaN), 1);
 fnotNaN = find(notNaN);
 for i = 1:sum(notNaN)
-	probs(i) = normcdf(dvv_data(fnotNaN(i), 2), mean(dvv_surr(fnotNaN(i), 2, :)), std(dvv_surr(fnotNaN(i), 2, :)));
+	sdSurr = std(dvv_surr(fnotNaN(i), 2, :));
+	if sdSurr > tolV
+		probs(i) = normcdf(dvv_data(fnotNaN(i), 2), mean(dvv_surr(fnotNaN(i), 2, :)), sdSurr);
+	end
 end
-out.meanNormCDF = mean(probs);
+out.meanNormCDF = mean(probs, 'omitnan'); % (NaN if the surrogates never spread)
 
 % ------------------------------------------------------------------------------
 function m = GiveMeGradient(xData, yData)
-	if size(xData, 1) ~= size(yData, 1);
+	if size(xData, 1) ~= size(yData, 1)
 		yData = yData';
+	end
+	if range(xData) <= tolV
+		m = NaN; % no spread in the regressor: the slope is undefined
+		return
 	end
 	p = polyfit(xData, yData, 1);
 	m = p(1);

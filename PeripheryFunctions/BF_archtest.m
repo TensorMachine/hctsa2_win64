@@ -1,46 +1,79 @@
-function [h,pValue,stat,cValue] = BF_archtest(res,varargin)
-% BF_archtest   Engle's ARCH test for conditional heteroskedasticity.
+function p = BF_ARCHTest(x, maxLag)
+% BF_ARCHTest   p-values of Engle's test for ARCH effects at lags 1 to maxLag.
 %
-% Regresses squared residuals on their own lags; under the null of no ARCH
-% effects, T*R^2 ~ chi2(lags).
+% For each lag L, the squared series (not de-meaned) is regressed on a constant and L of
+% its own lags, and the Lagrange-multiplier statistic (N - L) R^2 is compared with a
+% chi-squared distribution with L degrees of freedom.
 %
-% Name/value pairs: 'lags' (default 1), 'alpha' (0.05).
+%---INPUTS:
+% x, the (residual) series, not squared
+% maxLag, the largest lag (default: 20)
+%
+%---OUTPUT:
+% p, the p-values for lags 1 to maxLag, as a row vector (all NaN for a constant or
+%       non-finite series)
+%
+% Reference: R. F. Engle, "Autoregressive Conditional Heteroscedasticity with Estimates of the
+% Variance of United Kingdom Inflation", Econometrica 50, 987 (1982). DOI: 10.2307/1912773
 
-res = res(:); res = res(isfinite(res));
-lags = 1; alpha = 0.05;
-for k = 1:2:numel(varargin)-1
-    switch lower(varargin{k})
-    case 'lags',  lags  = varargin{k+1};
-    case 'alpha', alpha = varargin{k+1};
-    end
+% ------------------------------------------------------------------------------
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% <http://www.benfulcher.com>
+%
+% If you use this code for your research, please cite the following two papers:
+%
+% (1) B.D. Fulcher and N.S. Jones, "hctsa: A Computational Framework for Automated
+% Time-Series Phenotyping Using Massive Feature Extraction, Cell Systems 5: 527 (2017).
+% DOI: 10.1016/j.cels.2017.10.001
+%
+% (2) B.D. Fulcher, M.A. Little, N.S. Jones, "Highly comparative time-series
+% analysis: the empirical structure of time series and their methods",
+% J. Roy. Soc. Interface 10(83) 20130048 (2013).
+% DOI: 10.1098/rsif.2013.0048
+%
+% This function is free software: you can redistribute it and/or modify it under
+% the terms of the GNU General Public License as published by the Free Software
+% Foundation, either version 3 of the License, or (at your option) any later
+% version.
+%
+% This program is distributed in the hope that it will be useful, but WITHOUT
+% ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+% FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+% details.
+%
+% You should have received a copy of the GNU General Public License along with
+% this program. If not, see <http://www.gnu.org/licenses/>.
+% ------------------------------------------------------------------------------
+
+if nargin < 2 || isempty(maxLag)
+    maxLag = 20;
 end
-lags = lags(:)'; alpha = alpha(:)';
-n = max(numel(lags),numel(alpha));
-if numel(lags)==1,  lags  = repmat(lags,1,n);  end
-if numel(alpha)==1, alpha = repmat(alpha,1,n); end
-
-% NOT demeaned: archtest assumes the input is already a residual series, and
-% demeaning here is visibly wrong (30x larger error against the reference).
-e2 = res.^2;
-T = numel(e2);
-
-stat = zeros(1,n); pValue = zeros(1,n); cValue = zeros(1,n);
-for i = 1:n
-    L = lags(i);
-    yv = e2(L+1:end);
-    % Preallocate rather than growing Xv one column per lag: same values, but
-    % without reallocating and copying the whole matrix L times.
-    Xv = ones(numel(yv),L+1);
-    for j = 1:L
-        Xv(:,j+1) = e2(L+1-j:end-j);
-    end
-    b = Xv\yv;
-    r = yv - Xv*b;
-    sst = sum((yv-mean(yv)).^2);
-    R2 = 1 - sum(r.^2)/sst;
-    stat(i) = numel(yv)*R2;
-    pValue(i) = gammainc(stat(i)/2,L/2,'upper');  % accurate chi2 upper tail
-    cValue(i) = chi2inv(1-alpha(i),L);
+x = x(:);
+N = length(x);
+if N - maxLag < 2
+    error('The series is too short for the requested number of ARCH lags');
 end
-h = pValue < alpha;
+p = NaN(1, maxLag);
+x2 = x.^2;
+if ~all(isfinite(x2)) || max(x2) == min(x2)
+    return
+end
+
+for L = 1:maxLag
+    % Response and lagged regressors over the N - L complete rows
+    resp = x2(L+1:N);
+    X = ones(N - L, L + 1);
+    for k = 1:L
+        X(:, k + 1) = x2(L+1-k:N-k);
+    end
+    beta = X \ resp;
+    res = resp - X * beta;
+    sst = sum((resp - mean(resp)).^2);
+    if sst == 0
+        continue
+    end
+    R2 = 1 - sum(res.^2) / sst;
+    p(L) = gammainc((N - L) * R2 / 2, L / 2, 'upper');
+end
+
 end

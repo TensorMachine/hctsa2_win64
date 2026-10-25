@@ -3,7 +3,7 @@
 % This script must be run in the Toolboxes directory.
 %
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -40,118 +40,183 @@ end
 % Sweet. Toolbox path is:
 toolDir = currentDir;
 
-% ------------------------------------------------------------------------------
-% Max Little's fastdfa code
-% ------------------------------------------------------------------------------
-fprintf(1,'fastdfa...');
-try
-    cd(fullfile(toolDir,'Max_Little','fastdfa'));
-	mex ML_fastdfa_core.c
-    fprintf(1,' done.\n');
-catch emsg
-    fprintf(1,'%s\n\n',emsg.message);
-    cd(toolDir);
-    errMsg = sprintf(['An error occurred while compiling ML_Fastdfa_core C code.\n' ...
-        'It appears that mex is not set up to work on this system (cf. ''doc mex'' and ''mex -setup'').\n' ...
-        'Get ''mex ML_fastdfa_core.c'' to work, and then re-run compile_mex.m']);
-    error(errMsg)
-end
+% Track per-component success so a final summary can be printed, and so
+% one early failure (e.g. mex not yet configured) doesn't abort the whole
+% script and silently skip every toolbox after it:
+results = struct('name',{},'ok',{});
 
 % ------------------------------------------------------------------------------
 % Max Little's Steps Bumps Toolkit
 % ------------------------------------------------------------------------------
 fprintf(1,'Max Little''s ''Steps and bumps'' toolkit...');
 cd(fullfile(toolDir,'Max_Little','steps_bumps_toolkit'))
-anyErrors = false;
+ok = true;
 try
     mex ML_kvsteps_core.cpp
+    fprintf(1,' done.\n');
 catch
+    ok = false;
     fprintf(1,'ERROR: Max Little''s ''Steps and bumps'' C++ code failed to compile correctly.\n');
 end
-if ~anyErrors
-    fprintf(1,' done.\n');
-end
+results(end+1) = struct('name','Max Little''s steps_bumps toolkit','ok',ok);
 
 % ------------------------------------------------------------------------------
 % Max Little's RPDE toolkit
 % ------------------------------------------------------------------------------
 fprintf(1,'Max Little''s ''RPDE'' code...');
 cd(fullfile(toolDir,'Max_Little','rpde'))
-anyErrors = false;
+ok = true;
 try
     mex ML_close_ret.c
+    fprintf(1,' done.\n');
 catch
+    ok = false;
     fprintf(1,'ERROR: Max Little''s ''RPDE'' C code failed to compile correctly\n');
 end
-if ~anyErrors
-    fprintf(1,' done.\n');
-end
+results(end+1) = struct('name','Max Little''s RPDE toolkit','ok',ok);
 
 % ------------------------------------------------------------------------------
 % Michael Small's code
 % ------------------------------------------------------------------------------
 fprintf(1,'Michael Small''s code...');
 cd(fullfile(toolDir,'Michael_Small'))
-anyErrors = false;
+ok = true;
 try
     mex MS_complexitybs.c % compile Michael Small's complexitybs C code
 catch
+    ok = false;
     fprintf(1,'ERROR: Michael Small''s ''complexitybs'' C code failed to compile correctly\n');
 end
 try
     mex MS_nearest.c      % compile Michael Small's nearest C code
 catch
+    ok = false;
     fprintf(1,'ERROR: Michael Small''s ''nearest'' C code failed to compile correctly\n');
 end
 try
     mex MS_shannon.c      % compile Michael Small's shannon C code
 catch
+    ok = false;
     fprintf(1,'ERROR: Michael Small''s ''shannon'' C code failed to compile correctly\n');
 end
-if ~anyErrors
+if ok
     fprintf(1,' done.\n');
 end
+results(end+1) = struct('name','Michael Small''s code','ok',ok);
 
 % ------------------------------------------------------------------------------
 % Gaussian Process code, gpml
 % ------------------------------------------------------------------------------
 fprintf(1,'Gaussian Process Toolbox, Carl Edward Rasmussen and Hannes Nickisch...');
 cd(fullfile(toolDir,'gpml','util'))
-anyErrors = false;
+ok = true;
 try
     make
+    fprintf(1,' done.\n');
 catch
+    ok = false;
     fprintf(1,'ERROR: Gaussian Process Toolbox failed to compile correctly.\n');
 end
-if ~anyErrors
-    fprintf(1,' done.\n');
-end
+results(end+1) = struct('name','Gaussian Process Toolbox (gpml)','ok',ok);
 
 %-------------------------------------------------------------------------------
 % Physionet sample entropy code (turned to mex)
 %-------------------------------------------------------------------------------
 fprintf(1,'Sample entropy...');
 cd(fullfile(toolDir,'Physionet'))
-anyErrors = false;
+ok = true;
 try
     mex sampen_mex.c
+    fprintf(1,' done.\n');
 catch
+    ok = false;
     fprintf(1,'ERROR: Physionet implementation of sample entropy failed to compile.\n');
 end
-if ~anyErrors
+results(end+1) = struct('name','Physionet sample entropy','ok',ok);
+
+%-------------------------------------------------------------------------------
+% HCTSA2 2.4.0: Kraskov (KSG) mutual information, in place of the JIDT jar
+%-------------------------------------------------------------------------------
+fprintf(1,'Kraskov mutual information (KSG)...');
+cd(fullfile(toolDir,'KSG'))
+ok = true;
+try
+    mex KSG_mi.c
     fprintf(1,' done.\n');
+catch
+    ok = false;
+    fprintf(1,'ERROR: the KSG mutual information code failed to compile.\n');
 end
+results(end+1) = struct('name','Kraskov mutual information (KSG)','ok',ok);
 
 % ------------------------------------------------------------------------------
-% TSTOOL removed in upstream v2.0.0: its operations were replaced with native
-% and TISEAN-based equivalents, and Toolboxes/OpenTSTOOL no longer exists.
-% Nothing to compile here.
+% TISEAN
+% ------------------------------------------------------------------------------
+% (its own function, compile_tisean.m, so it can be re-run on its own if it's
+% the only component that fails -- e.g. after installing a missing compiler --
+% without re-running every other component here too)
+cd(toolDir);
+ok = compile_tisean();
+if ~ok
+    fprintf(1,['If TISEAN was the only component that failed above, fix the issue and just ' ...
+        're-run compile_tisean (rather than the whole of compile_mex, which would ' ...
+        're-compile everything else too).\n']);
+end
+results(end+1) = struct('name','TISEAN','ok',ok);
+
+% ------------------------------------------------------------------------------
+% ripser
+% ------------------------------------------------------------------------------
+% (its own function, compile_ripser.m, for the same reason as TISEAN above)
+cd(toolDir);
+ok = compile_ripser();
+if ~ok
+    fprintf(1,['If ripser was the only component that failed above, fix the issue and just ' ...
+        're-run compile_ripser (rather than the whole of compile_mex, which would ' ...
+        're-compile everything else too).\n']);
+end
+results(end+1) = struct('name','ripser','ok',ok);
 
 %-------------------------------------------------------------------------------
 % CATCH22
 %-------------------------------------------------------------------------------
-cd(fullfile(toolDir,'catch22','wrap_Matlab'))
-mexAll
+% (optional git submodule: skipped, not counted as a failure, if it hasn't been
+% fetched -- e.g. a ZIP download, or a clone without --recursive)
+fprintf(1,'catch22...');
+catch22Dir = fullfile(toolDir,'catch22','wrap_Matlab');
+if isfolder(catch22Dir)
+    cd(catch22Dir)
+    ok = true;
+    try
+        mexAll
+        fprintf(1,' done.\n');
+    catch emsg
+        ok = false;
+        fprintf(1,'ERROR: catch22 failed to compile correctly.\n%s\n',emsg.message);
+    end
+    results(end+1) = struct('name','catch22','ok',ok);
+else
+    fprintf(1,[' skipped (optional submodule not fetched; to add it, run from the hctsa root: ' ...
+        'git submodule update --init --recursive).\n']);
+end
 
 % Return to base directory
 cd(toolDir);
+
+%-------------------------------------------------------------------------------
+% Summary
+%-------------------------------------------------------------------------------
+fprintf(1,'\n---Compilation summary---\n');
+for i = 1:length(results)
+    if results(i).ok
+        fprintf(1,'  [ OK ] %s\n',results(i).name);
+    else
+        fprintf(1,'  [FAIL] %s\n',results(i).name);
+    end
+end
+numOk = sum([results.ok]);
+fprintf(1,'%u/%u components compiled successfully.\n',numOk,length(results));
+if numOk < length(results)
+    fprintf(1,['Some components failed to compile -- hctsa will still run, but operations that ' ...
+        'depend on a failed component will not work. See the ERROR messages above for details.\n']);
+end

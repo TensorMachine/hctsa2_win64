@@ -1,27 +1,31 @@
 function out = WL_scal2frq(y, wname, amax, delta)
-% WL_scal2frq   Frequency components in a periodic time series
+% WL_scal2frq   Dominant wavelet level of a time series and its pseudo-period and pseudo-frequency.
 %
 % Estimates frequency components using functions from Matlab's Wavelet Toolbox,
-% including the scal2frq function.
+% including the scal2frq function. The detail coefficients of a discrete wavelet
+% decomposition are computed down to level amax; the level with the largest robust
+% noise-standard-deviation estimate (wnoisest) of its detail coefficients is the
+% dominant one, and the dyadic scale 2^level is converted to a pseudo-frequency
+% and pseudo-period of the wavelet.
 %
-%---INPUTS:
+% Adapted from an example in the Matlab Wavelet Toolbox documentation. It is kind of
+% a weird idea to apply the method to generic time series.
+%
+% ---INPUTS:
 % y, the input time series
-%
 % wname, the name of the mother wavelet to analyze the data with: e.g., 'db3',
-%           'sym2', cf. Wavelet Toolbox Documentation for details
+%        'sym2', cf. Wavelet Toolbox Documentation for details (default: 'db3')
+% amax, the maximum scale / level (can be 'max' to set according to wmaxlev;
+%       default: 5)
+% delta, the sampling period (default: 1)
 %
-% amax, the maximum scale / level (can be 'max' to set according to wmaxlev)
-%
-% delta, the sampling period
-%
-%---OUTPUTS: the level with the highest energy coefficients, the dominant
-% period, and the dominant pseudo-frequency.
-%
-% Adapted from example in Matlab Wavelet Toolbox documentation. It's kind of a
-% weird idea to apply the method to generic time series.
+% ---OUTPUTS:
+% lmax, the level with the highest energy coefficients
+% period, the dominant period (the pseudo-period of that level, in units of delta)
+% pf, the dominant pseudo-frequency (the pseudo-frequency of that level)
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -63,26 +67,26 @@ N = length(y); % length of the time series
 %% Check Inputs
 % ------------------------------------------------------------------------------
 if nargin < 2 || isempty(wname)
-    fprintf(1,'Wavelet not specified -- using the default db3 wavelet\n');
-    wname = 'db3';
+	fprintf(1, 'Wavelet not specified -- using the default db3 wavelet\n');
+	wname = 'db3';
 end
 
 if nargin < 3 || isempty(amax)
-    amax = 5; % maximum 'scale'
+	amax = 5; % maximum 'scale'
 end
-maxlevel = BF_wmaxlev(N,wname); % maximum level for this time-series length
-if strcmp(amax,'max') % set to maximum for this wavelet
-    amax = BF_wmaxlev(N,wname);
+maxlevel = BF_wmaxlev(N, wname); % maximum level for this time-series length
+if strcmp(amax, 'max') % set to maximum for this wavelet
+	amax = BF_wmaxlev(N, wname);
 end
 
 if nargin < 4 || isempty(delta)
-    delta = 1; % the sampling period
+	delta = 1; % the sampling period
 end
 
 if maxlevel < amax
-    fprintf(1,'Chosen level (%u) is too large for this wavelet on this signal...',amax);
-    amax = maxlevel;
-    fprintf(1,' changed to maximum level computed with wmaxlev: %u\n',amax);
+	fprintf(1, 'Chosen level (%u) is too large for this wavelet on this signal...', amax);
+	amax = maxlevel;
+	fprintf(1, ' changed to maximum level computed with wmaxlev: %u\n', amax);
 end
 
 % ------------------------------------------------------------------------------
@@ -105,17 +109,17 @@ a = 2.^scales;
 f = BF_scal2frq(a, wname, delta);
 
 % Compute associated pseudo-periods.
-per = 1./f;
+per = 1 ./ f;
 
 % Decompose the time series at level specified as maximum
 [c, l] = BF_wavedec(y, amax, wname);
 
 % Estimate standard deviation of detail coefficients.
-stdc = BF_wnoisest(c,l,scales);
+stdc = BF_wnoisest(c, l, scales);
 
 if doplot
-    figure('color','w'); box('on');
-    plot(stdc,'k') % plot them
+	figure('color', 'w'); box('on'); %#ok<UNRCH>
+	plot(stdc, 'k') % plot them
 end
 
 % Compute identified period.

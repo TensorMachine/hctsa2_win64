@@ -1,18 +1,39 @@
-function out = CO_PartialAutoCorr(y,maxTau,whatMethod)
-% CO_PartialAutoCorr   Compute the partial autocorrelation of an input time series
+function out = CO_PartialAutoCorr(y, maxTau, whatMethod)
+% CO_PartialAutoCorr   The partial autocorrelation of a time series.
 %
-%---INPUTS:
-% y, a scalar time series column vector.
+% Computes the partial autocorrelation at lags 1 to maxTau: the correlation between
+% y(t) and y(t-k) after removing the linear effect of the intermediate values (the
+% last coefficient of an order-k autoregressive fit).
 %
-% maxTau, the maximum time-delay. Returns for lags up to this maximum.
+% The default ('burg') is the sequence of reflection coefficients of Burg's
+% recursion: at each order, the coefficient minimizing the summed forward and backward
+% prediction errors, which has a closed form and is bounded in [-1, 1]. It needs no
+% matrix solve, so it is identical in any implementation, and it agrees closely with
+% the ordinary-least-squares partial autocorrelation. The latter ('ols', MATLAB's
+% parcorr) regresses y(t) on k lagged values; for smooth, nearly deterministic series
+% its design matrix is numerically singular and the coefficient depends on the
+% linear solver.
 %
-% whatMethod, the method used to compute: 'ols' or 'yule_walker'
+% ---INPUTS:
+% y, a scalar time series column vector
+% maxTau, the maximum time delay; returns lags up to this maximum (default 10)
+% whatMethod, the method used to compute it: 'burg' (the default; Burg recursion) or
+%               'ols' (ordinary least squares, parcorr)
 %
-%---OUTPUT: the partial autocorrelations across the set of time lags.
+% ---OUTPUTS:
+% pac_1, pac_2, ..., pac_<maxTau>, the partial autocorrelation at lags 1, 2, ...,
+%       maxTau (pac_1 to pac_20 for maxTau = 20).
 %
+% ---NOTES:
+% For 'burg', each order k uses the N-k forward errors f(t) and the matching
+% backward errors b(t-1) of the order k-1 fit: the reflection coefficient is
+% 2*sum(f*b)/(sum(f^2) + sum(b^2)), the partial autocorrelation at lag k is its
+% value, and both error series are then updated with it. A constant series gives
+% zeros.
+% The 'ols' method requires the Econometrics Toolbox (parcorr).
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -44,36 +65,56 @@ function out = CO_PartialAutoCorr(y,maxTau,whatMethod)
 %% Check inputs and set defaults:
 % ------------------------------------------------------------------------------
 if nargin < 2
-    % Use a maximum lag of 10 by default
-    maxTau = 10;
+	% Use a maximum lag of 10 by default
+	maxTau = 10;
 end
 
 if nargin < 3 || isempty(whatMethod)
-    % ordinary least square by default
-    whatMethod = 'ols';
+	% Burg recursion by default
+	whatMethod = 'burg';
 end
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 %% Initial checks on maxTau
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 N = length(y); % time-series length
 
-assert(maxTau > 0)
-
-if maxTau < 0
-    error('Negative time lags not applicable')
+if maxTau <= 0
+	error('Negative time lags not applicable')
 end
 
 % ------------------------------------------------------------------------------
 %% Do the computation
 % ------------------------------------------------------------------------------
-
-pacf = BF_parcorr(y,'NumLags',maxTau,'Method',whatMethod);
+switch whatMethod
+case 'burg'
+	nLags = min(maxTau, N - 1);
+	f = y(:) - mean(y); % forward prediction errors (order 0: the series itself)
+	b = f; % backward prediction errors
+	% Prediction errors below 1e-8 of the series' energy are rounding-level noise; they
+	% are not allowed to produce partial autocorrelations of up to +-1 (exactly
+	% predictable series, such as a sinusoid, give zeros beyond their order)
+	tiny = max(2e-8 * (f' * f), realmin);
+	pacf = zeros(maxTau + 1, 1);
+	pacf(1) = 1;
+	for k = 1:nLags
+		ff = f(k + 1:N);
+		bb = b(k:N - 1);
+		refl = 2 * (ff' * bb) / (ff' * ff + bb' * bb + tiny);
+		f(k + 1:N) = ff - refl * bb;
+		b(k + 1:N) = bb - refl * ff;
+		pacf(k + 1) = refl;
+	end
+	pacf(nLags + 2:end) = NaN; % lags beyond the series length are undefined
+case 'ols'
+	pacf = BF_parcorr(y, 'NumLags', maxTau, 'Method', 'ols');
+otherwise
+	error('Unknown method ''%s'' (use ''burg'' or ''ols'')', whatMethod);
+end
 
 % Zero lag is the first entry in the PACF (and should always be 1)
-
 for i = 1:maxTau
-    out.(sprintf('pac_%u',i)) = pacf(i+1);
+	out.(sprintf('pac_%u', i)) = pacf(i + 1);
 end
 
 end

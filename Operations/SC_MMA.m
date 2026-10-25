@@ -1,7 +1,59 @@
 function out = SC_MMA(y, doOverlap, scaleRange, qRange)
-% SC_MMA   Physionet implementation of multiscale multifractal analysis
+% SC_MMA   Multiscale multifractal analysis (PhysioNet implementation): scale-dependent multifractal scaling.
 %
-% Scale-dependent estimates of multifractal scaling in a time series.
+% Builds a surface of generalized Hurst exponents h(q, s) over the fluctuation
+% order q and the timescale s. The series is integrated (cumulative sum) and cut
+% into windows of s samples, non-overlapping or overlapping (doOverlap), and a
+% quadratic polynomial is removed from each. The order-q fluctuation function
+% F_q(s) is the q-th order mean of the window variances (their q/2 power mean) for
+% q from qMin to qMax in steps of 0.1 and for 20 window sizes between minScale
+% and maxScale. The exponent h(q, s) is the slope of log F_q(s') against log s'
+% over window sizes s' from s to 5s, for q in steps of 0.5 and for 11 starting
+% sizes s evenly spaced from minScale to maxScale/5 (the scale is reported as 3s,
+% following the original algorithm). The outputs summarize the surface h(q, s).
+%
+% ---INPUTS:
+% y, the input time series
+% doOverlap, whether windows overlap (1; step between windows of one sample, much
+%       slower) or not (0, the default)
+% scaleRange, [minScale, maxScale], the smallest and largest window sizes
+%       (default: [10, max(100, round(N/40))]). maxScale is rounded to a multiple
+%       of 5, and must be at least 5 * minScale. The floor of 100 keeps the scale
+%       axis wide enough for short series (below about N = 4000 the original
+%       rule N/40 would leave too little room).
+% qRange, [qMin, qMax], the range of the multifractal order q (default: [-5, 5]);
+%       q = 0 is replaced by 0.0001
+%
+% ---OUTPUTS: statistics of the h(q, s) surface:
+% meanHurstExponent, stdHurstExponent, minHurstExponent, maxHurstExponent: the
+%       mean, standard deviation, minimum and maximum of h over all q and scales
+% scaleHurstStd, scaleHurstTrend: the standard deviation across scales of h
+%       averaged over q, and the slope of a linear fit of it against scale
+% qHurstStd, qHurstTrend: the standard deviation across q of h averaged over
+%       scales, and the slope of a linear fit of it against q
+% maxHurstQ, maxHurstScale, minHurstQ, minHurstScale: the q and scale at which h
+%       is largest and smallest
+% stdStdHurstQ, stdStdHurstScale: the standard deviation across q of the
+%       standard deviation across scales of h (large if the scale dependence is
+%       very different at different q), and the standard deviation across
+%       scales of the standard deviation across q
+% A scalar NaN is returned if the series is too short for the scale range, or if no
+% segment fluctuates at some scale (see NOTES).
+%
+% ---REFERENCES:
+% J. Gieraltowski, J. J. Zebrowski, and R. Baranowski, "Multiscale multifractal
+% analysis of heart rate variability recordings with a large number of
+% occurrences of arrhythmia", Phys. Rev. E 85, 021915 (2012).
+%
+% ---NOTES:
+% This is the PhysioNet implementation by Jan Gieraltowski, modified for hctsa;
+% see the licence block below for its citation requirements.
+% A segment that the quadratic detrending fits exactly (to within rounding: residual
+% variance at most 1e-20 of its mean square, e.g. a run of constant values) has no
+% fluctuation: its q-th moment is infinite for q < 0 (and the q = 0 geometric mean, for
+% which q = 1e-4 stands in, is zero), so it is left out of the average there; it
+% contributes 0 for q > 0. Otherwise rounding noise in such segments dominates the
+% q <= 0 moments (h up to about 70 was seen).
 
 % ------------------------------------------------------------------------------
 % Modified by Ben Fulcher for use in hctsa, 2015-05-12.
@@ -73,19 +125,35 @@ if nargin < 2 || isempty(doOverlap)
 end
 
 if nargin < 3 || isempty(scaleRange)
-	scaleRange = [10, round(N / 40)];
 	% minimal s scale used, when calculating Fq(s) functions family (default 10)
-	% maximal s scale used, when calculating Fq(s) functions family, has to be multiple of 5 (default 600; in general should be near to N/50, where N is a time series length)
+	% maximal s scale used, when calculating Fq(s) functions family, has to be multiple of 5
+	% (should be near N/40, but floored at 100 = 10*minScale: below that the
+	% validity check further down always failed, so this operation silently
+	% returned NaN for essentially every series shorter than ~2000 samples,
+	% even though multiscale multifractal analysis is perfectly computable on
+	% much shorter series. A floor of exactly 5*minScale=50 (the bare minimum
+	% to pass the validity check) was tried first but collapses sList -- the
+	% scale-axis used for scaleHurstStd/scaleHurstTrend/min-maxHurstScale/
+	% stdStdHurstScale below -- to a single point (since it samples the range
+	% [minScale, maxScale/5], which is zero-width exactly at that boundary),
+	% making those fields degenerate. 100 keeps [minScale, maxScale/5]=[10,20]
+	% wide enough for an 11-point scale axis. The floor only changes behaviour
+	% for N below ~4000; for longer series round(N/40) already exceeds 100 and
+	% this is a no-op.
+	scaleRange = [10, max(100, round(N / 40))];
 end
 minScale = scaleRange(1);
 maxScale = scaleRange(2);
-if (maxScale / 5) < minScale
+if maxScale > N
+	warning('Time-series (N=%u) too short for multiscale multifractal analysis (maxScale=%u exceeds N)', N, maxScale);
+	out = NaN;
+	return
+elseif (maxScale / 5) < minScale
 	warning('Time-series (N=%u) too short for multiscale multifractal analysis', N);
 	out = NaN;
 	return
 elseif rem(maxScale, 5) ~= 0
 	maxScale = round(maxScale / 5) * 5;
-	fprintf(1, 'adjusted maxScale to %u\n', maxScale);
 end
 
 if nargin < 4 || isempty(qRange)
@@ -109,7 +177,7 @@ qList(qList == 0) = 0.0001;
 signal = y;
 
 prof = cumsum(signal);
-slength = size(prof);
+slength = size(prof, 1);
 
 numIncrements = 20;
 sListFull = unique(round(linspace(minScale, maxScale, numIncrements)));
@@ -119,20 +187,29 @@ sListFull = unique(round(linspace(minScale, maxScale, numIncrements)));
 fqs = zeros(length(sListFull) * length(qList), 3);
 rowIdx = 0;
 
-timer = tic;
 for s = sListFull
 
 	if doOverlap
-		vec = [0:s - 1];
-		ind = [1:slength - s + 1]';
+		vec = 0:s - 1;
+		ind = (1:slength - s + 1)';
 		coordinates = bsxfun(@plus, vec, ind);
 	else
-		ind2 = [1:size(prof, 1)];
+		ind2 = 1:size(prof, 1);
 		coordinates = reshape(ind2(1:(size(prof, 1) - mod(size(prof, 1), s))), s, (size(prof, 1) - mod(size(prof, 1), s)) / s)';
 	end
 
-	segments = prof(coordinates);
-	xbase = [1:1:s];
+	% reshape (not just index) explicitly to [numSegments x s]: when there's
+	% exactly one segment (s close to N, only reachable now that maxScale can
+	% approach N for short series), coordinates is itself a 1xs row vector,
+	% and Matlab's "vector indexed by vector" rule then returns prof(coordinates)
+	% shaped like prof (a column, since the input series is a column vector)
+	% rather than shaped like coordinates -- silently transposing a single
+	% segment into an sx1 column and breaking every segments(ni,:) below.
+	% reshape forces the intended [numSegments x s] shape regardless of that
+	% quirk (values stay in the same order either way, so this is a pure
+	% shape fix, not a data change).
+	segments = reshape(prof(coordinates), size(coordinates));
+	xbase = 1:1:s;
 	% Preallocate f2nis instead of growing it with f2nis(end+1) per segment:
 	numSegments = size(segments, 1);
 	f2nis = zeros(1, numSegments);
@@ -141,15 +218,29 @@ for s = sListFull
 		seg = segments(ni, :);
 		fit = polyfit(xbase, seg, 2);
 		variance = mean((seg - polyval(fit, xbase)).^2);
+		if variance <= 1e-20 * mean(seg.^2)
+			variance = 0; % the quadratic fits the segment exactly, to within rounding
+		end
 		f2nis(ni) = variance;
 	end
 
 	for q = qList
 		rowIdx = rowIdx + 1;
-		fqs(rowIdx, :) = [q, s, (mean(f2nis.^(q / 2)))^(1 / q)];
+		% (a segment with no fluctuation has an infinite moment for q < 0, and for q = 0,
+		% the geometric mean, which q = 1e-4 stands in for; so it is left out there, and
+		% contributes 0 for q > 0)
+		if q > 0.001
+			f2q = f2nis;
+		else
+			f2q = f2nis(f2nis > 0);
+		end
+		if isempty(f2q)
+			fqs(rowIdx, :) = [q, s, NaN];
+		else
+			fqs(rowIdx, :) = [q, s, (mean(f2q.^(q / 2)))^(1 / q)];
+		end
 	end
 end
-% fprintf(1,'Detrended fluctuations computed in %s\n',BF_TheTime(toc(timer)));
 
 fqsll = [fqs(:, 1) fqs(:, 2) log(fqs(:, 2)) log(fqs(:, 3))];
 
@@ -192,7 +283,11 @@ for si = 1:length(sList)
 	for qi = 1:length(qList)
 		qit = qList(qi);
 
-		fitTemp = fqsll(fqsll(:, 1) == qit & fqsll(:, 2) >= sit & fqsll(:, 2) <= 5 * sit, :);
+		% qit comes from a separately-generated (coarser-step) q range than the
+		% one used to build fqsll, so an exact floating-point == match is not
+		% reliable even when the two ranges are mathematically compatible steps
+		% (it can miss for some qRange values):
+		fitTemp = fqsll(abs(fqsll(:, 1) - qit) < 1e-8 & fqsll(:, 2) >= sit & fqsll(:, 2) <= 5 * sit, :);
 		hTemp = polyfit(fitTemp(:, 3), fitTemp(:, 4), 1);
 
 		hqs(qi, si) = hTemp(1);
@@ -210,7 +305,7 @@ sListScaled = sList * 3; % Not completely on top of the algorithm, but for some 
 % ------------------------------------------------------------------------------
 
 if doPlot
-	if max(max(hqs)) < 1.5
+	if max(max(hqs)) < 1.5 %#ok<UNRCH>
 		hLim = 1.5;
 	elseif max(max(hqs)) < 2.5
 		hLim = 2.5;
@@ -222,7 +317,7 @@ if doPlot
 	hqsplot = surf(sListScaled, qList, hqs);
 	colormap(jet);
 	colorbar;
-	caxis([0, hLim]);
+	clim([0, hLim]);
 	set(gca, 'YDir', 'reverse');
 	view(-62, 50);
 	axis([sListScaled(1), sListScaled(end), qMin, qMax, 0, hLim]);
@@ -238,6 +333,11 @@ end
 % hqsPlotData (scale,q)
 
 % Global properties:
+if any(isnan(hqs(:)))
+	% A scale at which no segment fluctuates: the exponents for q < 0 are undefined
+	out = NaN;
+	return
+end
 allExponents = hqs(:);
 out.meanHurstExponent = mean(allExponents);
 out.stdHurstExponent = std(allExponents);
@@ -272,7 +372,7 @@ out.stdStdHurstScale = std(stdS); % will be large if variance changes alot with 
 
 % ------------------------------------------------------------------------------
 function m = GiveMeGradient(xData, yData)
-	if size(xData, 1) ~= size(yData, 1);
+	if size(xData, 1) ~= size(yData, 1)
 		yData = yData';
 	end
 	p = polyfit(xData, yData, 1);

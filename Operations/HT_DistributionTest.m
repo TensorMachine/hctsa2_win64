@@ -1,34 +1,49 @@
-function p = HT_DistributionTest(x, theTest, theDistn, numBins)
-% HT_DistributionTest   Hypothesis test for distributional fits to a data vector.
+function out = HT_DistributionTest(x, theTest, theDistn, numBins)
+% HT_DistributionTest   Goodness of fit of a distribution fitted to a data vector.
 %
-% Fits a distribution to the data and then performs an appropriate hypothesis
-% test to quantify the difference between the two distributions.
+% Fits a distribution to the data and then computes the test statistic of an
+% appropriate goodness-of-fit test, as an effect size that quantifies the
+% difference between the two distributions (larger = worse fit).
 %
-% We fit Gaussian, Extreme Value, Uniform, Beta, Rayleigh, Exponential, Gamma,
-% Log-Normal, and Weibull distributions, using code described for DN_M_kscomp.
+% Effect sizes are returned rather than p-values: for a fixed discrepancy a
+% p-value decays exponentially with the series length (so on long real-world
+% series it underflows to zero for almost every fit), whereas the effect sizes
+% here are comparable across lengths.
+%
+% The distributions are fitted by maximum likelihood with MATLAB's Statistics
+% Toolbox: normfit, evfit, unifit, betafit, raylfit, expfit, gamfit, lognfit
+% and wblfit. For the beta distribution, the data are first rescaled to lie
+% inside (0, 1), as (x - min + 0.01*std)/(max - min + 0.02*std) (the same
+% rescaling as in DN_CompareKSFit). NaN is returned if the data fall outside the support of the
+% distribution (negative values for the Rayleigh, exponential and gamma
+% distributions; non-positive values for the log-normal and Weibull
+% distributions).
 %
 % ---INPUTS:
 % x, the input data vector
-% theTest, the hypothesis test to perform:
-%           (i) 'chi2gof': chi^2 goodness of fit test
-%           (ii) 'ks': Kolmogorov-Smirnov test
-%           (iii) 'lillie': Lilliefors test
-%
+% theTest, the goodness-of-fit statistic to compute:
+%           (i) 'chi2gof': chi^2 goodness of fit statistic per observation,
+%                   chi^2/N (MATLAB's chi2gof pools bins that have few
+%                   expected counts)
+%           (ii) 'ks': Kolmogorov-Smirnov statistic, D (maximum CDF difference)
+%           (iii) 'lillie': Lilliefors statistic (the same D as 'ks' for the
+%                   same fitted parameters; the tests differ only in the
+%                   null distribution used for a p-value). Implemented only
+%                   for 'norm', 'ev' and 'exp'; NaN otherwise.
 % theDistn, the distribution to fit:
-%           (i) 'norm' (Normal)
-%           (ii) 'ev' (Extreme value)
-%           (iii) 'uni' (Uniform)
-%           (iv) 'beta' (Beta)
+%           (i) 'norm' (Gaussian)
+%           (ii) 'ev' (extreme value)
+%           (iii) 'uni' (uniform)
+%           (iv) 'beta' (beta)
 %           (v) 'rayleigh' (Rayleigh)
-%           (vi) 'exp' (Exponential)
-%           (vii) 'gamma' (Gamma)
-%           (viii) 'logn' (Log-normal)
+%           (vi) 'exp' (exponential)
+%           (vii) 'gamma' (gamma)
+%           (viii) 'logn' (log-normal)
 %           (ix) 'wbl' (Weibull)
-%
 % numBins, the number of bins to use for the chi2 goodness of fit test
 %
-% All of these functions for hypothesis testing are implemented in Matlab's
-% Statistics Toolbox.
+% ---OUTPUTS:
+% a scalar: the goodness-of-fit statistic.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -71,35 +86,35 @@ switch theDistn
 		[a, b] = unifit(x);
 	case 'beta'
 		% clumsily scale to the range (0,1)
-		x = (x - min(x) + 0.01 * std(x)) / (max(x) - min(x) + 0.01 * std(x));
+		x = (x - min(x) + 0.01 * std(x)) / (max(x) - min(x) + 0.02 * std(x)); % same rescaling as DN_CompareKSFit; keeps x inside (0,1)
 		a = betafit(x);        % then fit
 	case 'rayleigh'
 		if any(x < 0)
-			p = NaN; return
+			out = NaN; return
 		else % valid domain to fit a Rayleigh distribution
 			a = raylfit(x);
 		end
 	case 'exp'
 		if any(x < 0)
-			p = NaN; return
+			out = NaN; return
 		else
 			a = expfit(x);
 		end
 	case 'gamma'
 		if any(x < 0)
-			p = NaN; return
+			out = NaN; return
 		else
 			a = gamfit(x);
 		end
 	case 'logn'
 		if any(x <= 0)
-			p = NaN; return
+			out = NaN; return
 		else
 			a = lognfit(x);
 		end
 	case 'wbl'
 		if any(x <= 0)
-			p = NaN; return
+			out = NaN; return
 		else
 			a = wblfit(x);
 		end
@@ -132,14 +147,15 @@ switch theTest
 				mycdf = {@wblcdf, a(1), a(2)};
 		end
 		warning('off', 'stats:chi2gof:LowCounts') % temporarily disable this warning
-		[~, p] = chi2gof(x, 'cdf', mycdf, 'nbins', numBins);
+		[~, ~, stats] = chi2gof(x, 'cdf', mycdf, 'nbins', numBins);
+		out = stats.chi2stat / length(x);
 		warning('on', 'stats:chi2gof:LowCounts') % temporarily disable this warning
 
 	case 'ks' % KOLMOGOROV-SMIRNOV TEST
 		x1 = sort(unique(round(x * 1E6) / 1E6)); % unique values to 6 places
 		if x1(1) > min(x), x1 = [min(x); x1]; end
 		if x1(end) < max(x), x1 = [x1; max(x)]; end
-		if size(x1, 1) < size(x1, 2);
+		if size(x1, 1) < size(x1, 2)
 			x1 = x1';
 		end
 		switch theDistn
@@ -163,21 +179,27 @@ switch theTest
 				mycdf = [x1, wblcdf(x1, a(1), a(2))];
 		end
 
-		[~, p] = kstest(x, mycdf);
+		if ~any(isfinite(mycdf(:, 2)))
+			% The fitted CDF is degenerate (e.g., a gamma fit to near-constant
+			% data): no valid hypothesized distribution to test against
+			warning('Fitted %s CDF is degenerate for this data; no KS test possible', theDistn);
+			out = NaN; return
+		end
+		[~, ~, out] = kstest(x, mycdf);
 
 	case 'lillie' % LILLIEFORS TEST
 		% Temporarily suspend low/high tabulated p-value warnings that often occur with this hypothesis test
 		warning('off', 'stats:lillietest:OutOfRangePLow'); warning('off', 'stats:lillietest:OutOfRangePHigh');
 		if any(ismember({'norm', 'ev'}, theDistn))
-			[~, p] = lillietest(x, 0.05, theDistn);
+			[~, ~, out] = lillietest(x, 0.05, theDistn);
 		elseif strcmp('exp', theDistn)
 			if any(x < 0)
-				p = NaN; return
+				out = NaN; return
 			else
-				[~, p] = lillietest(x, 0.05, theDistn);
+				[~, ~, out] = lillietest(x, 0.05, theDistn);
 			end
 		else
-			p = NaN;
+			out = NaN;
 			fprintf(1, '***RETURNED AN UNEXPECTED NAN FOR LILLIEFORS TEST\n');
 		end
 		warning('on', 'stats:lillietest:OutOfRangePLow'); warning('on', 'stats:lillietest:OutOfRangePHigh');

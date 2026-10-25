@@ -1,9 +1,14 @@
-function report = HCTSA2_ReportSkipped(whatData,verbose)
+function report = HCTSA2_ReportSkipped(whatData,verbose,installReport)
 % HCTSA2_ReportSkipped   Explain which features did not compute, and why.
 %
 %   HCTSA2_ReportSkipped                    % uses HCTSA.mat
 %   HCTSA2_ReportSkipped('HCTSA_myrun.mat')
 %   report = HCTSA2_ReportSkipped('HCTSA.mat',false)
+%   report = HCTSA2_ReportSkipped('HCTSA.mat',true,HCTSA2_CheckInstall(false))
+%
+% With the install report from HCTSA2_CheckInstall, a failure is blamed on a
+% compiled component only when that component is actually missing; without it,
+% the component is named as the likely cause from the operation name alone.
 %
 % hctsa never aborts a run because one operation failed: each master operation
 % is wrapped in try/catch and the outcome is recorded per feature in
@@ -20,31 +25,44 @@ function report = HCTSA2_ReportSkipped(whatData,verbose)
 %   3  output was +Inf
 %   4  output was -Inf
 %   5  output was complex
+%   6  output was empty
+%   7  link error (the registered output field does not exist)
 %
 % Codes 2-5 are usually legitimate results for a particular time series, not
 % installation problems. Code 1 is what this function is really for.
 
 if nargin < 1 || isempty(whatData), whatData = 'HCTSA.mat'; end
 if nargin < 2, verbose = true; end
+if nargin < 3, installReport = []; end
 
 if ~exist(whatData,'file')
     error('HCTSA2_ReportSkipped:noFile','Could not find %s',whatData);
 end
-D = load(whatData,'TS_Quality','Operations','TimeSeries');
+D = load(whatData,'TS_Quality','Operations','MasterOperations');
 if ~isfield(D,'TS_Quality')
     error('HCTSA2_ReportSkipped:noQuality','%s has no TS_Quality.',whatData);
 end
 Q = D.TS_Quality;
 [nTS,nOps] = size(Q);
 
-% Map each compiled component to the operation-name prefixes it gates, so a
-% wall of "undefined function" errors becomes one actionable line.
+% Map each compiled component to the operation-name prefixes it gates (counts
+% as in HCTSA2_CheckInstall, the 3.0.0 feature set of upstream v3.0.0), so a
+% wall of "undefined function" errors becomes one actionable line. The prefixes
+% are matched against the feature name and its master operation's label (the
+% catch22 feature sets name their features 'mode_5' etc. but their masters
+% 'catch22_...'); operations reaching TISEAN's false_nearest through an 'fnn'
+% embedding argument (50 features) are matched by their master code, and so are the
+% users of the KSG MEX (2.4.0): a 'kraskov' estimator or a 'mi' time delay.
 comp = {
- 'catch22 (MEX)',           {'catch22'},                                      240
- 'TISEAN (executables)',    {'NL_TISEAN','SY_Tisean','MF_tisean'},            276
- 'Physionet sampen (MEX)',  {'EN_SampEn','EN_Randomize','EN_mse'},             49
- 'Michael_Small (MEX)',     {'MS_','NL_MS'},                                   33
- 'Max_Little (MEX)',        {'SC_fastdfa','PH_Walker','ML_'},                  10
+ 'TISEAN/ripser (executables)', {'NL_d2','NL_c1','NL_FNN','SY_nstat_z','NL_BoxCountEntropyRate', ...
+                                'NL_Dimensions','NL_LargestLyap', ...
+                                'NL_GPCorrSum','NL_LyapSpec','PP_SchreiberDenoise', ...
+                                'NL_PersistentHomology'},                        538
+ 'Physionet sampen (MEX)',  {'EN_SampEn','EN_MSE'},                             91
+ 'Michael_Small (MEX)',     {'EN_LZComplexity','EX_ExtremeEventOrder','EN_Shannon'}, 47
+ 'Max_Little (MEX)',        {'CP_ML_StepDetect','CP_l1pwc_SweepLambda','EN_rpde'}, 36
+ 'KSG mutual information (MEX)', {'NL_PersistentHomology'},                440
+ 'catch22 (MEX)',           {'catch22'},                                         0
 };
 
 report = struct();
@@ -53,9 +71,9 @@ report.nTimeSeries = nTS;
 report.nOperations = nOps;
 report.total = numel(Q);
 
-codes = [0 1 2 3 4 5];
+codes = [0 1 2 3 4 5 6 7];
 labels = {'computed normally','fatal error','NaN output','+Inf output', ...
-          '-Inf output','complex output'};
+          '-Inf output','complex output','empty output','link error'};
 counts = zeros(1,numel(codes));
 for i = 1:numel(codes)
     counts(i) = sum(Q(:) == codes(i));
@@ -64,7 +82,7 @@ report.counts = counts;
 report.nanQuality = sum(isnan(Q(:)));
 
 if verbose
-    fprintf('\n========== hctsa 2.0: computation outcome ==========\n');
+    fprintf('\n========== hctsa2: computation outcome ==========\n');
     fprintf('%s  --  %u time series x %u operations\n\n',whatData,nTS,nOps);
     for i = 1:numel(codes)
         if counts(i) > 0
@@ -115,12 +133,33 @@ if isfield(D,'Operations')
     if numel(nm) == nOps, opNames = nm(:)'; end
 end
 
-% Attribute failures to a compiled component where the name matches
+% Master label and code of each operation (when the file has them)
+mLabel = repmat({''},1,nOps); mCode = repmat({''},1,nOps);
+try
+    [tf,loc] = ismember(D.Operations.MasterID,D.MasterOperations.ID);
+    mLabel(tf) = D.MasterOperations.Label(loc(tf));
+    mCode(tf) = D.MasterOperations.Code(loc(tf));
+catch
+end
+
+% Which components are missing, when the install report says so
+missing = true(1,size(comp,1));
+if ~isempty(installReport)
+    missing = cellfun(@(c) localMissing(c,installReport),comp(:,1))';
+end
+
+% Attribute failures to a (missing) compiled component where the name matches
 blame = zeros(1,numel(badOps));
 for k = 1:numel(badOps)
-    nm = opNames{badOps(k)};
+    j = badOps(k);
     for c = 1:size(comp,1)
-        if any(cellfun(@(p) strncmp(nm,p,numel(p)),comp{c,2}))
+        hit = any(cellfun(@(p) strncmp(opNames{j},p,numel(p)) || ...
+                               strncmp(mLabel{j},p,numel(p)),comp{c,2}));
+        if c == 1, hit = hit || ~isempty(strfind(mCode{j},'''fnn''')); end
+        if strncmp(comp{c,1},'KSG',3)   % (NL_PersistentHomology's delay defaults to 'mi')
+            hit = hit || ~isempty(regexp(mCode{j},'kraskov|''mi''','once'));
+        end
+        if hit && missing(c)
             blame(k) = c; break
         end
     end
@@ -139,8 +178,13 @@ if verbose
     sel = (blame == 0);
     if any(sel)
         nf = sum(failedPerOp(badOps(sel)));
+        if isempty(installReport)
+            whyText = 'not attributable';
+        else
+            whyText = 'data-dependent';  % components present: errors on these series
+        end
         fprintf('  %-26s %5u operations, %7u feature values\n', ...
-            'not attributable',sum(sel),nf);
+            whyText,sum(sel),nf);
         show = badOps(sel);
         fprintf('      e.g. ');
         for k = 1:min(5,numel(show))
@@ -159,4 +203,22 @@ end
 
 report.failedOps = opNames(badOps);
 report.blamed = comp(unique(blame(blame>0)),1);
+end
+
+%===============================================================================
+function tf = localMissing(compName,R)
+% Is this component unavailable according to HCTSA2_CheckInstall's report?
+tf = false;
+if strncmp(compName,'TISEAN',6)
+    tf = isfield(R,'tisean') && ~R.tisean;
+    return
+end
+key = strtok(compName,' ');   % 'Physionet', 'Michael_Small', 'Max_Little', 'catch22'
+if isfield(R,'mex')
+    for i = 1:numel(R.mex)
+        if strncmp(R.mex(i).name,key,numel(key)) && ~R.mex(i).available && ~R.mex(i).fallback
+            tf = true;
+        end
+    end
+end
 end

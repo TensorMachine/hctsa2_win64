@@ -1,51 +1,84 @@
 function out = SD_SurrogateTest(x, surrMeth, numSurrs, extrap, theTestStat, randomSeed)
-% SD_SurrogateTest   Analyzes test statistics obtained from surrogate time series
+% SD_SurrogateTest   Compares test statistics of a time series to those of its surrogates.
 %
-% This function is based on information found in:
-% "Surrogate data test for nonlinearity including nonmonotonic transforms"
-% D. Kugiumtzis Phys. Rev. E 62(1) R25 (2000)
-%
-% The generation of surrogates is done by the periphery function,
-% SD_MakeSurrogates
+% Generates surrogate time series (using the periphery function, SD_MakeSurrogates) and
+% evaluates one or more test statistics on both the original series and each surrogate. For
+% each statistic, the outputs measure how consistent the series' value is with the
+% distribution of the surrogates' values: a z-score (assuming a Gaussian distribution), a
+% distance from the median in interquartile ranges, and a rank-based p-value.
 %
 % ---INPUTS:
 % x, the input time series
-%
-% surrMeth, the method for generating surrogate time series:
-%       (i) 'RP': random phase surrogates that maintain linear correlations in
-%                 the data but destroy any nonlinear structure through phase
-%                 randomization
-%       (ii) 'AAFT': the amplitude-adjusted Fourier transform method maintains
-%                    linear correlations but destroys nonlinear structure
-%                    through phase randomization, yet preserves the approximate
-%                    amplitude distribution,
-%       (iii) 'TFT': preserves low-frequency phases but randomizes high-frequency phases (as a way of dealing
-%                    with non-stationarity, cf.:
-%               "A new surrogate data method for nonstationary time series",
-%                   D. L. Guarin Lopez et al., arXiv 1008.1804 (2010)
-%
-% numSurrs, the number of surrogates to compute (default is 99 for a 0.01
-%         significance level 1-sided test)
-%
+% surrMeth, the method for generating surrogate time series (default: 'RP'):
+%       (i) 'RP': random phase surrogates that maintain linear correlations in the data but
+%                 destroy any nonlinear structure through phase randomization
+%       (ii) 'AAFT': the amplitude-adjusted Fourier transform method maintains linear
+%                    correlations but destroys nonlinear structure through phase
+%                    randomization, yet preserves the approximate amplitude distribution
+%       (iii) 'TFT': preserves low-frequency phases but randomizes high-frequency phases
+%                    (as a way of dealing with non-stationarity)
+% numSurrs, the number of surrogates to compute (default: 99, for a 0.01 significance level
+%         1-sided test)
 % extrap, extra parameter, the cut-off frequency for 'TFT'
-%
-% theTestStat, the test statistic to evalute on all surrogates and the original
-%           time series. Can specify multiple options in a cell and will return
-%           output for each specified test statistic:
-%           (i) 'ami': the automutual information at lag 1, cf.
-%                 "Testing for nonlinearity in irregular fluctuations with
-%                 long-term trends" T. Nakamura and M. Small and Y. Hirata,
-%                 Phys. Rev. E 74(2) 026205 (2006)
-%           (ii) 'fmmi': the first minimum of the automutual information
-%                       function
-%           (iii) 'o3': a third-order statistic used in: "Surrogate time
-%                 series", T. Schreiber and A. Schmitz, Physica D 142(3-4) 346
-%                 (2000)
-%           (iv) 'tc3': a time-reversal asymmetry measure. Outputs of the
-%                 function include a z-test between the two distributions, and
-%                 some comparative rank-based statistics.
-%
+% theTestStat, the test statistic to evaluate on all surrogates and the original time
+%           series. Can specify multiple options in a cell and will return output for each
+%           specified test statistic:
+%           (i) 'amikraskov1': the automutual information at lag 1, estimated with the
+%                 Kraskov nearest-neighbor estimator (IN_AutoMutualInfo, 'kraskov1'); tested
+%                 one-sided (surrogates should have lower values)
+%           (i') 'amikraskovmi': as (i), but at the lag BF_GetTau(x,'mi') of the original
+%                 series (the same lag for the series and every surrogate), which also
+%                 detects nonlinear dependence that builds up over several steps, e.g., in
+%                 oversampled flows; one-sided
+%           (ii) 'fmmikraskov': the first minimum of the Kraskov automutual information
+%                 function (as CO_FirstMin(y,'mi-kraskov1')); tested one-sided
+%           (iii) 'o3': a third-order statistic, the mean cubed increment at lag 1; tested
+%                 two-sided
+%           (iv) 'tc3': a time-reversal asymmetry measure, CO_TC3 at lag 1; tested two-sided
+%           (v) 'nlpe': the mean squared nonlinear prediction error (slow; one-sided, the series should have the lower error)
+%           (vi) 'fnn': the proportion of false nearest neighbors in 2 dimensions (very
+%                 slow; one-sided)
+%           (vii) 'amigaussian1' and (viii) 'fmmigaussian': as (i) and (ii) but with the
+%                 Gaussian estimate of the automutual information (a function of the
+%                 autocorrelation only, which the surrogates preserve; see NOTES); one-sided
+%           (default: 'amikraskov1')
+%           The deprecated names 'ami1' and 'fmmi' (both the Gaussian estimate) are
+%           accepted as 'amigaussian1' and 'fmmigaussian', with a one-time warning.
 % randomSeed, whether (and how) to reset the random seed, using BF_ResetSeed
+%
+% ---OUTPUTS: for each requested test statistic s (amikraskov for 'amikraskov1',
+% amikraskovmi for 'amikraskovmi', fmmikraskov for 'fmmikraskov', amigaussian for 'amigaussian1', fmmigaussian for
+% 'fmmigaussian', o3, tc3, nlpe, fnn),
+% three fields named with the prefix s_ (e.g., amikraskov_zscore, amikraskov_mediqr,
+% amikraskov_prank, and likewise amikraskovmi_, fmmikraskov_, o3_, tc3_, amigaussian_, fmmigaussian_,
+% nlpe_ and fnn_):
+% s_zscore, the z-statistic of the series' value against the Gaussian distribution fitted
+%      to the surrogates' values (NaN if all surrogates have the same value)
+% s_mediqr, the distance of the series' value from the surrogates' median, in interquartile
+%      ranges (NaN if the interquartile range is 0)
+% s_prank, a rank-based p-value of the series' value among the surrogates' values:
+%      (k + 1)/(numSurrs + 1), where k is the number of surrogates at least as extreme as
+%      the series in the tested direction (for two-sided tests, in its more extreme tail,
+%      with the result doubled and capped at 1)
+%
+% ---REFERENCES:
+% Kugiumtzis, "Surrogate data test for nonlinearity including nonmonotonic transforms",
+% Phys. Rev. E 62(1) R25 (2000).
+% Guarin Lopez et al., "A new surrogate data method for nonstationary time series", arXiv
+% 1008.1804 (2010).
+% Nakamura, Small and Hirata, "Testing for nonlinearity in irregular fluctuations with
+% long-term trends", Phys. Rev. E 74(2) 026205 (2006).
+% Schreiber and Schmitz, "Surrogate time series", Physica D 142(3-4) 346 (2000).
+%
+% ---NOTES:
+% The Gaussian estimate of the automutual information ('amigaussian1', 'fmmigaussian')
+% is a function of the autocorrelation only, which random-phase surrogates preserve,
+% so its test cannot detect anything: the p-values are close to uniform for every
+% series. hctsa therefore uses the Kraskov estimate ('amikraskov1'), which also sees
+% nonlinear dependence. The Gaussian versions remain callable but are not registered.
+% 'fmmikraskov' is callable but not registered either: it searches the Kraskov
+% automutual information function lag by lag for its first minimum, for the series
+% and for every surrogate, which is costly on slowly decorrelating series.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -94,11 +127,27 @@ if nargin < 4
 end
 
 if nargin < 5 || isempty(theTestStat)
-	theTestStat = 'AMI'; % automutual information
+	theTestStat = 'amikraskov1'; % Kraskov automutual information at lag 1
 end
 
 if ischar(theTestStat)
 	theTestStat = {theTestStat};
+end
+
+% Deprecated names for the (Gaussian-estimate) statistics:
+persistent hasWarnedOldNames
+oldNames = {'ami1', 'fmmi'};
+newNames = {'amigaussian1', 'fmmigaussian'};
+for k = 1:2
+	if ismember(oldNames{k}, theTestStat)
+		if isempty(hasWarnedOldNames)
+			warning('hctsa:deprecated', ['SD_SurrogateTest statistics ''ami1'' and ''fmmi'' are deprecated: use ' ...
+						'''amigaussian1'' and ''fmmigaussian'' (they are Gaussian-estimate automutual information) or the ' ...
+						'Kraskov versions ''amikraskov1'' and ''fmmikraskov''.']);
+			hasWarnedOldNames = true;
+		end
+		theTestStat = strrep(theTestStat, oldNames{k}, newNames{k});
+	end
 end
 
 % randomSeed: how to treat the randomization
@@ -118,7 +167,68 @@ z = SD_MakeSurrogates(x, surrMeth, numSurrs, extrap, randomSeed);
 % ------------------------------------------------------------------------------
 % Evaluate test statistic on each surrogate
 % ------------------------------------------------------------------------------
-if ismember('ami1', theTestStat)
+if ismember('amikraskov1', theTestStat)
+	% Investigate the Kraskov AMI(1) of surrogates compared to that of the signal itself.
+	% Unlike the Gaussian estimate (a function of the autocorrelation, which random-phase
+	% surrogates preserve), it responds to nonlinear dependence between x(t) and x(t+1).
+	[AMIx1, AMIsurr1] = SUB_kraskovAMIs(1);
+	% Surrogates should have lower AMI than the original signal
+	someStats = SDgivemestats(AMIx1, AMIsurr1, 'right');
+	fnames = fieldnames(someStats);
+	for i = 1:length(fnames)
+		out.(sprintf('amikraskov_%s', fnames{i})) = someStats.(fnames{i});
+	end
+end
+
+if ismember('amikraskovmi', theTestStat)
+	% As above, at a lag set from the original series and used for every surrogate.
+	% BF_GetTau 'mi' is at most the ACF 1/e delay, a property the surrogates share, so the
+	% choice of lag does not favor the series over its surrogates (unlike, e.g., the
+	% series' own first AMI minimum, which would select a lag where its AMI is low).
+	tauMI = BF_GetTau(x, 'mi');
+	if isnan(tauMI)
+		for fn = {'zscore', 'mediqr', 'prank'}
+			out.(sprintf('amikraskovmi_%s', fn{1})) = NaN;
+		end
+	else
+		if tauMI == 1 && ismember('amikraskov1', theTestStat)
+			AMIx = AMIx1; AMIsurr = AMIsurr1; % (already computed)
+		else
+			[AMIx, AMIsurr] = SUB_kraskovAMIs(tauMI);
+		end
+		someStats = SDgivemestats(AMIx, AMIsurr, 'right');
+		fnames = fieldnames(someStats);
+		for i = 1:length(fnames)
+			out.(sprintf('amikraskovmi_%s', fnames{i})) = someStats.(fnames{i});
+		end
+	end
+end
+
+if ismember('fmmikraskov', theTestStat)
+	% Investigate the first minimum of the Kraskov automutual information of surrogates
+	% compared to that of the signal itself
+	fmmix = CO_FirstMin(x, 'mi-kraskov1');
+	fmmiSurr = zeros(numSurrs, 1);
+	for i = 1:numSurrs
+		try
+			fmmiSurr(i) = CO_FirstMin(z(:, i), 'mi-kraskov1');
+		catch
+			fmmiSurr(i) = NaN;
+		end
+	end
+	if any(isnan(fmmiSurr))
+		error('fmmikraskov failed');
+	end
+
+	% The first minimum should be at a higher lag for the signal than for the surrogates
+	someStats = SDgivemestats(fmmix, fmmiSurr, 'right');
+	fnames = fieldnames(someStats);
+	for i = 1:length(fnames)
+		out.(sprintf('fmmikraskov_%s', fnames{i})) = someStats.(fnames{i});
+	end
+end
+
+if ismember('amigaussian1', theTestStat)
 	% Investigate AMI(1) of surrogates compared to that of signal itself
 	% This statistic is used by Nakamura et al. (2006), PRE
 	% Could use CO_HistogramAMI or TSTL, but I'll use IN_AutoMutualInfo with
@@ -141,31 +251,31 @@ if ismember('ami1', theTestStat)
 	someStats = SDgivemestats(AMIx, AMIsurr, 'right');
 	fnames = fieldnames(someStats);
 	for i = 1:length(fnames)
-		out.(sprintf('ami_%s', fnames{i})) = someStats.(fnames{i});
+		out.(sprintf('amigaussian_%s', fnames{i})) = someStats.(fnames{i});
 	end
 end
 
-if ismember('fmmi', theTestStat)
+if ismember('fmmigaussian', theTestStat)
 	% Investigate the first minimum of mutual information of surrogates compared to
 	% that of signal itself
-	fmmix = CO_FirstMin(x, 'mi');
+	fmmix = CO_FirstMin(x, 'mi-gaussian');
 	fmmiSurr = zeros(numSurrs, 1);
 	for i = 1:numSurrs
 		try
-			fmmiSurr(i) = CO_FirstMin(z(:, i), 'mi');
+			fmmiSurr(i) = CO_FirstMin(z(:, i), 'mi-gaussian');
 		catch
 			fmmiSurr(i) = NaN;
 		end
 	end
 	if any(isnan(fmmiSurr))
-		error('fmmi failed');
+		error('fmmigaussian failed');
 	end
 
 	% FMMI should be higher for signal than surrogates
 	someStats = SDgivemestats(fmmix, fmmiSurr, 'right');
 	fnames = fieldnames(someStats);
 	for i = 1:length(fnames)
-		out.(sprintf('fmmi_%s', fnames{i})) = someStats.(fnames{i});
+		out.(sprintf('fmmigaussian_%s', fnames{i})) = someStats.(fnames{i});
 	end
 end
 
@@ -187,11 +297,11 @@ end
 if ismember('tc3', theTestStat)
 	% TC3 statistic -- another time-reversal asymmetry measure
 	tau = 1;
-	tmp = CO_tc3(x, tau);
+	tmp = CO_TC3(x, tau);
 	tc3x = tmp.raw;
 	tc3surr = zeros(numSurrs, 1);
 	for i = 1:numSurrs
-		tmp = CO_tc3(z(:, i), tau);
+		tmp = CO_TC3(z(:, i), tau);
 		tc3surr(i) = tmp.raw;
 	end
 
@@ -206,16 +316,15 @@ if ismember('nlpe', theTestStat)
 	% Locally constant phase space prediction error
 	warning('''nlpe'' can be very time consuming...')
 	de = 3; tau = 1; % embedding parameters: fixed like a dummy!
-	tmp = NL_MS_nlpe(x, de, tau);
+	tmp = NL_nlpe(x, de, tau, [], {'ac', 1});
 	nlpex = tmp.msqerr;
 	nlpesurr = zeros(numSurrs, 1);
 	for i = 1:numSurrs
-		res = MS_nlpe(z(:, i), de, tau);
-		msqerr = sum(res.^2);
-		nlpesurr(i) = msqerr;
+		res = MS_nlpe(z(:, i), de, tau, BF_TheilerWindow(z(:, i), {'ac', 1}));
+		nlpesurr(i) = mean(res.^2); % the mean squared error, as for the series (NL_nlpe msqerr)
 	end
 
-	someStats = SDgivemestats(nlpex, nlpesurr, 'right'); % NLPE should be higher than surrogates
+	someStats = SDgivemestats(nlpex, nlpesurr, 'left'); % nonlinear structure makes the series more predictable: lower error than the surrogates
 	fnames = fieldnames(someStats);
 	for i = 1:length(fnames)
 		out.(sprintf('nlpe_%s', fnames{i})) = someStats.(fnames{i});
@@ -227,11 +336,11 @@ if ismember('fnn', theTestStat)
 
 	% false nearest neighbours at d=2 (escapeFactor=5 matches the convention
 	% used elsewhere for this test):
-	tmp = NL_TISEAN_fnn(x, 1, 2, 0.05, 0, [], 5);
+	tmp = NL_FNN(x, 1, 2, {'ac', 1}, 0, [], 5);
 	fnnx = tmp.pfnn_2;
 	fnnsurr = zeros(numSurrs, 1);
 	for i = 1:numSurrs
-		tmp = NL_TISEAN_fnn(z(:, i), 1, 2, 0.05, 0, [], 5);
+		tmp = NL_FNN(z(:, i), 1, 2, {'ac', 1}, 0, [], 5);
 		fnnsurr(i) = tmp.pfnn_2;
 	end
 
@@ -239,6 +348,16 @@ if ismember('fnn', theTestStat)
 	fnames = fieldnames(someStats);
 	for i = 1:length(fnames)
 		out.(sprintf('fnn_%s', fnames{i})) = someStats.(fnames{i});
+	end
+end
+
+% ------------------------------------------------------------------------------
+function [amiSeries, amiSurrs] = SUB_kraskovAMIs(lagK)
+	% Kraskov (k = 4) automutual information at lag lagK of the series and of each surrogate
+	amiSeries = IN_AutoMutualInfo(x, lagK, 'kraskov1', '4');
+	amiSurrs = zeros(numSurrs, 1);
+	for iSurr = 1:numSurrs
+		amiSurrs(iSurr) = IN_AutoMutualInfo(z(:, iSurr), lagK, 'kraskov1', '4');
 	end
 end
 
@@ -254,36 +373,12 @@ function someStats = SDgivemestats(statx, statsurr, leftrightboth)
 	% statx. Want to return measures of how consistant the measured
 	% statistic is with the sample statsurr.
 
-	% ASSUME GAUSSIAN DISTRIBUTION:
-	% so can use 1/2-sided z-statistic
-	[~, p, ~, zStat] = ztest(statx, mean(statsurr), std(statsurr), 0.05, leftrightboth);
-	someStats.p = p; % pvalue
-	someStats.zscore = zStat; % z-statistic
-
-	% fit a kernel distribution to zscored distribution:
+	% ASSUME GAUSSIAN DISTRIBUTION: z-statistic of the series' value
 	if std(statsurr) == 0
-		% all surrogates have same value of this statistic
-		% cannot do a meaningful zscore -- do it raw
-		[f, xi] = ksdensity(statsurr);
-		% find where the statx value would be:
-		if statx < min(xi) || statx > max(xi)
-			someStats.f = 0; % out of range -- assume p=0 here
-		else
-			[~, minhere] = min(abs(statx - xi));
-			someStats.f = f(minhere); % return probability density where the point is
-		end
+		% all surrogates have the same value of this statistic: no meaningful z-score
+		someStats.zscore = NaN;
 	else
-		zscstatsurr = (statsurr - mean(statsurr)) / std(statsurr);
-		zscstatx = (statx - mean(statsurr)) / std(statsurr);
-		[f, xi] = ksdensity(zscstatsurr);
-
-		% find where the statx value would be:
-		if (zscstatx < min(xi)) || (zscstatx > max(xi))
-			someStats.f = 0; % out of range -- assume p=0 here
-		else
-			[~, minhere] = min(abs(zscstatx - xi));
-			someStats.f = f(minhere); % return probability density where the point is
-		end
+		someStats.zscore = (statx - mean(statsurr)) / std(statsurr);
 	end
 
 	% What fraction of the range is the sample in?
@@ -297,20 +392,19 @@ function someStats = SDgivemestats(statx, statsurr, leftrightboth)
 
 	% rank statistic
 	[~, ix] = sort([statx; statsurr]);
-	xfitshere = find(ix == 1) - 1;
-	if strcmp(leftrightboth, 'right') % x statistic smaller than distribution
-		xfitshere = numSurrs + 1 - xfitshere; % how far from highest ranked value
+	numBelow = find(ix == 1) - 1; % number of surrogates below the series' value
+	numAtLeast = numSurrs - numBelow; % number of surrogates at least as large
+	if strcmp(leftrightboth, 'right') % series should be larger than the surrogates
+		numExtreme = numAtLeast;
 	elseif strcmp(leftrightboth, 'both')
-		xfitshere = min(xfitshere, numSurrs + 1 - xfitshere);
+		numExtreme = min(numBelow, numAtLeast); % the more extreme tail
+	else % 'left'
+		numExtreme = numBelow;
 	end
 
-	if isempty(xfitshere)
-		someStats.prank = 1 / (numSurrs + 1); % rank-based p-value
-	else
-		someStats.prank = (1 + xfitshere) / (numSurrs + 1); % rank-based p-value
-	end
+	someStats.prank = (numExtreme + 1) / (numSurrs + 1); % rank-based p-value
 	if strcmp(leftrightboth, 'both')
-		someStats.prank = someStats.prank * 2; % I think this factor should be in here
+		someStats.prank = min(2 * someStats.prank, 1); % two-sided: double, capped at 1
 	end
 
 	% DO PLOTTING:

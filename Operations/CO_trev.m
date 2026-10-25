@@ -1,25 +1,30 @@
 function out = CO_trev(y, tau)
-% CO_trev   Normalized nonlinear autocorrelation, trev function of a time series
+% CO_trev   Time-reversal asymmetry at a lag, from the cubed increments of the series.
 %
-% Calculates the trev function, a normalized nonlinear autocorrelation,
-% mentioned in the documentation of the TSTOOL nonlinear time-series analysis
-% package (available here: http://www.physik3.gwdg.de/tstool/).
-%
-% The quantity is often used as a nonlinearity statistic in surrogate data
-% analysis, cf. "Surrogate time series", T. Schreiber and A. Schmitz, Physica D,
-% 142(3-4) 346 (2000).
+% Calculates the trev function, a normalized nonlinear autocorrelation, mentioned in the
+% documentation of the TSTOOL nonlinear time-series analysis package (available here:
+% http://www.physik3.gwdg.de/tstool/). With d(t) = y(t+tau) - y(t), the increments of the
+% series over tau samples, trev is mean(d^3) / mean(d^2)^(3/2): the skewness of the
+% increments measured about zero. It is 0 in the population for a time-reversible process.
+% The quantity is often used as a nonlinearity statistic in surrogate data analysis.
 %
 % ---INPUTS:
-%
-% y, time series
-%
-% tau, time lag (can be 'ac' or 'mi' to set as the first zero-crossing of the
-%       autocorrelation function, or the first minimum of the automutual
-%       information function, respectively)
+% y, the input time series
+% tau, the time lag (default 'ac'): an integer number of samples, or a string that
+%      sets it from the series: 'ac' (the first zero-crossing of the autocorrelation
+%      function), 'ac1e' (the floor of its first 1/e crossing), or 'mi' (the smaller
+%      of the first minimum of the Kraskov automutual information and the 'ac1e'
+%      delay); see BF_GetTau
 %
 % ---OUTPUTS:
-% The raw trev expression, its magnitude, the numerator and its magnitude, and
-% the denominator.
+% raw, the trev expression, mean(d^3) / mean(d^2)^(3/2),
+% abs, its magnitude,
+% num, the numerator, mean(d^3),
+% absnum, the magnitude of the numerator,
+% denom, the denominator, mean(d^2)^(3/2).
+%
+% ---REFERENCES:
+% Schreiber and Schmitz, "Surrogate time series", Physica D 142(3-4), 346 (2000).
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -57,16 +62,23 @@ if nargin < 2 || isempty(tau)
 end
 
 % -------------------------------------------------------------------------------
-% Can set the time lag, tau, to be 'ac' or 'mi':
+% Can set the time lag, tau, to be 'ac', 'ac1e', or 'mi':
+if ischar(tau) && strcmp(tau, 'ac1e')
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		out = NaN; return
+	end
+end
 if strcmp(tau, 'ac')
 	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
 	% tau is first zero crossing of the autocorrelation function
 elseif strcmp(tau, 'mi')
-	tau = CO_FirstMin(y, 'mi');
-	% tau is the first minimum of the automutual information function
+	tau = BF_GetTau(y, 'mi');
+	% tau is the smaller of the first AMI minimum and the 'ac1e' delay
 end
 if isnan(tau)
-	error('No valid setting for time delay. (Is the time series too short?)');
+	out = NaN; return
 end
 
 % -------------------------------------------------------------------------------

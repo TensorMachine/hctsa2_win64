@@ -6,7 +6,7 @@ function sp = BF_spap2(nPieces,k,x,y)
 %
 % Knot placement follows spap2's aptknt rule, NOT uniform breaks:
 %
-%   sites          = linspace(min(x),max(x),nPieces+k-1)
+%   sites          = the data at positions round(linspace(1,n,nPieces+k-1)) of sorted x
 %   interior knots = moving average of (k-1) consecutive sites
 %   knots          = augknt([min(x), interior, max(x)], k)
 %
@@ -16,6 +16,10 @@ function sp = BF_spap2(nPieces,k,x,y)
 % Uniform breaks coincide with this only at nPieces=2, which is why that case
 % agrees under either rule. Verified against the Bonn EEG reference values
 % (real Curve Fitting Toolbox output) to ~1e-13 for 2, 4 and 6 pieces.
+% The sites are data points, not an even grid over [min(x),max(x)]: the two agree
+% when the rounding cancels (as on the 4097-point Bonn series) but not in general;
+% with data sites PP_Compare_spline24 matches R2025b to ~1e-13 on the 20 reference
+% series, against up to 6e-3 with the grid (2.1.1).
 %
 %---INPUTS:
 % nPieces  number of polynomial pieces
@@ -40,7 +44,8 @@ end
 
 % aptknt rule: interior knots are moving averages of (k-1) consecutive sites
 nSites = nPieces + k - 1;
-sites  = linspace(min(x),max(x),nSites);
+xs = sort(x);
+sites = xs(round(linspace(1,numel(xs),nSites)))';
 interior = zeros(1,nSites-k);
 for j = 1:nSites-k
     interior(j) = mean(sites(j+1:j+k-1));

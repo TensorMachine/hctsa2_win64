@@ -1,21 +1,37 @@
-function out = WL_coeffs(y, wname, level)
-% WL_coeffs     Wavelet decomposition of the time series.
+function out = WL_Coeffs(y, wname, level)
+% WL_Coeffs   How quickly the sorted magnitudes of a wavelet detail signal decay from their maximum.
 %
-% Performs a wavelet decomposition of the time series using a given wavelet at a
-% given level and returns a set of statistics on the coefficients obtained.
+% Performs a discrete wavelet decomposition (wavedec) of the time series using a
+% given wavelet down to a given level, reconstructs the detail signal at that
+% level alone (wrcoef, which has the same length N as the series), and sorts its
+% magnitudes from largest to smallest. For each of a set of fractions p of the
+% maximum, it returns the position in the sorted list, as a proportion of N, where
+% the magnitudes first fall below p times the maximum. Small values indicate that
+% a few large excursions dominate the detail at that scale.
 %
 % Uses Matlab's Wavelet Toolbox.
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-%
 % wname, the wavelet name, e.g., 'db3' (see Wavelet Toolbox Documentation for
-%                                       all options)
+%        all options; default: 'db3')
+% level, the level of wavelet decomposition (an integer, or 'max' for the maximum
+%        level given by wmaxlev; default: 3). A level too large for the series
+%        returns NaN.
 %
-% level, the level of wavelet decomposition
+% ---OUTPUTS:
+% wb99m, wb90m, wb75m, wb50m, wb25m, wb10m, wb1m: the position (as a proportion of
+%        the series length) in the sorted detail magnitudes at which they first
+%        fall below 99%, 90%, 75%, 50%, 25%, 10%, 1% of their maximum ('where below
+%        _ of maximum'). NaN if they never do.
+%
+% ---NOTES:
+% The mean, maximum and median of the detail coefficients are not returned, since
+% they largely duplicate WL_DWTCoeff's per-level stdd/noisestd fields; the
+% decay-shape profile above is this function's distinct contribution.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -50,41 +66,39 @@ function out = WL_coeffs(y, wname, level)
 N = length(y); % time-series length
 
 if nargin < 2 || isempty(wname)
-    wname = 'db3'; % default wavelet
+	wname = 'db3'; % default wavelet
 end
 if nargin < 3 || isempty(level)
-   level = 3; % level of wavelet decomposition
+	level = 3; % level of wavelet decomposition
 end
-if strcmp(level,'max')
+if strcmp(level, 'max')
     level = BF_wmaxlev(N,wname);
-    if level==0
-        error('Cannot compute wavelet coefficients (short time series?)');
-    end
+	if level == 0
+		error('Cannot compute wavelet coefficients (short time series?)');
+	end
 end
 
 if BF_wmaxlev(N,wname) < level
-    fprintf(1,'Chosen level is too large for this wavelet on this signal\n');
-    out = NaN;
-    return
+	fprintf(1, 'Chosen level is too large for this wavelet on this signal\n');
+	out = NaN;
+	return
 end
 
 % ------------------------------------------------------------------------------
-%% Perform a single-level wavelet decomposition
-% (Recover a noisy signal by suppressing an approximation)
-[c,l] = BF_wavedec(y,level,wname);
+%% Perform a wavelet decomposition (wavedec) down to the given level
+% (the statistics below are of the detail signal reconstructed at that level)
+[c, l] = BF_wavedec(y, level, wname);
 
 % Reconstruct detail
 det = BF_wrcoef('d',c,l,wname,level); % detail this level
 
-det_s = sort(abs(det),'descend'); % sorted detail coefficient magnitudes
+det_s = sort(abs(det), 'descend'); % sorted detail coefficient magnitudes
 
 % plot(det_s);
 
 % ------------------------------------------------------------------------------
 %% Return statistics
-out.mean_coeff = mean(det_s);
-out.max_coeff = max(det_s);
-out.med_coeff = median(det_s);
+% (see the header note on the detail-coefficient statistics not returned here)
 
 % Decay rate stats ('where below _ maximum' = 'wb_m')
 out.wb99m = findMyThreshold(0.99);
@@ -97,12 +111,12 @@ out.wb1m = findMyThreshold(0.01);
 
 % ------------------------------------------------------------------------------
 function propt = findMyThreshold(x)
-    % where drops below proportion x of maximum
-    propt = find(det_s < x*max(det_s),1,'first') / N;
-            % (as a proportion of time-series length)
-    if isempty(propt)
-        propt = NaN;
-    end
+	% where drops below proportion x of maximum
+	propt = find(det_s < x * max(det_s), 1, 'first') / N;
+	% (as a proportion of time-series length)
+	if isempty(propt)
+		propt = NaN;
+	end
 end
 % ------------------------------------------------------------------------------
 

@@ -4,10 +4,12 @@ function [status,out] = BF_RunTisean(cmd,keepStderr)
 %   [status,out] = BF_RunTisean('nstat_z -# 4 -d1 -m3 /tmp/hc123456')
 %   [status,out] = BF_RunTisean('d2 ...',true)   % keep stderr
 %
-% Runs one of the ten TISEAN executables and returns its exit status and its
-% text. Every TISEAN operation goes through here rather than calling system()
-% directly, so the timeout, the not-installed check and the temporary-file
-% cleanup apply uniformly.
+% Runs one of the twelve TISEAN executables, or ripser, and returns its exit
+% status and its text. Every operation that calls an external program goes
+% through here rather than calling system() directly, so the timeout, the
+% not-installed check and the temporary-file cleanup apply uniformly.
+% (NL_PersistentHomology's ripser is not part of TISEAN; it shares the runner
+% because it needs exactly the same protection.)
 %
 % KEEPSTDERR (default false) controls whether the program's stderr is appended.
 %
@@ -60,7 +62,7 @@ args = args(2:end);
 % .d2, .h2 and .stat. Sweep them here, where the abort actually happens.
 %
 % Only on the RAISING paths. On a normal return the caller often still needs
-% what TISEAN just wrote: NL_TISEAN_d2 runs d2, then feeds the .c2 it produced
+% what TISEAN just wrote: NL_d2 runs d2, then feeds the .c2 it produced
 % to c2g and then to c2t. Deleting outputs on success would break the operation
 % one call later.
 try
@@ -142,9 +144,15 @@ end
 
 %-------------------------------------------------------------------------------
 function p = locateProgram(prog)
-% The install directory first, then the rest of the PATH.
+% The install directory first, then the rest of the PATH. HCTSA2_BuildTisean
+% puts ripser in the same install directory as the TISEAN programs; ripser built
+% with upstream's compile_ripser lands in Toolboxes/ripser/bin instead.
 p = fullfile(tiseanBinDir(),exeName(prog));
 if isfile(p), return; end
+if strcmp(prog,'ripser')
+    p = fullfile(fileparts(fileparts(mfilename('fullpath'))),'Toolboxes','ripser','bin',exeName(prog));
+    if isfile(p), return; end
+end
 if ispc
     probe = sprintf('where %s >nul 2>&1',exeName(prog));
 else
@@ -164,12 +172,18 @@ end
 
 %-------------------------------------------------------------------------------
 function d = tiseanBinDir()
-% Where HCTSA2_BuildTisean writes and startup adds to the PATH. This file lives
-% in PeripheryFunctions/, so the hctsa root is one level up.
+% Where the executables are built, and where startup points the PATH. This file
+% lives in PeripheryFunctions/, so the hctsa root is one level up. Windows:
+% Toolboxes/Tisean_bin (HCTSA2_BuildTisean). Elsewhere: upstream's
+% Toolboxes/Tisean_3.0.1/bin (compile_tisean) when it exists, else ~/bin.
+root = fileparts(fileparts(mfilename('fullpath')));
 if ispc
-    d = fullfile(fileparts(fileparts(mfilename('fullpath'))),'Toolboxes','Tisean_bin');
+    d = fullfile(root,'Toolboxes','Tisean_bin');
 else
-    d = fullfile(getenv('HOME'),'bin');
+    d = fullfile(root,'Toolboxes','Tisean_3.0.1','bin');
+    if ~isfolder(d)
+        d = fullfile(getenv('HOME'),'bin');
+    end
 end
 end
 
@@ -207,21 +221,22 @@ function [status,out] = runViaExe(exePath,args,cmd,keepStderr,timeoutSec)
 % subtraction wrap are intact. What they can do is take a quadratic number of
 % steps with no way to stop early:
 %
-%   d2            -N0 sets the pair limit to ULONG_MAX (d2.c:120), which makes
+%   d2            -N0 sets the pair limit to ULONG_MAX (d2.c:121), which makes
 %                 the only early exit, "if (imin > howoften1) exit(0)" at
-%                 d2.c:561, unreachable. d2 then always runs its full
+%                 d2.c:579, unreachable. d2 then always runs its full
 %                 nmax-iteration loop with an O(n) box scan inside each one.
 %                 Measured at -M1,10: 4k 2.3s, 8k 9.5s, 16k 38.4s -- four times
 %                 the work for twice the data. Extrapolating, 500k points is
-%                 about ten hours. NL_dimensions passes -N0 outright;
-%                 NL_TakensEstimator and NL_GPCorrSum reach it through
-%                 Nref = -1. NL_TISEAN_d2 passes no -N, gets the default 1000,
-%                 and is unaffected -- which is why only some features hang.
+%                 about ten hours. NL_Dimensions passes -N0 outright;
+%                 NL_GPCorrSum reaches it through Nref = -1. NL_d2 passes no
+%                 -N, gets the default 1000, and is unaffected -- which is why
+%                 only some features hang.
 %
 %   false_nearest has no pair limit at all. A point whose nearest neighbour
 %                 lies farther than varianz/rt can never be marked done
-%                 (false_nearest.c:168) and exact-duplicate vectors are
-%                 rejected outright (:158), so a constant or near-constant
+%                 (false_nearest.c:196) and exact-duplicate vectors (since
+%                 HCTSA2 3.0.0, any within round-off) are rejected outright
+%                 (:185), so a constant or near-constant
 %                 stretch leaves points that are rescanned at every epsilon
 %                 step while all sitting in one search box. Measured at
 %                 N = 16000: 4.1s on clean data, 41.8s when half the series is
@@ -231,16 +246,16 @@ function [status,out] = runViaExe(exePath,args,cmd,keepStderr,timeoutSec)
 % deadlocked, the run is merely too expensive to wait for.
 %
 %---WHY THIS RAISES AN ERROR RATHER THAN RETURNING WHAT IT GOT
-% d2 rewrites its .c2/.d2/.h2 files every 120 seconds (d2.c:31), so a killed
+% d2 rewrites its .c2/.d2/.h2 files every 120 seconds (d2.c:32), so a killed
 % run usually leaves a COMPLETE-LOOKING but partial set of output files on
 % disk. Returning them would hand the caller plausible numbers computed from a
 % fraction of the data -- silently wrong features, which is worse than none.
 % An error becomes a NaN in the feature matrix, which is honest.
 %
 %---WHY JAVA AND NOT system()
-% system() blocks until the child exits; there is no way to take it back. Java
-% is present in any MATLAB that runs hctsa (startup javaaddpath's
-% infodynamics.jar), and it gives both a timed wait and a kill. It also takes
+% system() blocks until the child exits; there is no way to take it back.
+% MATLAB's own Java (no jar of ours: 2.4.0 removed JIDT) gives both a timed
+% wait and a kill. It also takes
 % argv as a list, so nothing passes through a shell and destroyForcibly kills
 % the TISEAN process itself rather than a shell that owns it. When there is no
 % JVM, or Java cannot start the program, this falls back to the old blocking
@@ -252,9 +267,12 @@ if timeoutSec <= 0 || ~usejava('jvm')
     return
 end
 
-outFile = [tempname '.tout'];
-errFile = [tempname '.terr'];
-cleanup = onCleanup(@() cleanFiles({outFile,errFile})); %#ok<NASGU>
+[outFile,errFile] = captureFiles(args);
+% (HCTSA2 2.2.1: procRef is filled in once the child exists, so that the one
+% cleanup below can kill it first and delete its capture files second. An
+% interrupt or an error while waiting used to leave the child running.)
+procRef = javaObject('java.util.concurrent.atomic.AtomicReference');
+cleanup = onCleanup(@() cleanRun(procRef,{outFile,errFile})); %#ok<NASGU>
 
 try
     jargs = javaArray('java.lang.String',numel(args)+1);
@@ -263,6 +281,15 @@ try
         jargs(i+1) = javaObject('java.lang.String',args{i});
     end
     pb = javaObject('java.lang.ProcessBuilder',jargs);
+    if isunix && ~ismac
+        % MATLAB on Linux puts its own runtime libraries (libstdc++, libgfortran)
+        % on LD_LIBRARY_PATH, and they can shadow the ones the programs were
+        % built against -- ripser (C++) and the Fortran programs fail to start.
+        % Upstream's runner clears it for the child too. Windows and macOS do
+        % not use this variable.
+        env = pb.environment();      % (no chained call: MATLAB cannot index a
+        env.remove('LD_LIBRARY_PATH');  %  method call's result directly)
+    end
     pb.redirectOutput(javaObject('java.io.File',outFile));
     if keepStderr
         % Merged into stdout, matching what system() hands back.
@@ -271,6 +298,7 @@ try
         pb.redirectError(javaObject('java.io.File',errFile));
     end
     proc = pb.start();
+    procRef.set(proc);
 catch err
     % Java could not launch it at all -- a PATH resolution difference, a
     % missing JVM class, a sandbox. Fall back rather than turn a working
@@ -285,6 +313,16 @@ catch err
     end
     [status,out] = runViaSystem(exePath,cmd,keepStderr);
     return
+end
+
+% (HCTSA2 2.2.1: no program reads standard input here, but when no argument names
+% an existing file every TISEAN program falls back to reading it, so a missing
+% input file waited out the whole timeout. Closing it makes the program see end
+% of file and stop at once.)
+try
+    procStdin = proc.getOutputStream();
+    procStdin.close();
+catch
 end
 
 finished = proc.waitFor(int64(timeoutSec), ...
@@ -309,6 +347,48 @@ out = strrep(out,char(13),'');
 end
 
 %-------------------------------------------------------------------------------
+function cleanRun(procRef,files)
+% Kill the child if it is still running, then remove its capture files. A normal
+% return and the timeout branch have already finished it, so only an interrupt
+% (Ctrl+C, a cancelled parfeval) or an error raised while waiting gets here with
+% a live process. Killing first matters on Windows, where a running program
+% holds the files open and delete would fail.
+try
+    p = procRef.get();
+    if ~isempty(p) && p.isAlive()
+        p.destroyForcibly();
+        p.waitFor(int64(5),javaMethod('valueOf','java.util.concurrent.TimeUnit','SECONDS'));
+    end
+catch
+end
+cleanFiles(files);
+end
+
+%-------------------------------------------------------------------------------
+function [outFile,errFile] = captureFiles(args)
+% Where the program's stdout and stderr are captured. Named after the hc######
+% temporary file in the command (hc123456.tout, hc123456.terr), so that anything
+% left behind -- a killed MATLAB never runs the onCleanup -- belongs to that file
+% set: BF_CleanTempFiles and TS_Compute's stale-file sweep remove it with the
+% rest. Two runs never share a stem at the same time: the stem was claimed
+% atomically by BF_WriteTempFile, and one operation runs its programs in turn.
+% A command with no hc###### argument falls back to tempname.
+outFile = ''; errFile = '';
+for i = 1:numel(args)
+    [folder,name,ext] = fileparts(args{i});
+    tok = regexp([name ext],'^(hc\d{6})($|[._])','tokens','once');
+    if ~isempty(tok)
+        stem = fullfile(folder,tok{1});
+        outFile = [stem '.tout'];
+        errFile = [stem '.terr'];
+        return
+    end
+end
+outFile = [tempname '.tout'];
+errFile = [tempname '.terr'];
+end
+
+%-------------------------------------------------------------------------------
 function [status,out] = runViaSystem(exePath,cmd,keepStderr)
 % Run the RESOLVED executable, not the bare name the caller wrote. This path is
 % only reached without a JVM, or when Java could not launch the program, and in
@@ -328,7 +408,17 @@ elseif ispc
 else
     redirect = ' 2>/dev/null';
 end
-[status,out] = system([cmd redirect]);
+if isunix && ~ismac
+    % See runViaExe: MATLAB's LD_LIBRARY_PATH can shadow the programs' own
+    % runtime libraries. Cleared for this call only.
+    oldLd = getenv('LD_LIBRARY_PATH');
+    setenv('LD_LIBRARY_PATH','');
+    restoreLd = onCleanup(@() setenv('LD_LIBRARY_PATH',oldLd)); %#ok<NASGU>
+end
+% (HCTSA2 2.2.1: stdin from the null device, as in runViaExe, so a missing input
+% file ends the program at once instead of blocking on the keyboard.)
+if ispc, nullIn = ' <nul'; else, nullIn = ' </dev/null'; end
+[status,out] = system([cmd redirect nullIn]);
 out = strrep(out,char(13),'');
 end
 
@@ -374,10 +464,14 @@ function t = localTokenize(cmd)
 t = regexp(cmd,'"[^"]*"|\S+','match');
 t = strrep(t,'"','');
 % Nothing hctsa passes contains a space except, possibly, the temporary
-% directory in the data path -- which is the last argument in every call site.
-% If the naive split left a last token that is not a file, glue the trailing
-% tokens back together until it is. On the usual space-free path the first test
-% succeeds and this costs one exist() call.
+% directory in a data path. A path that is not the last argument (-o <file>
+% <data>) must be quoted by the caller, which the split above keeps whole.
+% (HCTSA2 2.2.1: the call sites that write -o files quote them; this used to
+% rely on the data path being last, which left the -o path split in two.)
+% Call sites that pass an unquoted data path LAST still work: if the naive split
+% left a last token that is not a file, glue the trailing tokens back together
+% until it is. On the usual space-free path the first test succeeds and this
+% costs one exist() call.
 if numel(t) > 2 && ~isfile(t{end})
     for k = numel(t)-1:-1:2
         cand = strjoin(t(k:end),' ');

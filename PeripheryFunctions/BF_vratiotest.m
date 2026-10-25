@@ -13,11 +13,16 @@ y = y(isfinite(y));
 T = numel(y);
 
 period = 2; iid = false; alpha = 0.05;
+if mod(numel(varargin),2) ~= 0
+    error('BF_vratiotest:badOptions','Options must be name/value pairs.');
+end
 for k = 1:2:numel(varargin)-1
     switch lower(varargin{k})
     case 'period', period = varargin{k+1};
     case 'iid',    iid    = varargin{k+1};
     case 'alpha',  alpha  = varargin{k+1};
+    otherwise
+        error('BF_vratiotest:unknownOption','Unknown or unsupported option ''%s''.',char(varargin{k}));
     end
 end
 period = period(:)'; iid = logical(iid(:))'; alpha = alpha(:)';

@@ -62,28 +62,20 @@ c
       call nthstring(1,file)
       call xreadfile(nmax,mcmax,nx,x,nexcl,icol,file,iverb)
 c
-c   hctsa 2.0 guard. d1 computes ncomp=nmax-(mt-1)*id and then
-c   log(real(ncomp-2*nmin-1)). With a time separation (-t) large enough that
-c   2*ntmin+1 reaches the number of points, that argument is zero or negative:
-c   the logarithm returns NaN, the neighbour count k becomes meaningless and
-c   the eps-doubling sweep in d1 never terminates. Measured: -d1 -m1 -M3 -t40
-c   -n50 on 50 points segfaults, and hangs when built with bounds checking.
-c   hctsa's NL_TISEAN_c1 applies no minimum length of its own.
+c   hctsa2 2.5.0: the hctsa 2.0 guard that stopped here when -t left no
+c   neighbours (before any output was written) was removed. Upstream's
+c   f54e4d1 c1/d1 handle that case themselves (an m without points is
+c   skipped below; d1 skips a mass without neighbours), so c1 now writes
+c   its file and hctsa's NL_c1 returns NaN rather than stopping.
 c
-      mtmax=(mto-1)/mcmax+1
-      if(nmax-(mtmax-1)*id-2*ntmin-1.le.0) then
-         write(istderr(),'(a)')
-     .      "c1: series too short for the embedding and -t requested"
-         write(istderr(),*) "  points=",nmax," -m=",mto," -d=",id,
-     .      " -t=",ntmin
-         stop
-      endif
       if(file.eq."-") file="stdin"
       if(isout.eq.1) call addsuff(fout,file,"_c1")
       call outfile(fout,iunit,iverb)
       do 10 m=mfrom,mto
-         write(iunit,'(4h#m= ,i5)') m
+         write(iunit,'("#m= ",i5)') m
          pr=0.
+c        no embedded points at all: nothing to compute for this m
+         if(nmax-(m-1)*id.lt.1) goto 10
 C          Ben Fulcher, 2015-03-06 requires a fix to integer do loop for some compilers
          do 20 pl=log(1./(nmax-(m-1)*id)),0.,resl
             pln=pl

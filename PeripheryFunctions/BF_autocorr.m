@@ -8,8 +8,15 @@ function [acf,lags,bounds] = BF_autocorr(y,varargin)
 y = y(:); y = y(isfinite(y));
 N = numel(y);
 numLags = min(20,N-1);
+if mod(numel(varargin),2) ~= 0
+    error('BF_autocorr:badOptions','Options must be name/value pairs.');
+end
 for k = 1:2:numel(varargin)-1
-    if strcmpi(varargin{k},'NumLags'), numLags = varargin{k+1}; end
+    if strcmpi(varargin{k},'NumLags')
+        numLags = varargin{k+1};
+    else
+        error('BF_autocorr:unknownOption','Unknown or unsupported option ''%s''.',char(varargin{k}));
+    end
 end
 r = y - mean(y);
 c0 = sum(r.^2);

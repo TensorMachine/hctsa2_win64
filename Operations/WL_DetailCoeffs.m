@@ -1,25 +1,42 @@
 function out = WL_DetailCoeffs(y, wname, maxlevel)
-% WL_DetailCoeffs   Detail coefficients of a wavelet decomposition.
+% WL_DetailCoeffs   How the size of wavelet detail signals varies across scales.
 %
-% Compares the detail coefficients obtained at each level of the wavelet
-% decomposition from 1 to the maximum possible level for the wavelet given the
-% length of the input time series (computed using wmaxlev from
-% Matlab's Wavelet Toolbox).
+% Compares the detail signals obtained at each level of the wavelet decomposition,
+% from level 1 (the finest scale) to the maximum possible level for the wavelet
+% given the length of the input time series (wmaxlev from Matlab's Wavelet
+% Toolbox). At each level the detail signal is reconstructed (wrcoef, full length)
+% and its mean, median and maximum absolute value are taken, giving three profiles
+% across levels. Each profile is summarized by its largest value, its standard
+% deviation across levels, the level at which it peaks, the ratio of its largest to
+% its second-largest value, and the level that splits it into equal sums at finer
+% and coarser levels. The correlation between the maximum and the median profile is
+% also returned.
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-%
 % wname, the name of the mother wavelet to analyze the data with: e.g., 'db3',
-%           'sym2', cf. Wavelet Toolbox Documentation for details
+%        'sym2', cf. Wavelet Toolbox Documentation for details (default: 'db3')
+% maxlevel, the maximum wavelet decomposition level (can also be set to 'max' to
+%        be that determined by wmaxlev; default: 20, reduced to the wmaxlev
+%        maximum if larger)
 %
-% maxlevel, the maximum wavelet decomposition level (can also set to 'max' to be
-%               that determined by wmaxlev)
-%
-%---OUTPUTS:
-% Statistics on the detail coefficients.
+% ---OUTPUTS:
+% In the following, 'mean', 'median' and 'max' name the three profiles (the mean,
+% median and maximum absolute detail signal at each level):
+% max_mean, max_median, max_max: the largest value across levels
+% std_mean, std_median, std_max: the standard deviation across levels
+% wheremax_mean, wheremax_median, wheremax_max: the level at which the profile is
+%        largest
+% max1on2_mean, max1on2_median, max1on2_max: the ratio of the largest to the
+%        second-largest value across levels
+% wslesr_mean, wslesr_median, wslesr_max: the level where the sum of values at finer
+%        levels is closest to the sum at coarser levels (a measure of centrality
+%        across scales); NaN with fewer than 3 levels
+% corrcoef_max_medians: the correlation, across levels, between the maximum and the
+%        median profile
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -58,61 +75,66 @@ doPlot = 0; % plot outputs to figure
 N = length(y); % time-series length
 
 if nargin < 2 || isempty(wname)
-    wname = 'db3'; % default wavelet
+	wname = 'db3'; % default wavelet
 end
 if nargin < 3 || isempty(maxlevel)
-   maxlevel = 20; % maximum wavelet decomposition level
+	maxlevel = 20; % maximum wavelet decomposition level
 end
-if strcmp(maxlevel,'max')
-    maxlevel = BF_wmaxlev(N,wname);
+if strcmp(maxlevel, 'max')
+	maxlevel = BF_wmaxlev(N, wname);
 end
 
 if BF_wmaxlev(N, wname) < maxlevel
-    fprintf(1,'Chosen wavelet level is too large for the %s wavelet for this signal of length N = %u\n',wname,N);
-    maxlevel = BF_wmaxlev(N,wname);
-    fprintf(1,'Using a wavelet level of %u instead.\n',maxlevel);
+	fprintf(1, 'Chosen wavelet level is too large for the %s wavelet for this signal of length N = %u\n', wname, N);
+	maxlevel = BF_wmaxlev(N, wname);
+	fprintf(1, 'Using a wavelet level of %u instead.\n', maxlevel);
 end
 
 % ------------------------------------------------------------------------------
 %% Perform a single-level wavelet decomposition
 % ------------------------------------------------------------------------------
-means = zeros(maxlevel,1); % mean detail coefficient magnitude at each level
-medians = zeros(maxlevel,1); % median detail coefficient magnitude at each level
-maxs = zeros(maxlevel,1); % max detail coefficient magnitude at each level
+means = zeros(maxlevel, 1); % mean detail coefficient magnitude at each level
+medians = zeros(maxlevel, 1); % median detail coefficient magnitude at each level
+maxs = zeros(maxlevel, 1); % max detail coefficient magnitude at each level
+
+% Decompose once at the maximum level needed: a wavelet decomposition is
+% hierarchical/cascading, so the level-k detail coefficients embedded in a
+% maxlevel-deep decomposition are identical to those from a k-level-only
+% decomposition (each level's split only depends on the previous level's
+% approximation coefficients, not on how many further levels follow). This
+% avoids redoing the full decomposition from scratch at every level:
+[c, l] = BF_wavedec(y, maxlevel, wname);
 
 for k = 1:maxlevel
-    level = k;
+	% Reconstruct detail at this level
+	det = BF_wrcoef('d', c, l, wname, k);
 
-    [c, l] = BF_wavedec(y,level,wname);
-    % Reconstruct detail at this level
-    det = BF_wrcoef('d',c,l,wname,level);
-
-    means(k) = mean(abs(det));
-    medians(k) = median(abs(det));
-    maxs(k) = max(abs(det));
+	means(k) = mean(abs(det));
+	medians(k) = median(abs(det));
+	maxs(k) = max(abs(det));
 end
 
 % ------------------------------------------------------------------------------
 %% Plot the bad boy
 % ------------------------------------------------------------------------------
 if doPlot
-    subplot(5,1,1:2); title('signal')
-    plot(y);
-    subplot(5,1,3); title('means');
-    plot(means)
-    subplot(5,1,4); title('medians');
-    plot(medians)
-    subplot(5,1,5); title('maxs');
-    plot(maxs);
+	subplot(5, 1, 1:2); title('signal') %#ok<UNRCH>
+	plot(y);
+	subplot(5, 1, 3); title('means');
+	plot(means)
+	subplot(5, 1, 4); title('medians');
+	plot(medians)
+	subplot(5, 1, 5); title('maxs');
+	plot(maxs);
 end
 
 % ------------------------------------------------------------------------------
 %% Return statistics on detail coefficients
 % ------------------------------------------------------------------------------
 % Sort
-means_s = sort(means,'descend');
-medians_s = sort(medians,'descend');
-maxs_s = sort(maxs,'descend');
+means_s = sort(means, 'descend');
+medians_s = sort(medians, 'descend');
+maxs_s = sort(maxs, 'descend');
 
 % What is the maximum across these levels
 out.max_mean = means_s(1);
@@ -125,14 +147,14 @@ out.std_median = std(medians);
 out.std_max = std(maxs);
 
 % At what level is the maximum
-out.wheremax_mean = find(means == means_s(1),1,'first');
-out.wheremax_median = find(medians == medians_s(1),1,'first');
-out.wheremax_max = find(maxs == maxs_s(1),1,'first');
+out.wheremax_mean = find(means == means_s(1), 1, 'first');
+out.wheremax_median = find(medians == medians_s(1), 1, 'first');
+out.wheremax_max = find(maxs == maxs_s(1), 1, 'first');
 
 % Size of maximum (relative to next maximum)
-out.max1on2_mean = means_s(1)/means_s(2);
-out.max1on2_median = medians_s(1)/medians_s(2);
-out.max1on2_max = maxs_s(1)/maxs_s(2);
+out.max1on2_mean = means_s(1) / means_s(2);
+out.max1on2_median = medians_s(1) / medians_s(2);
+out.max1on2_max = maxs_s(1) / maxs_s(2);
 
 % Where sum of values to left equals sum of values to right
 % Measure of centrality
@@ -141,18 +163,24 @@ out.wslesr_median = SUB_slosr(medians);
 out.wslesr_max = SUB_slosr(maxs);
 
 % What's the correlation between maximum and median
-r = corrcoef(maxs,medians);
-out.corrcoef_max_medians = r(1,2);
+r = corrcoef(maxs, medians);
+out.corrcoef_max_medians = r(1, 2);
 
 % ------------------------------------------------------------------------------
 function meIsGorilla = SUB_slosr(xx)
-    theMaxLevel = length(xx);
-    slosr = zeros(theMaxLevel-2,1);
-    for i = 2:theMaxLevel-1
-        slosr(i-1) = sum(xx(1:i-1))/sum(xx(i+1:end));
-    end
-    absm1 = abs(slosr-1); % how close to 1 (the same sum on either side) each is
-    meIsGorilla = find(absm1 == min(absm1),1,'first') + 1;
+	theMaxLevel = length(xx);
+	if theMaxLevel < 3
+		% Too few wavelet levels (short series relative to the wavelet) to
+		% define a meaningful split point between "left" and "right":
+		meIsGorilla = NaN;
+		return
+	end
+	slosr = zeros(theMaxLevel - 2, 1);
+	for i = 2:theMaxLevel - 1
+		slosr(i - 1) = sum(xx(1:i - 1)) / sum(xx(i + 1:end));
+	end
+	absm1 = abs(slosr - 1); % how close to 1 (the same sum on either side) each is
+	meIsGorilla = find(absm1 == min(absm1), 1, 'first') + 1;
 end
 % ------------------------------------------------------------------------------
 

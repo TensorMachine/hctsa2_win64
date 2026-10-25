@@ -1,36 +1,82 @@
 function out = NW_VisibilityGraph(y, meth, maxL)
-% NW_VisibilityGraph    Visibility graph analysis of a time series.
+% NW_VisibilityGraph   Visibility graph analysis of a time series.
 %
-% Constructs a visibility graph of the time series and returns various
-% statistics on the properties of the resulting network.
-%
-% cf.: "From time series to complex networks: The visibility graph"
-% Lacasa, Lucas and Luque, Bartolo and Ballesteros, Fernando and Luque, Jordi
-% and Nuno, Juan Carlos P. Natl. Acad. Sci. USA. 105(13) 4972 (2008)
-%
-% "Horizontal visibility graphs: Exact results for random time series"
-% Luque, B. and Lacasa, L. and Ballesteros, F. and Luque, J.
-% Phys. Rev. E. 80(4) 046103 (2009)
+% Constructs a visibility graph of the time series, with one node per sample,
+% and returns statistics on the distribution of the number of links per node
+% (the degree). In the natural visibility graph ('norm'), two samples are linked
+% if the straight line between them passes above every sample in between. In
+% the horizontal visibility graph ('horiz'), they are linked if a horizontal
+% line between them passes above every sample in between. The outputs
+% summarize the degrees (mode, mean, spread, extremes, and heaviness of the
+% upper tail), the entropy of their histogram, fits of Gaussian, exponential
+% and power-law curves to that histogram and of an extreme-value distribution
+% to the degrees, and the autocorrelation of the sequence of degrees taken in
+% time order.
 %
 % ---INPUTS:
-%
 % y, the time series (a column vector)
-%
-% meth, the method for constructing:
-%           (i) 'norm': the normal visibility definition
-%           (ii) 'horiz': uses only horizonatal lines to link nodes/datums
-%
-% maxL, the maximum number of samples to consider. Due to memory constraints,
-%               only the first maxL (5000 by default) points of time series are
-%               analyzed. Longer time series are reduced to their first maxL
-%               samples. Set to 'full' to analyze the entire time series with
-%               no cropping (a warning is raised, but no cropping occurs, if
-%               the series exceeds 10000 samples, since computation may be slow).
+% meth, the method for constructing the graph (default: 'horiz'):
+%           (i) 'norm': the natural visibility definition
+%           (ii) 'horiz': uses only horizontal lines to link nodes/datums
+% maxL, the maximum number of samples to consider (default: 20000). Only the
+%       first maxL points of a longer time series are analyzed (a warning is
+%       raised), to bound the computation time. Set to 'full' to analyze the
+%       entire time series with no cropping (a warning is raised, but no
+%       cropping occurs, if the series exceeds 50000 samples, since computation
+%       of the natural visibility graph may be slow). Only the degrees are
+%       computed, with no adjacency matrix stored, so memory is not a concern:
+%       the horizontal graph takes O(N) time and the natural graph typically
+%       well under O(N^2) (a worst-case series, with no early stop in the sweep,
+%       takes O(N^2)).
 %
 % ---OUTPUTS:
+% modek, propmode: the most common degree, and the proportion of nodes that
+%       have it
+% meank, mediank, stdk: the mean, median and standard deviation of the degrees
+% maxk, mink, rangek, iqrk: the maximum, minimum, range and interquartile
+%       range of the degrees
+% skewnessk: the skewness of the degrees
+% maxonmedian: the maximum degree divided by the median degree
+% ol90: the mean of the degrees between the 5th and 95th percentiles, divided
+%       by the mean of all degrees
+% olu90: how far the mean of the top 5% of degrees lies above the overall
+%       mean, in standard deviations of the degrees
+% dgaussk_r2, dgaussk_adjr2, dgaussk_rmse, dgaussk_resAC1, dgaussk_resAC2,
+% dgaussk_resrunsz: goodness of fit (R^2, adjusted R^2, root-mean-square error),
+%       autocorrelation of the residuals at lags 1 and 2, and the signed z-statistic
+%       of a runs test (BF_RunsZ) on the residuals, for a single Gaussian fitted to
+%       the distribution of degrees (the proportion of nodes at each integer degree,
+%       from the minimum to the maximum degree), by deterministic least squares
+%       (BF_FitDensityCurve); the root-mean-square error is in units of probability
+%       density of the degrees divided by their standard deviation, so it does not
+%       depend on the number of nodes
+% dexpk_r2, dexpk_adjr2, dexpk_rmse, dexpk_resAC1, dexpk_resAC2,
+% dexpk_resrunsz: the same, for an exponential fitted to the distribution of degrees
+% dpowerk_r2, dpowerk_adjr2, dpowerk_rmse, dpowerk_resAC1, dpowerk_resAC2,
+% dpowerk_resrunsz: the same, for a power law fitted to the distribution of degrees
+%       (for each of the three fits, NaN if the degrees take no more distinct values
+%       than the fit has parameters: 3 for the Gaussian, 2 for the others; the three
+%       residual statistics are also NaN if the residuals have no variation beyond
+%       floating-point round-off, as for an exact fit: BF_ResidualStats)
+% gaussnlogL, expnlogL: the mean negative log-likelihood per node of a Gaussian
+%       and of an exponential distribution fitted to the degrees
+% evparam1, evparam2, evnlogL: the location and scale parameters of an
+%       extreme-value distribution fitted to the degrees, and its mean
+%       negative log-likelihood per node
+% entropy: the entropy of the histogram of degrees (EN_DistributionEntropy,
+%       with square-root binning), in nats
+% kac1, kac2, kac3: the autocorrelation of the degree sequence, in time order,
+%       at lags 1, 2 and 3
+% ktau: the lag at which the autocorrelation of the degree sequence first
+%       crosses zero (interpolated)
 %
-% Statistics on the degree distribution, including the mode, mean, spread,
-% histogram entropy, and fits to gaussian, exponential, and power-law distributions.
+% ---REFERENCES:
+% Lacasa, Luque, Ballesteros, Luque and Nuno, "From time series to complex
+% networks: The visibility graph", P. Natl. Acad. Sci. USA 105(13), 4972
+% (2008).
+%
+% Luque, Lacasa, Ballesteros and Luque, "Horizontal visibility graphs: Exact
+% results for random time series", Phys. Rev. E 80(4), 046103 (2009).
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -72,22 +118,20 @@ if nargin < 2
 	meth = 'horiz';
 end
 if nargin < 3 || isempty(maxL)
-	maxL = 5000; % crops time series longer than this maximum length
+	maxL = 20000; % crops time series longer than this maximum length
 end
 
 if ischar(maxL) && strcmp(maxL, 'full')
 	% No cropping -- but flag potentially slow computations for very long series:
-	slowThreshold = 10000;
-	if N > slowThreshold
-		warning(sprintf(['Time series (%u samples) exceeds %u with maxL=''full''; ' ...
-						 'visibility graph computation may be slow'], N, slowThreshold));
+	slowThreshold = 50000;
+	if N > slowThreshold && strcmp(meth, 'norm')
+		warning(['Time series (%u samples) exceeds %u with maxL=''full''; ' ...
+				 'visibility graph computation may be slow'], N, slowThreshold);
 	end
-elseif N > maxL % too long to store in memory
-	% ++BF changed on 8/3/2010 to reduce down to first maxL samples. In future,
-	% could alter to take different subsets, or set a maximum distance range
-	% allowed to make a link (using sparse), etc.
-	warning(sprintf(['Time series (%u > %u) is too long for visibility graph...' ...
-					 ' Analyzing the first %u samples'], N, maxL, maxL));
+elseif N > maxL % too long: crop
+	% Reduce to the first maxL samples
+	warning(['Time series (%u > %u) is too long for visibility graph...' ...
+			 ' Analyzing the first %u samples'], N, maxL, maxL);
 	y = y(1:maxL);
 	N = length(y); % new time-series length
 end
@@ -99,75 +143,69 @@ y = y - min(y); % adjust so that minimum of y is at zero
 % ------------------------------------------------------------------------------
 switch meth
 	case 'norm'
-		% Normal (natural) visibility graph (Lacasa et al., 2008).
-		% Original code by Enyu Zhuang (Zoey), 23/9/13; substantially
-		% modified by Ben Fulcher, 26-8-2015; inlined here and reduced
-		% from an N x N gradient matrix to a single reused row vector
-		% (only the current row i was ever read), 4/8/2026.
-		A = zeros(N, N);
-		s = zeros(1, N); % gradient from i to each subsequent point j (reused per i)
+		% Natural visibility graph degrees by a forward sweep from each node i that keeps the
+		% largest slope seen so far: node j is visible from i iff its slope (y(j)-y(i))/(j-i)
+		% exceeds that of every node in between. Slopes that agree to within rounding error
+		% (collinear nodes, as for tied or quantized values) are treated as equal, which
+		% blocks the view, so the graph does not depend on how a slope was rounded: a slope
+		% must exceed the running maximum by a relative 1e-12. No adjacency matrix is stored.
+		% Once the running maximum slope m is positive, nodes beyond distance (max(y)-y(i))/m
+		% would have to lie above max(y), so the scan stops early.
+		k = zeros(1, N);
+		ymax = max(y);
+		visTol = 1e-12; % relative tolerance of the visibility test
 		for i = 1:(N - 1)
-			for j = i + 1:N
-				s(j) = (y(j) - y(i)) / (j - i);
-				if j == i + 1
-					A(i, j) = 1; % always visible to the next point
-				else
-					% Visible iff the gradient to every intermediate point
-					% is lower than the gradient straight to j:
-					for k = i + 1:j - 1
-						if s(k) >= s(j)
-							break;
-						elseif k == j - 1
-							A(i, j) = 1;
-						end
+			yi = y(i);
+			m = y(i + 1) - yi; % largest slope from i seen so far: the neighbor is always visible
+			k(i + 1) = k(i + 1) + 1;
+			k(i) = k(i) + 1;
+			jlim = N; % last node that can still be visible
+			if m > 0
+				jlim = min(N, i + floor((ymax - yi) / m) + 1);
+			end
+			j = i + 2;
+			while j <= jlim
+				sj = (y(j) - yi) / (j - i);
+				if sj > m + visTol*abs(m)
+					m = sj;
+					k(j) = k(j) + 1;
+					k(i) = k(i) + 1;
+					if m > 0
+						jlim = min(N, i + floor((ymax - yi) / m) + 1);
 					end
 				end
+				j = j + 1;
 			end
 		end
-		A = symmetrize(A);
 
 	case 'horiz'
-		% Horizontal visibility graph
-
-		% The graph has only O(N) edges, so accumulate (row,col) edge indices
-		% and build a sparse adjacency matrix at the end, instead of a dense
-		% N x N matrix (an O(N^2) allocation/initialization that's mostly
-		% zeros -- e.g., ~200MB at the default maxL=5000 cap):
-		yr = flipud(y); % reversed order time series
-		rows = zeros(2 * N, 1);
-		cols = zeros(2 * N, 1);
-		numEdges = 0;
-
+		% Horizontal visibility graph degrees in O(N) using a monotone stack of
+		% non-increasing values. Nodes j < i are linked iff every node between is
+		% strictly below min(y(j), y(i)).
+		k = zeros(1, N);
+		stack = zeros(N, 1);
+		sp = 0;
 		for i = 1:N
-			% Look forward to first blocker, then stop
-			if i < N
-				nAhead = find(y(i + 1:end) > y(i), 1, 'first');
-				if ~isempty(nAhead)
-					numEdges = numEdges + 1;
-					rows(numEdges) = i;
-					cols(numEdges) = i + nAhead;
-				end
+			yi = y(i);
+			poppedEqual = false;
+			% every stacked node at or below y(i) sees i (the first node ahead of it that is >= it)
+			while sp > 0 && y(stack(sp)) <= yi
+				j = stack(sp);
+				sp = sp - 1;
+				k(j) = k(j) + 1;
+				k(i) = k(i) + 1;
+				poppedEqual = (y(j) == yi);
 			end
-
-			% Look back to the first hit, then stop
-			if i > 1
-				nBack = find(yr(N - i + 2:end) > yr(N - i + 1), 1, 'first');
-				if ~isempty(nBack)
-					numEdges = numEdges + 1;
-					rows(numEdges) = i - nBack;
-					cols(numEdges) = i;
-				end
+			% the nearest higher node behind i also sees i, unless an equal-valued node
+			% (popped just above) blocks it
+			if sp > 0 && ~poppedEqual
+				j = stack(sp);
+				k(j) = k(j) + 1;
+				k(i) = k(i) + 1;
 			end
+			sp = sp + 1;
+			stack(sp) = i;
 		end
-		% Every edge added above has row < col (no self-loops, strictly upper
-		% triangular), so collapsing any duplicate (row,col) pairs added from
-		% both directions back to 0/1 (sparse() sums duplicates) matches the
-		% original dense code's idempotent A(i,j)=1 assignment exactly:
-		A = double(sparse(rows(1:numEdges), cols(1:numEdges), 1, N, N) > 0);
-
-		% Symmetrize A (safe because A is strictly upper triangular: A and A'
-		% have disjoint nonzero support, so no double-counting):
-		A = A + A';
 	otherwise
 		error('Unknown visibility graph method ''%s''', meth);
 end
@@ -179,11 +217,8 @@ end
 % -------------------------------------------------------------------------------
 %% Degree distribution: basic statistics
 % -------------------------------------------------------------------------------
-k = sum(A); % the degree distribution
-k = full(k);
-
 out.modek = mode(k); % mode of degree distribution
-out.propmode = sum(k == mode(k)) / sum(k);
+out.propmode = sum(k == mode(k)) / length(k); % proportion of nodes at the modal degree
 out.meank = mean(k); % mean number of links per node
 out.mediank = median(k); % median number of links per node
 out.stdk = std(k); % std of k
@@ -201,89 +236,50 @@ out.olu90 = (mean(k(k >= quantile(k, 0.95))) - mean(k)) / std(k); % top 5% of po
 %% Fit distributions to degree distribution
 % ------------------------------------------------------------------------------
 % (1) Gauss1: Gaussian fit to degree distribution
-try
-	dgaussout = DN_SimpleFit(k, 'gauss1', range(k)); % range(k)-bin single gaussian fit
-catch emsg
-	warning(sprintf('Error fitting gaussian distribution to data:\n%s', emsg.message))
-	dgaussout = NaN;
+% Distribution of the degrees: the proportion of nodes at each integer degree from the
+% minimum to the maximum (bins of width 1, so proportions are probability densities)
+kVals = (min(k):max(k))';
+kProb = accumarray(k(:) - min(k) + 1, 1, [length(kVals), 1]) / length(k);
+
+% Least-squares fits of a Gaussian, an exponential and a power law to the distribution
+fitModels = {'gauss', 'exp', 'power'};
+numParams = [3, 2, 2]; % parameters of each model (for the degrees of freedom)
+for i = 1:length(fitModels)
+	fitName = ['d' fitModels{i} 'k'];
+	if sum(kProb > 0) <= numParams(i) % too few distinct degrees to fit this model meaningfully
+		[r2, adjr2, rmse, resAC1, resAC2, resrunsz] = deal(NaN);
+	else
+		kFit = BF_FitDensityCurve(kVals, kProb, fitModels{i});
+		res = kProb - kFit; % residuals, in order of increasing degree
+		sse = sum(res.^2);
+		sstot = sum((kProb - mean(kProb)).^2);
+		dfe = length(kVals) - numParams(i); % degrees of freedom of the error
+		r2 = 1 - sse/sstot;
+		adjr2 = 1 - (1 - r2)*(length(kVals) - 1)/dfe;
+		rmse = sqrt(sse/dfe) * std(k); % in density units of the standardized degrees
+		[resAC1, resAC2, resrunsz] = BF_ResidualStats(res, kProb);
+	end
+	out.([fitName '_r2']) = r2; % rsquared
+	out.([fitName '_adjr2']) = adjr2; % degrees of freedom-adjusted rsquared
+	out.([fitName '_rmse']) = rmse; % root mean square error
+	out.([fitName '_resAC1']) = resAC1; % autocorrelation of residuals at lag 1
+	out.([fitName '_resAC2']) = resAC2; % autocorrelation of residuals at lag 2
+	out.([fitName '_resrunsz']) = resrunsz; % runs test z-statistic of the residuals
 end
 
-if ~isstruct(dgaussout) && isnan(dgaussout)
-	out.dgaussk_r2 = NaN;
-	out.dgaussk_adjr2 = NaN;
-	out.dgaussk_rmse = NaN;
-	out.dgaussk_resAC1 = NaN;
-	out.dgaussk_resAC2 = NaN;
-	out.dgaussk_resruns = NaN;
-else
-	out.dgaussk_r2 = dgaussout.r2; % rsquared
-	out.dgaussk_adjr2 = dgaussout.adjr2; % degrees of freedom-adjusted rsqured
-	out.dgaussk_rmse = dgaussout.rmse;  % root mean square error
-	out.dgaussk_resAC1 = dgaussout.resAC1; % autocorrelation of residuals at lag 1
-	out.dgaussk_resAC2 = dgaussout.resAC2; % autocorrelation of residuals at lag 2
-	out.dgaussk_resruns = dgaussout.resruns; % runs test on residuals -- outputs p-value
-end
+numNodes = length(k);
 
-% (2) Exponential1: Exponential fit to degree distribution
-try
-	dexpout = DN_SimpleFit(k, 'exp1', range(k)); % range(k)-bin single exponential fit
-catch emsg
-	warning(sprintf('Error fitting exponential distribution to data:\n%s', emsg.message))
-	dexpout = NaN;
-end
-if ~isstruct(dexpout) && isnan(dexpout)
-	out.dexpk_r2 = NaN;
-	out.dexpk_adjr2 = NaN;
-	out.dexpk_rmse = NaN;
-	out.dexpk_resAC1 = NaN;
-	out.dexpk_resAC2 = NaN;
-	out.dexpk_resruns = NaN;
-else
-	out.dexpk_r2 = dexpout.r2; % rsquared
-	out.dexpk_adjr2 = dexpout.adjr2; % degrees of freedom-adjusted rsqured
-	out.dexpk_rmse = dexpout.rmse;  % root mean square error
-	out.dexpk_resAC1 = dexpout.resAC1; % autocorrelation of residuals at lag 1
-	out.dexpk_resAC2 = dexpout.resAC2; % autocorrelation of residuals at lag 2
-	out.dexpk_resruns = dexpout.resruns; % runs test on residuals -- outputs p-value
-end
-
-% (3) Power1: Power-law fit to degree distribution
-try
-	dpowerout = DN_SimpleFit(k, 'power1', range(k)); % range(k)-bin single power law fit
-catch emsg
-	warning(sprintf('Error fitting power-law distribution to data:\n%s', emsg.message))
-	dpowerout = NaN;
-end
-if ~isstruct(dpowerout) && isnan(dpowerout)
-	out.dpowerk_r2 = NaN;
-	out.dpowerk_adjr2 = NaN;
-	out.dpowerk_rmse = NaN;
-	out.dpowerk_resAC1 = NaN;
-	out.dpowerk_resAC2 = NaN;
-	out.dpowerk_resruns = NaN;
-else
-	out.dpowerk_r2 = dpowerout.r2; % rsquared
-	out.dpowerk_adjr2 = dpowerout.adjr2; % degrees of freedom-adjusted rsqured
-	out.dpowerk_rmse = dpowerout.rmse;  % root mean square error
-	out.dpowerk_resAC1 = dpowerout.resAC1; % autocorrelation of residuals at lag 1
-	out.dpowerk_resAC2 = dpowerout.resAC2; % autocorrelation of residuals at lag 2
-	out.dpowerk_resruns = dpowerout.resruns; % runs test on residuals -- outputs p-value
-end
-
-% ------------------------------------------------------------------------------
-%% Using likelihood now:
-% ------------------------------------------------------------------------------
 % Gaussian
-out.gaussnlogL = normlike([mean(k), std(k)], k);
+out.gaussnlogL = normlike([mean(k), std(k)], k) / numNodes;
 
 % Exp
-out.expnlogL = explike(mean(k), k);
+out.expnlogL = explike(mean(k), k) / numNodes;
 
 % Extreme Value Distribution
 paramhat = evfit(k);
 out.evparam1 = paramhat(1);
 out.evparam2 = paramhat(2);
-out.evnlogL = evlike(paramhat, k);
+out.evnlogL = evlike(paramhat, k) / numNodes;
 
 % ------------------------------------------------------------------------------
 %% Entropy of distribution:
@@ -296,12 +292,4 @@ out.kac2 = CO_AutoCorr(k, 2, 'Fourier');
 out.kac3 = CO_AutoCorr(k, 3, 'Fourier');
 out.ktau = CO_FirstCrossing(k, 'ac', 0, 'continuous');
 
-end
-
-% -------------------------------------------------------------------------------
-function A = symmetrize(A)
-	% Symmetrize an upper triangular matrix:
-	At = A';
-	lowerT = logical(tril(ones(size(A))));
-	A(lowerT) = At(lowerT);
 end

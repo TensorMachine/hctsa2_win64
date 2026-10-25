@@ -1,17 +1,57 @@
 function out = IN_AutoMutualInfoStats(y, maxTau, estMethod, extraParam)
-% IN_AutoMutualInfoStats  Statistics on automutual information function
-%                         of a time series.
+% IN_AutoMutualInfoStats   Statistics on the automutual information function of a time series.
+%
+% Computes the automutual information (AMI) at each time lag from 1 to maxTau
+% (using IN_AutoMutualInfo), and returns the AMI values and statistics on their
+% pattern across lags: mean and spread, the first local minimum, the number and
+% spacing of local maxima and minima, the proportion of crossings of the mean,
+% median and 10th and 90th percentiles, and the lag-1 autocorrelation of the AMI
+% function. With a Gaussian estimator the AMI is -0.5*log(1 - r^2) for the Pearson
+% correlation r between the series and its lagged copy; the other estimators are
+% implemented in the Java Information Dynamics Toolkit (JIDT).
 %
 % ---INPUTS:
 % y, column vector of time series data
-%
-% maxTau, maximal time delay
-%
-% estMethod, extraParam -- cf. inputs to IN_AutoMutualInfo.m
+% maxTau, the maximal time delay (default: ceil(N/4), for series length N; it is
+%    reduced to ceil(N/2) if larger than that)
+% estMethod, the estimation method for the AMI (default: 'kernel'), one of
+%    'gaussian', 'kernel', 'kraskov1', 'kraskov2'; cf. IN_AutoMutualInfo
+% extraParam, an extra parameter of the estimator (default: none); for
+%    'kraskov1' and 'kraskov2', the number of nearest neighbors, as a string
+%    (default: '4'); cf. IN_AutoMutualInfo
 %
 % ---OUTPUTS:
-% out, a structure containing statistics on the AMIs and their pattern across
-%       the range of specified time delays.
+% A structure with the following fields (the AMI at each lag is returned as ami1,
+% ami2, ..., up to maxTau; NaN where the series is too short for that lag):
+% ami1, ami2, ami3, ami4, ami5, ami6, ami7, ami8, ami9, ami10, ami11, ami12,
+% ami13, ami14, ami15, ami16, ami17, ami18, ami19, ami20, ami21, ami22,
+% ami23, ami24, ami25, ami26, ami27, ami28, ami29, ami30, ami31, ami32,
+% ami33, ami34, ami35, ami36, ami37, ami38, ami39, ami40
+% mami, the mean of the AMI across lags
+% stdami, the standard deviation of the AMI across lags
+% pextrema, the number of local extrema (peaks and troughs) of the AMI function,
+%    as a proportion of the number of lags
+% fmmi, the lag of the first local minimum of the AMI function (the number of lags
+%    if there is none)
+% sumami_fmmi, the sum of the AMI from lag 1 to fmmi
+% pmaxima, the number of intervals between successive local maxima, divided by
+%    floor(number of lags/2)
+% modeperiodmax, the most common spacing between successive local maxima (NaN if
+%    fewer than two maxima)
+% pmodeperiodmax, the proportion of spacings between successive local maxima that
+%    equal modeperiodmax
+% pminima, the number of intervals between successive local minima, divided by
+%    floor(number of lags/2)
+% modeperiodmin, the most common spacing between successive local minima (NaN if
+%    fewer than two minima)
+% pmodeperiodmin, the proportion of spacings between successive local minima that
+%    equal modeperiodmin
+% pcrossmean, the proportion of successive lags at which the AMI function crosses
+%    its mean
+% pcrossmedian, ... crosses its median
+% pcrossq10, ... crosses its 10th percentile
+% pcrossq90, ... crosses its 90th percentile
+% amiac1, the lag-1 autocorrelation of the AMI function (CO_AutoCorr)
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -103,11 +143,21 @@ out.stdami = std(ami);
 dami = diff(ami);
 extremai = find(dami(1:end - 1) .* dami(2:end) < 0);
 out.pextrema = length(extremai) / (lami - 1);
-if isempty(extremai)
-	out.fmmi = lami; % actually represents lag, because indexes don't but diff delays by 1
+
+% First local MINIMUM specifically (extremai above contains both minima and
+% maxima; a minimum is where ami is still decreasing into the sign change,
+% i.e., dami(i) < 0, and it occurs at ami-index i+1 since dami(i) = ami(i+1)-ami(i)):
+minimai = extremai(dami(extremai) < 0) + 1;
+if isempty(minimai)
+	out.fmmi = lami; % no local minimum found in this range
 else
-	out.fmmi = min(extremai);
+	out.fmmi = min(minimai);
 end
+
+% Integrated AMI up to the first minimum: how much automutual information
+% accumulates before the series first decorrelates, as opposed to mami's
+% flat average over the whole (often plateaued) lag range:
+out.sumami_fmmi = sum(ami(1:out.fmmi));
 
 % ----Look for periodicities in local maxima
 maximai = find(dami(1:end - 1) > 0 & dami(2:end) < 0) + 1;

@@ -12,6 +12,8 @@ function Hest = BF_wfbmesti(x)
 %      the robust (MAD-based) deviation estimate from wnoisest
 %
 % Estimates 1 and 2 operate on cumsum(diff(x)); estimate 3 uses x directly.
+% Non-finite samples are removed first, so the time axis closes up over them.
+% Estimate 3 is NaN for fewer than 4 samples (it needs a slope over two levels).
 
 x = x(:);
 x = x(isfinite(x));
@@ -48,7 +50,7 @@ Hest(2) = 0.5*log2(mean(cy2.^2)/mean(cy1.^2));
 %% 3. variance versus level (haar)
 %-------------------------------------------------------------------------------
 levdec = min(BF_wmaxlev(numel(x),'haar'),6);
-if levdec < 1
+if levdec < 2                          % a slope needs two levels (HCTSA2 2.2.1)
     Hest(3) = NaN;
     return
 end

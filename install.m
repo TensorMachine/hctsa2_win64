@@ -1,0 +1,154 @@
+% INSTALL   Installs the hctsa code package from scratch.
+%
+%---INPUTS:
+% silentInstall, (binary) set true to run non-interactively (no 'Press any
+%                key to continue' prompts), e.g., for scripted/CI installs.
+%                Defaults to false.
+
+% ------------------------------------------------------------------------------
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% <http://www.benfulcher.com>
+%
+% If you use this code for your research, please cite the following two papers:
+%
+% (1) B.D. Fulcher and N.S. Jones, "hctsa: A Computational Framework for Automated
+% Time-Series Phenotyping Using Massive Feature Extraction, Cell Systems 5: 527 (2017).
+% DOI: 10.1016/j.cels.2017.10.001
+%
+% (2) B.D. Fulcher, M.A. Little, N.S. Jones, "Highly comparative time-series
+% analysis: the empirical structure of time series and their methods",
+% J. Roy. Soc. Interface 10(83) 20130048 (2013).
+% DOI: 10.1098/rsif.2013.0048
+%
+% This work is licensed under the Creative Commons
+% Attribution-NonCommercial-ShareAlike 4.0 International License. To view a copy of
+% this license, visit http://creativecommons.org/licenses/by-nc-sa/4.0/ or send
+% a letter to Creative Commons, 444 Castro Street, Suite 900, Mountain View,
+% California, 94041, USA.
+% ------------------------------------------------------------------------------
+
+function install(silentInstall)
+
+if nargin < 1
+    silentInstall = false;
+end
+
+
+fprintf(1,['This script will set up the Highly Comparative Time-Series ' ...
+                        'Analysis (hctsa) code package from scratch!\n']);
+fprintf(1,['We will:' ...
+            '\n-1- Add the paths needed for the repository,' ...
+            '\n-2- Check toolboxes,' ...
+            '\n-3- Compile the external time-series toolboxes for this system,' ...
+            '\n-4- Run a quick smoke test.\n\n']);
+
+% ------------------------------------------------------------------------------
+%% 1. Add the paths:
+% ------------------------------------------------------------------------------
+fprintf(1,'-1- Adding paths needed for the repository...\n');
+if ~silentInstall
+    input('<<Press any key to continue>>')
+end
+try
+	startup
+catch emsg
+	fprintf(1,'error.\n%s\n',emsg.message);
+end
+fprintf(1,'\n');
+
+% ------------------------------------------------------------------------------
+%% 2. Check the toolboxes:
+% ------------------------------------------------------------------------------
+fprintf(1,'-2- Checking installation of relevant Matlab Toolboxes...\n');
+
+% Essential:
+noStatToolbox = BF_CheckToolbox('statistics_toolbox',true,true);
+if noStatToolbox
+    fprintf(1,'The Statistics and Machine Learning Toolbox is required for hctsa and needs to be installed.\n');
+end
+% For distributed computing
+noDistributedToolbox = BF_CheckToolbox('distrib_computing_toolbox',true,true);
+if noDistributedToolbox
+    fprintf(1,'Matlab''s Parallel Computing Toolbox is required for distributed calculation but is not installed.\n');
+end
+% Desirable (needed for some hctsa features):
+% hctsa2: only the Signal Processing Toolbox. The Curve Fitting, System
+% Identification, Wavelet, Econometrics and Financial toolboxes that upstream
+% lists here are replaced by toolbox-free BF_* functions in this fork.
+toolboxCodes = {'signal_toolbox'};
+flags = zeros(length(toolboxCodes),1);
+names = cell(length(toolboxCodes),1);
+for i = 1:length(toolboxCodes)
+    [flags(i),names{i}] = BF_CheckToolbox(toolboxCodes{i},true,true);
+end
+
+fprintf(1,'%u/%u hctsa-relevant Matlab toolboxes are installed.\n',sum(~flags),length(flags));
+if any(flags)
+    fprintf(1,'For full functionality, please install:\n');
+    theNo = find(flags);
+    numNo = length(theNo);
+    for i = 1:numNo
+        fprintf(1,'%s\n',names{theNo(i)});
+    end
+else
+    fprintf(1,'Looking good for Matlab toolbox installation! :)\n');
+end
+fprintf(1,'\n');
+if ~silentInstall
+    input('<<Press any key to continue>>')
+end
+
+% ------------------------------------------------------------------------------
+%% 3. Attempt to compile the executables required by the periphery Toolboxes:
+% ------------------------------------------------------------------------------
+fprintf(1,['\n-3- Compile the binary executables needed for evaluating ' ...
+                                                'some operations.\n']);
+fprintf(1,['Please make sure that mex is set up with the right compilers for' ...
+                                                            ' this system.\n']);
+fprintf(1,['Note that errors here are not the end of the world,\nbut mean that ' ...
+                        'some operations may fail to execute correctly...\n']);
+if ~silentInstall
+    input('<<Press any key to continue>>')
+end
+cd Toolboxes
+compile_mex
+cd('../');
+
+% ------------------------------------------------------------------------------
+%% 4. Optional smoke test: compute a feature vector for a synthetic time series
+%% to check that the core pipeline actually runs end-to-end (not just that
+%% things compiled). Takes about a minute, so it's opt-in rather than forced.
+% ------------------------------------------------------------------------------
+smokeTestCode = ['t = (0:499)/100; x = sin(2*pi*10*t) + 0.1*randn(1,500); ' ...
+    'featVector = TS_CalculateFeatureVector(x'',false); sum(~isnan(featVector))'];
+fprintf(1,'\n-4- Optional smoke test (computes features for a synthetic time series, ~1 minute).\n');
+runSmokeTest = false;
+if ~silentInstall
+    response = input('Run it now to verify the pipeline end-to-end? [y/N] ','s');
+    runSmokeTest = ~isempty(response) && any(lower(response(1))=='y');
+end
+if runSmokeTest
+    try
+        t = (0:499)/100;
+        x = sin(2*pi*10*t) + 0.1*randn(1,500);
+        % doParallel = false: don't depend on the (optional) Parallel Computing Toolbox here.
+        featVector = TS_CalculateFeatureVector(x',false);
+        numGood = sum(~isnan(featVector));
+        if numGood==0
+            fprintf(1,['WARNING: smoke test ran but no features were computed successfully -- ' ...
+                                            'something may be misconfigured.\n']);
+        else
+            fprintf(1,'Smoke test passed: %u/%u features computed successfully.\n',numGood,numel(featVector));
+        end
+    catch emsg
+        fprintf(1,['WARNING: smoke test failed to run (%s).\nThis may indicate a problem with one of ' ...
+                                    'the compiled binaries above.\n'],emsg.message);
+    end
+else
+    fprintf(1,'Skipping smoke test. To run it yourself later:\n  %s\n',smokeTestCode);
+end
+
+fprintf(1,['\nAll done! Ready when you are to initiate hctsa analysis\nusing a time-series dataset: ' ...
+                            'e.g.: TS_Init(''INP_test_ts.mat'')\n']);
+
+end

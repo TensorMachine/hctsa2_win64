@@ -19,11 +19,16 @@ y = y(isfinite(y));
 T = numel(y);
 
 lags = 0; trend = true; alpha = 0.05;
+if mod(numel(varargin),2) ~= 0
+    error('BF_kpsstest:badOptions','Options must be name/value pairs.');
+end
 for k = 1:2:numel(varargin)-1
     switch lower(varargin{k})
     case 'lags',  lags  = varargin{k+1};
     case 'trend', trend = varargin{k+1};
     case 'alpha', alpha = varargin{k+1};
+    otherwise
+        error('BF_kpsstest:unknownOption','Unknown or unsupported option ''%s''.',char(varargin{k}));
     end
 end
 lags = lags(:)'; alpha = alpha(:)'; trend = logical(trend(:))';
@@ -31,6 +36,13 @@ n = max([numel(lags) numel(alpha) numel(trend)]);
 if numel(lags)==1,  lags  = repmat(lags,1,n);  end
 if numel(alpha)==1, alpha = repmat(alpha,1,n); end
 if numel(trend)==1, trend = repmat(trend,1,n); end
+
+% (HCTSA2 2.2.1: p-values are clipped to [0.01, 0.10], so an alpha outside that
+% range would extrapolate cValue and, from 0.10 up, report h = 1 whatever the
+% statistic.)
+if any(alpha < 0.01 | alpha > 0.10)
+    error('econ:kpsstest:AlphaOutOfRange','Alpha must be between 0.01 and 0.10.');
+end
 
 % KPSS (1992) Table 1, for alpha = [0.10 0.05 0.025 0.01]
 alphaTable = [0.100 0.050 0.025 0.010];

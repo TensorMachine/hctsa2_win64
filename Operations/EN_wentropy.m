@@ -1,23 +1,46 @@
-function out = EN_wentropy(y,whaten,p)
-% EN_wentropy   Entropy of time series using wavelets.
+function out = EN_wentropy(y, waveletName, level)
+% EN_wentropy   Wavelet entropy of a time series.
 %
-% Uses the wentropy function from Matlab's Wavelet toolbox.
+% Decomposes y via the maximal-overlap discrete wavelet transform (MODWT) into
+% level detail scales plus the remaining smooth (scaling) band, i.e., level + 1
+% bands, computes each band's share of the signal's total energy,
+% p_j = E_j / sum(E), and returns the Shannon entropy of this relative-energy
+% distribution across bands, normalized to [0,1] by its maximum possible value,
+% log2(level + 1). Low values mean the energy is concentrated in few bands; high
+% values that it is spread evenly across bands. Uses MATLAB's wentropy (Wavelet
+% Toolbox).
 %
-%--INPUTS:
+% ---INPUTS:
 % y, the input time series
-% whaten, the entropy type:
-%               'shannon',
-%               'logenergy',
-%               'threshold' (with a given threshold),
-%               'sure' (with a given parameter).
-%               (see the wentropy documentation for information)
-% p, the additional parameter needed for threshold and sure entropies
+% waveletName [optional], the wavelet used for the MODWT decomposition (default:
+%    'sym4')
+% level [optional], the number of decomposition levels (default: 5)
 %
-%---NOTE:
-% It seems likely that this implementation of wentropy is nonsense.
+% ---OUTPUTS:
+% a scalar: the normalized wavelet entropy (NaN if the decomposition fails, e.g.,
+% for a series too short for the requested number of levels).
+%
+% ---REFERENCES:
+% O. A. Rosso, S. Blanco, J. Yordanova, V. Kolev, A. Figliola, M. Schuermann,
+% E. Basar, "Wavelet entropy: a new tool for analysis of short duration brain
+% electrical signals", J. Neurosci. Methods 105(1) 65 (2001).
+%
+% ---NOTES:
+% The output is invariant to rescaling y, and is bounded in [0,1] (the value 1 is
+% reached when the energy is equal in all level + 1 bands). The normalizing
+% constant is log2(level + 1) (wentropy with 'Scaled' true, its default).
+% level is fixed by default (rather than left to wentropy's automatic choice,
+% floor(log2(length(y)))) because the number of levels sets the normalizing
+% denominator, so letting it grow with length(y) would introduce a strong length
+% dependence. With level fixed, the value for white noise is independent of length
+% (about 0.75, the entropy of the energy shares 1/2, 1/4, 1/8, 1/16, 1/32, 1/32
+% of white noise, divided by log2(6)); the value changes with length only for
+% series whose energy depends on length, e.g., a random walk, whose energy
+% concentrates in the smooth band as the series grows. level = 5 needs
+% length(y) >= ~64 for a non-degenerate MODWT decomposition.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -52,28 +75,28 @@ function out = EN_wentropy(y,whaten,p)
 % ------------------------------------------------------------------------------
 % Check inputs
 % ------------------------------------------------------------------------------
-if nargin < 2 || isempty(whaten)
-    whaten = 'shannon'; % default
+if nargin < 2 || isempty(waveletName)
+	waveletName = 'sym4'; % default
+end
+if nargin < 3 || isempty(level)
+	level = 5; % fixed (see NOTES: avoids length dependence from an N-dependent level)
 end
 
-N = length(y); % time-series length
-
-switch whaten
-	case 'shannon' % Shannon entropy
-		out = BF_wentropy(y,'shannon')/N; % scales with N for large N
-
-	case 'logenergy' % Log Energy entropy
-		out = BF_wentropy(y,'log energy')/N; % scales with N for large N
-
-    case 'threshold' % Magnitude of the signal greater than some value
-        out = BF_wentropy(y,'threshold',p)/N;
-
-    case 'sure'
-        % Equivalent to threshold entropy?
-        out = BF_wentropy(y,'sure',p)/N;
-
-    otherwise
-        error('Unknown entropy type ''%s''.', whaten);
+% ------------------------------------------------------------------------------
+% Compute the (scaled, global) wavelet entropy
+% ------------------------------------------------------------------------------
+try
+	ent = BF_wentropy(y, 'Wavelet', waveletName, 'Distribution', 'global', 'Level', level, 'Scaled', true);
+catch err
+	% Data-dependent (e.g., series too short for the requested/default level):
+	% hctsa2: only those errors give NaN. Upstream's catch-all would also have
+	% turned a missing or unsupported option in the replacement into a NaN.
+	if ~any(strcmp(err.identifier, {'BF_modwt:level', 'BF_wentropy:tooShort'}))
+		rethrow(err);
+	end
+	out = NaN; return
 end
+
+out = ent;
 
 end

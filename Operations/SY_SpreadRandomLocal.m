@@ -1,27 +1,37 @@
-function out = SY_SpreadRandomLocal(y, l, numSegs, randomSeed)
-% SY_SpreadRandomLocal  Bootstrap-based stationarity measure.
+function out = SY_SpreadRandomLocal(y, l, numSegs, ~)
+% SY_SpreadRandomLocal   How local statistics vary across many overlapping segments of the series.
 %
-% numSegs time-series segments of length l are selected at random from the time
-% series and in each segment some statistic is calculated: mean, standard
-% deviation, skewness, kurtosis, ApEn(1,0.2), SampEn(1,0.2), AC(1), AC(2), and the
-% first zero-crossing of the autocorrelation function.
-% Outputs summarize how these quantities vary in different local segments of the
-% time series.
+% numSegs time-series segments of length l are selected from the time series (with
+% start points spread evenly over it; segments can overlap) and in each segment some
+% statistic is calculated: mean, standard deviation, skewness, kurtosis,
+% PermEn(3,1), AC(1), AC(2), and the first zero-crossing of the autocorrelation
+% function. Outputs summarize how these quantities vary in different local
+% segments of the time series, as the standard deviation of each across the
+% segments. (The mean of each set is not output, since it just re-estimates the
+% corresponding global statistic, already covered elsewhere in hctsa, rather than
+% measuring stationarity.) Returns NaN if l is longer than 90% of the time series.
 %
 % ---INPUTS:
 % y, the input time series
 %
-% l, the length of local time-series segments to analyze as a positive integer.
-%    Can also be a specified character string:
+% l, the length of local time-series segments to analyze, as a positive integer
+%    (default: 100). Can also be a specified character string:
 %       (i) 'ac2': twice the first zero-crossing of the autocorrelation function
 %       (ii) 'ac5': five times the first zero-crossing of the autocorrelation function
 %
-% numSegs, the number of randomly-selected local segments to analyze
+% numSegs, the number of local segments to analyze (default: 100)
 %
-% randomSeed, the input to BF_ResetSeed to control reproducibility
+% randomSeed, ignored: the segment start points are deterministic. Kept so that
+%       existing calls still work.
 %
-% ---OUTPUTS: the mean and also the standard deviation of this set of 100 local
-% estimates.
+% ---OUTPUTS:
+% stdmean, stdstd, stdskew, stdkurt: the standard deviation, across segments, of
+%       the segment mean, standard deviation, skewness, and kurtosis
+% stdpermen, the standard deviation of the normalized permutation entropy
+%       PermEn(3,1)
+% stdac1, stdac2: the standard deviation of the autocorrelation at lags 1 and 2
+% stdtaul, the standard deviation of the first zero-crossing of the
+%       autocorrelation function (interpolated, in samples)
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -86,14 +96,10 @@ end
 
 % Check the parameters are appropriate for the length of the input time series:
 N = length(y); % the length of the time series
-if l > 0.9 * N % operation is not suitable -- time series is too short
+if isnan(l) || l > 0.9 * N % operation is not suitable -- time series is too short
 	warning('This time series (N = %u) is too short to use l = %.1f\n', N, l)
 	out = NaN;
 	return % NaN means not suitable
-end
-
-if nargin < 4
-	randomSeed = []; % use default random seed
 end
 
 % ------------------------------------------------------------------------------
@@ -102,14 +108,16 @@ end
 numFeat = 8; % number of features
 qs = zeros(numSegs, numFeat);
 
-% Reset random seed, for reproducibility:
-BF_ResetSeed(randomSeed);
+% Start points of the segments, spread over 1..N-l+1 by the golden-ratio (Weyl)
+% sequence frac(j*phi): deterministic and evenly spread (unlike random start points,
+% which clump and leave gaps), and with no aliasing with periodicities of the series:
+istarts = 1 + floor((N - l + 1) * mod((1:numSegs)' * 0.6180339887498949, 1));
 
 for j = 1:numSegs
 	% pick a range
 	% in this implementation, ranges CAN overlap
 
-	ist = randi(N - 1 - l, 1); % random start point (not exceeding the endpoint)
+	ist = istarts(j); % random start point (not exceeding the endpoint)
 	ifh = ist + l - 1; % finish index
 	rs = ist:ifh; % sample range (from starting to finishing index)
 	ySub = y(rs); % contiguous subsegment of the time series
@@ -118,8 +126,12 @@ for j = 1:numSegs
 	qs(j, 2) = std(ySub); % standard deviation
 	qs(j, 3) = skewness(ySub); % skewness
 	qs(j, 4) = kurtosis(ySub); % kurtosis
-	entropyStruct = EN_SampEn(ySub, 1, 0.15);
-	qs(j, 5) = entropyStruct.quadSampEn1; % SampEn_1_01
+	permEn_struct = EN_PermEn(ySub, 3, 1); % normalized PermEn(3,1) -- cheaper and more
+	if isstruct(permEn_struct)         % stable than SampEn on these short random segments
+		qs(j, 5) = permEn_struct.normPermEn;
+	else
+		qs(j, 5) = NaN;
+	end
 	qs(j, 6) = CO_AutoCorr(ySub, 1, 'Fourier'); % AC1
 	qs(j, 7) = CO_AutoCorr(ySub, 2, 'Fourier'); % AC2
 	qs(j, 8) = CO_FirstCrossing(ySub, 'ac', 0, 'continuous'); % first zero crossing
@@ -129,10 +141,10 @@ end
 % Plot some output?:
 % ------------------------------------------------------------------------------
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	subplot(2, 1, 1); hold on;
 	plot(y, 'k');
-	plot(ists, y(ists), '.r');
+	plot(istarts, y(istarts), '.r');
 	title('time series')
 	subplot(2, 1, 2); plot(qs(:, 1), 'b'); title('local means')
 end
@@ -140,27 +152,21 @@ end
 % ------------------------------------------------------------------------------
 % Take mean and standard deviation of this set of local time-series statistics:
 % ------------------------------------------------------------------------------
-% Can think of this as a big bootstrapped distribution of the timeseries at
+% Can think of this as a distribution of local statistics of the timeseries at
 % a scale given by the length l
 
 fs = zeros(numFeat, 2);
-fs(:, 1) = nanmean(qs); % the mean value of the feature across subsegments of the time series
-fs(:, 2) = nanstd(qs); % the spread of the feature across subsegments of the time series
+fs(:, 1) = mean(qs,'omitnan'); % the mean value of the feature across subsegments of the time series
+fs(:, 2) = std(qs,0,'omitnan'); % the spread of the feature across subsegments of the time series
 
-out.meanmean = fs(1, 1);
-out.meanstd = fs(2, 1);
-out.meanskew = fs(3, 1);
-out.meankurt = fs(4, 1);
-out.meansampen1_015 = fs(5, 1);
-out.meanac1 = fs(6, 1);
-out.meanac2 = fs(7, 1);
-out.meantaul = fs(8, 1);
-
+% Only the across-segment spread (std*) is returned: the across-segment means
+% re-estimate global summary statistics (covered elsewhere in hctsa) rather than
+% measuring local variability/stationarity.
 out.stdmean = fs(1, 2);
 out.stdstd = fs(2, 2);
 out.stdskew = fs(3, 2);
 out.stdkurt = fs(4, 2);
-out.stdsampen1_015 = fs(5, 2);
+out.stdpermen = fs(5, 2);
 out.stdac1 = fs(6, 2);
 out.stdac2 = fs(7, 2);
 out.stdtaul = fs(8, 2);

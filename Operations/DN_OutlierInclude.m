@@ -1,37 +1,74 @@
-function out = DN_OutlierInclude(y, thresholdHow, inc)
-% DN_OutlierInclude     How statistics depend on distributional outliers.
+function out = DN_OutlierInclude(y, thresholdHow, inc, fixedThresh)
+% DN_OutlierInclude   How the timing and spacing of extreme values change as the threshold rises.
 %
-% Measures a range of different statistics about the time series as more and
-% more outliers are included in the calculation according to a specified rule,
-% of outliers being furthest from the mean, greatest positive, or negative
-% deviations.
+% Raises a threshold th from 0 to the maximum value of the series, in increments
+% of inc, and at each threshold takes the "events": the points at or beyond it
+% (for 'abs', values with abs(y) >= th; for 'pos', y >= th; for 'neg',
+% y <= -th). The threshold is applied to y itself, so the series should be
+% z-scored (a warning is issued otherwise). At each threshold it records:
+%   (1) the mean gap (in samples) between successive events, and its standard
+%       error (std of the gaps / sqrt of their number),
+%   (2) the percentage of points that are events (the number of gaps over the
+%       number of candidate points, times 100),
+%   (3) the median and mean time of the events, rescaled so that the start of the
+%       series is -1, the middle is 0 and the end is 1, and std(times)/sqrt(their
+%       number) (in samples).
+% The sweep stops when events are 2% or fewer of the points. The outputs measure
+% how these curves change with th, using exponential [f(x) = a*exp(b*x) + c] and
+% linear [f(x) = a*x + b] least-squares fits, and simple statistics across
+% thresholds. The exponential fit is the global optimum over the rate b, with a and
+% c found by linear least squares (see BF_ExpFit), so it does not depend on a
+% starting point or optimizer settings; its R^2 lies between 0 and 1. If a fit is
+% not meaningful (too few thresholds, or a constant curve), the corresponding
+% outputs are NaN.
 %
-% The threshold for including time-series data points in the analysis increases
-% from zero to the maximum deviation, in increments of 0.01*sigma (by default),
-% where sigma is the standard deviation of the time series.
-%
-% At each threshold, the mean, standard error, proportion of time series points
-% included, median, and standard deviation are calculated, and outputs from the
-% algorithm measure how these statistical quantities change as more extreme
-% points are included in the calculation.
+% If fixedThresh is given, the sweep and fits are skipped, and the statistics in
+% (1)-(3) are returned for that one threshold.
 %
 % ---INPUTS:
 % y, the input time series (ideally z-scored)
 %
-% thresholdHow, the method of how to determine outliers:
-%     (i) 'abs': outliers are furthest from the mean,
-%     (ii) 'pos': outliers are the greatest positive deviations from the mean, or
-%     (iii) 'neg': outliers are the greatest negative deviations from the mean.
+% thresholdHow, how to determine outliers:
+%       (i) 'abs': values furthest from zero in either direction (default),
+%       (ii) 'pos': the greatest positive values, or
+%       (iii) 'neg': the greatest negative values.
 %
-% inc, the increment to move through (fraction of std if input time series is
-%       z-scored)
+% inc, the increment to move through (in units of the standard deviation if the
+%       time series is z-scored; default 0.01). Unused when fixedThresh is given.
 %
-% Most of the outputs measure either exponential [f(x) = Aexp(Bx) + C] or
-% linear [f(x) = Ax + B] fits to the sequence of statistics obtained in
-% this way.
+% fixedThresh, [optional] a single threshold (in the units of y, e.g., 2 for two
+%       standard deviations of a z-scored series). If given, the sweep is skipped.
 %
-% [future: could compare differences in outputs obtained with 'p', 'n', and
-%               'abs' -- could give an idea as to asymmetries/nonstationarities??]
+% ---OUTPUTS:
+% From the sweep (fixedThresh not given):
+% mfexpb, mfexpr2, mfexprmse: the rate b, R^2 and root-mean-square error of the
+%       exponential fit to the mean gap vs. th (the amplitude a and offset c are not
+%       output: they become large and opposite in sign when the curve is nearly
+%       straight)
+% nfexpb, nfexpr2, nfexprmse: the same for an exponential fit to the percentage of
+%       points that are events vs. th
+% nfla, nflb, nflr2, nflrmse: slope a, intercept b, R^2 and root-mean-square
+%       error of a linear fit to the percentage of points that are events vs. th
+% mdtm, mdtmd, mdtstd: mean, median and standard deviation of the mean gap
+%       across thresholds
+% mdrm, mdrmd, mdrstd: mean, median and standard deviation, across thresholds,
+%       of the median time of the events (-1 to 1)
+% mrm, mrmd, mrstd: mean, median and standard deviation, across thresholds, of
+%       the mean time of the events (-1 to 1)
+% xcmerr1, xcmerrn1: cross-correlation (xcorr with 'coeff' normalization, so the
+%       means are not removed) between the mean gap and its standard error across
+%       thresholds, at lags +1 and -1
+% stdrfexpb, stdrfexpr2, stdrfexprmse: the rate and fit quality of an exponential
+%       fit to std(times)/sqrt(their number) vs. th
+% stdrfla, stdrflb, stdrflr2, stdrflrmse: the same for a linear fit
+% From a single threshold (fixedThresh given; all NaN except propIncluded if events
+% are 2% or fewer of the points):
+% meanDt, seDt: the mean gap between events, and its standard error
+% propIncluded: the percentage of points that are events
+% medianRelTime, meanRelTime: the median and mean time of the events (-1 to 1)
+% stdRelTime: std(times)/sqrt(their number), in samples
+%
+% A constant time series returns NaN.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -66,10 +103,6 @@ function out = DN_OutlierInclude(y, thresholdHow, inc)
 %% Preliminaries
 % ------------------------------------------------------------------------------
 
-% Check a Curve Fitting toolbox license is available
-% Curve Fitting Toolbox gate removed for hctsa 2.0: the fits below use BF_fit,
-% BF_fittype and BF_fitoptions, which are toolbox-free replacements.
-
 doPlot = false; % Plot some outputs
 
 % ------------------------------------------------------------------------------
@@ -93,7 +126,59 @@ if nargin < 2 || isempty(thresholdHow)
 	thresholdHow = 'abs'; % Analyze absolute value deviations in the time series by default
 end
 
-if nargin < 3
+if nargin < 4
+	fixedThresh = [];
+end
+
+% ------------------------------------------------------------------------------
+%% Fixed-threshold fast path
+% ------------------------------------------------------------------------------
+% Bypasses the sweep-and-curve-fit machinery below entirely: no Curve Fitting
+% toolbox needed, no NLS convergence to worry about. Evaluates the same
+% exceedance/interval statistics the sweep loop computes at each threshold,
+% but at just this one threshold, and returns them directly rather than
+% fitting a trend to how they change across many thresholds.
+if ~isempty(fixedThresh)
+	switch thresholdHow
+		case 'abs'
+			r = find(abs(y) >= fixedThresh);
+			tot = N;
+		case 'pos'
+			r = find(y >= fixedThresh);
+			tot = sum(y >= 0);
+		case 'neg'
+			r = find(y <= -fixedThresh);
+			tot = sum(y <= 0);
+		otherwise
+			error('Error thresholding with ''%s''. Must select either ''abs'', ''pos'', or ''neg''.', thresholdHow)
+	end
+
+	Dt_exc = diff(r);
+	meanDt = mean(Dt_exc);
+	propIncluded = length(Dt_exc) / tot * 100;
+
+	% Same "too few events to say anything meaningful" bar as the sweep loop
+	% (trimthr = 2%) below, so results from the two modes stay comparable:
+	if isnan(meanDt) || propIncluded <= 2
+		out.meanDt = NaN;
+		out.seDt = NaN;
+		out.propIncluded = propIncluded;
+		out.medianRelTime = NaN;
+		out.meanRelTime = NaN;
+		out.stdRelTime = NaN;
+		return
+	end
+
+	out.meanDt = meanDt;
+	out.seDt = std(Dt_exc) / sqrt(length(Dt_exc));
+	out.propIncluded = propIncluded;
+	out.medianRelTime = median(r) / (N / 2) - 1; % median event timing, relative to middle (N/2)
+	out.meanRelTime = mean(r) / (N / 2) - 1; % mean event timing, relative to middle (N/2)
+	out.stdRelTime = std(r) / sqrt(length(r));
+	return
+end
+
+if nargin < 3 || isempty(inc)
 	inc = 0.01; % increment through z-scored time-series values
 end
 
@@ -184,7 +269,7 @@ for i = 1:length(thr)
 
 	numValid = numValid + 1;
 	msDt(numValid, 1) = meanDt;
-	msDt(numValid, 2) = std(Dt_exc) / sqrt(length(r)); % error on the mean
+	msDt(numValid, 2) = std(Dt_exc) / sqrt(length(Dt_exc)); % error on the mean
 	msDt(numValid, 3) = propIncluded;
 	% ~~~~~~~~~~~~
 	% Statistics on the indices of over-threshold events:
@@ -201,7 +286,7 @@ thr = thr(1:numValid);
 %% Plot output
 % ------------------------------------------------------------------------------
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	hold('on')
 	plot(thr, msDt(:, 1), '.-k');
 	plot(thr, msDt(:, 2), '.-b');
@@ -218,57 +303,30 @@ end
 % ------------------------------------------------------------------------------
 %% Fit an exponential to the mean inter-event interval as a function of the threshold
 % ------------------------------------------------------------------------------
-s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [0.1 2.5 1]);
-f = BF_fittype('a*exp(b*x)+c', 'options', s);
-emsg = '';
-try
-	[c, gof] = BF_fit(thr', msDt(:, 1), f);
-catch emsg
-	fprintf(1, 'DN_OutlierInclude: error fitting exponential growth to means: %s\n', emsg);
-end
-
-if isempty(emsg)
-	out.mfexpa = c.a;
-	out.mfexpb = c.b;
-	out.mfexpc = c.c;
-	out.mfexpr2 = gof.rsquare;
-	out.mfexpadjr2 = gof.adjrsquare;
-	out.mfexprmse = gof.rmse;
-else
-	out.mfexpa = NaN;
-	out.mfexpb = NaN;
-	out.mfexpc = NaN;
-	out.mfexpr2 = NaN;
-	out.mfexpadjr2 = NaN;
-	out.mfexprmse = NaN;
-end
+% (Global least-squares fits by variable projection: see BF_ExpFit. The amplitude a
+% and offset c are not output: they are poorly determined when the curve is close
+% to a straight line, as a and c then become large and opposite in sign)
+fExp = BF_ExpFit(thr', msDt(:, 1), true);
+out.mfexpb = fExp.b;
+out.mfexpr2 = fExp.r2;
+out.mfexprmse = fExp.rmse;
 
 % ------------------------------------------------------------------------------
 %% Fit an exponential to N: the valid proportion left in calculation
 % ------------------------------------------------------------------------------
-s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [120, -1, -16]);
-f = BF_fittype('a*exp(b*x)+c', 'options', s);
-[c, gof] = BF_fit(thr', msDt(:, 3), f);
-
-out.nfexpa = c.a;
-out.nfexpb = c.b;
-out.nfexpc = c.c; % (is linearly anticorrelated with c.a)
-out.nfexpr2 = gof.rsquare;
-out.nfexpadjr2 = gof.adjrsquare;
-out.nfexprmse = gof.rmse;
+fExp = BF_ExpFit(thr', msDt(:, 3), true);
+out.nfexpb = fExp.b;
+out.nfexpr2 = fExp.r2;
+out.nfexprmse = fExp.rmse;
 
 % ------------------------------------------------------------------------------
 %% Fit an linear trend to N: the valid proportion left in calculation
 % ------------------------------------------------------------------------------
-s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [-40, 100]);
-f = BF_fittype('a*x+b', 'options', s);
-[c, gof] = BF_fit(thr', msDt(:, 3), f);
-
-out.nfla = c.a;
-out.nflb = c.b;
-out.nflr2 = gof.rsquare;
-out.nfladjr2 = gof.adjrsquare;
-out.nflrmse = gof.rmse;
+fLin = SUB_LinearFit(thr', msDt(:, 3));
+out.nfla = fLin.a;
+out.nflb = fLin.b;
+out.nflr2 = fLin.r2;
+out.nflrmse = fLin.rmse;
 
 % ------------------------------------------------------------------------------
 %% Stationarity metrics
@@ -297,47 +355,41 @@ out.xcmerrn1 = xc(1); % this is the cross-correlation at lag -1
 % ------------------------------------------------------------------------------
 %% Fit exponential to std in range
 % ------------------------------------------------------------------------------
-s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [5, 1, 15]);
-f = BF_fittype('a*exp(b*x)+c', 'options', s);
-emsg = [];
-try
-	[c, gof] = BF_fit(thr', msDt(:, 6), f);
-catch emsg
-	warning('Error fitting exponential growth to std: %s\n', emsg.message);
-end
-
-if isempty(emsg)
-	out.stdrfexpa = c.a;
-	out.stdrfexpb = c.b;
-	out.stdrfexpc = c.c;
-	out.stdrfexpr2 = gof.rsquare;
-	out.stdrfexpadjr2 = gof.adjrsquare;
-	out.stdrfexprmse = gof.rmse;
-else
-	out.stdrfexpa = NaN;
-	out.stdrfexpb = NaN;
-	out.stdrfexpc = NaN;
-	out.stdrfexpr2 = NaN;
-	out.stdrfexpadjr2 = NaN;
-	out.stdrfexprmse = NaN;
-end
+fExp = BF_ExpFit(thr', msDt(:, 6), true);
+out.stdrfexpb = fExp.b;
+out.stdrfexpr2 = fExp.r2;
+out.stdrfexprmse = fExp.rmse;
 
 % ------------------------------------------------------------------------------
 %% Fit linear to errors in range
 % ------------------------------------------------------------------------------
-s = BF_fitoptions('Method', 'NonlinearLeastSquares', 'StartPoint', [40, 4]);
-f = BF_fittype('a*x +b', 'options', s);
-[c, gof] = BF_fit(thr', msDt(:, 6), f);
-
-out.stdrfla = c.a;
-out.stdrflb = c.b;
-out.stdrflr2 = gof.rsquare;
-out.stdrfladjr2 = gof.adjrsquare;
-out.stdrflrmse = gof.rmse;
+fLin = SUB_LinearFit(thr', msDt(:, 6));
+out.stdrfla = fLin.a;
+out.stdrflb = fLin.b;
+out.stdrflr2 = fLin.r2;
+out.stdrflrmse = fLin.rmse;
 
 if doPlot
-	figure('color', 'w')
+	figure('color', 'w') %#ok<UNRCH>
 	errorbar(thr, msDt(:, 1), msDt(:, 2), 'k');
 end
 
+end
+
+% ------------------------------------------------------------------------------
+function f = SUB_LinearFit(x, y)
+	% Ordinary least-squares line y = a*x + b, with R^2 and root-mean-square error (n - 2 degrees of freedom)
+	n = length(y);
+	if n < 3 || ~(max(y) - min(y) > 1e-12 * max(abs(y)))
+		% Too few points, or a constant curve (to within rounding): no meaningful fit
+		f = struct('a', NaN, 'b', NaN, 'r2', NaN, 'rmse', NaN);
+		return
+	end
+	p = polyfit(x, y, 1);
+	SSE = sum((y - polyval(p, x)).^2);
+	SST = sum((y - mean(y)).^2);
+	f.a = p(1);
+	f.b = p(2);
+	f.r2 = 1 - SSE/SST;
+	f.rmse = sqrt(SSE/(n - 2));
 end

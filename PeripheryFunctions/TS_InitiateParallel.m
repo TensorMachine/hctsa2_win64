@@ -3,13 +3,14 @@ function success = TS_InitiateParallel(doInitiate)
 %
 %---INPUT:
 % doInitiate: = true for the first time you want to initialize all workers
+%             (HCTSA2 2.4.0: there is nothing to set up on them; only the messages)
 %
 %---OUTPUT:
 % success = true if a matlabpool was successfully initiated (or if one already
 %               exists)
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -35,9 +36,10 @@ if nargin < 1
     doInitiate = false;
 end
 
-% Check a license is available:
+% Check a license is available (not info mode, which only warns: errors are
+% caught here so we fall back to serial with a single message)
 try
-    BF_CheckToolbox('distrib_computing_toolbox',true);
+    BF_CheckToolbox('distrib_computing_toolbox',false);
 catch
     fprintf(1,['License for Parallel/Distributed Computing Toolbox could not be initiated' ...
                 ' -- cannot perform computations across multiple cores.\n']);
@@ -64,20 +66,20 @@ try
     else
         % Get number of workers:
         numWorkers = poolObj.NumWorkers;
-        fprintf(1,['Matlab parallel processing pool already open with ' ...
-                                    '%u workers.\n'],numWorkers);
+        % (HCTSA2: only on the initiating call; TS_CalculateFeatureVector checks
+        % once per time series, which printed this line thousands of times)
+        if doInitiate
+            fprintf(1,['Matlab parallel processing pool already open with ' ...
+                                        '%u workers.\n'],numWorkers);
+        end
     end
 catch emsg
-    warning(['\nError starting parallel processing pool -- running serially instead:\n%s',...
-                    emsg.message])
+    warning('Error starting parallel processing pool -- running serially instead:\n%s',...
+                    emsg.message)
     success = false;
 end
 
-%-------------------------------------------------------------------------------
-% Initiate hctsa stuff on all workers using pctRunOnAll
-%-------------------------------------------------------------------------------
-if doInitiate
-    pctRunOnAll AddJavaClassPathInfoDynamics()
-end
+% (HCTSA2 2.4.0: no JIDT jar to put on the workers' Java class path; the KSG_mi
+% MEX that replaces it is on the MATLAB path, which the workers share.)
 
 end

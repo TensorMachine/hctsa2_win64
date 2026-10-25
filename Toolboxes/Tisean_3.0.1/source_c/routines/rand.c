@@ -44,7 +44,12 @@
 
 extern void check_alloc(void*);
 
-static unsigned long *rnd_array,rnd69,*rnd1279,factor;
+/* hctsa2: the generator state and outputs are unsigned long long, not
+   unsigned long. The original chose its multiplier with sizeof(long), so a
+   Windows build (LLP64: 32-bit long) ran a different generator from
+   Linux/macOS. unsigned long long is 64-bit everywhere; on LP64 platforms
+   nothing changes, bit for bit. Callers normalise by ULLONG_MAX. */
+static unsigned long long *rnd_array,rnd69,*rnd1279,factor;
 static unsigned long *nexti,rndtime,rndtime1,rndtime2,rndtime3,*next1279;
 static unsigned long t1279,t1279_1,t1279_2,t1279_3;
 static double lo_limit;
@@ -53,24 +58,24 @@ static char rnd_init_was_set=0;
 void rnd_init(unsigned long iseed)
 {
   int i;
-  unsigned long z,index;
+  unsigned long long z,index;
 
   if (rnd_init_was_set == 1)
     return ;
 
   rnd_init_was_set=1;
 
-  if (sizeof(long) == 8) {
+  if (sizeof(factor) == 8) {
     factor=13*13*13*13;
     factor=factor*factor*factor*13;
   }
   else
     factor=69069;
-  lo_limit=(double)ULONG_MAX;
+  lo_limit=(double)ULLONG_MAX;
 
-  check_alloc(rnd_array=(unsigned long *)malloc(9689*sizeof(unsigned long)));
+  check_alloc(rnd_array=(unsigned long long *)malloc(9689*sizeof(unsigned long long)));
   check_alloc(nexti=(unsigned long *)malloc(9689*sizeof(long)));
-  check_alloc(rnd1279=(unsigned long *)malloc(1279*sizeof(unsigned long)));
+  check_alloc(rnd1279=(unsigned long long *)malloc(1279*sizeof(unsigned long long)));
   check_alloc(next1279=(unsigned long *)malloc(1279*sizeof(long)));
 
   rnd_array[0]=rnd1279[0]=iseed;
@@ -108,7 +113,7 @@ void rnd_init(unsigned long iseed)
   t1279_3=1278-598;
 }
 
-unsigned long rnd_long(void)
+unsigned long long rnd_long(void)
 {
   rndtime=nexti[rndtime];
   rndtime1=nexti[rndtime1];
@@ -120,7 +125,7 @@ unsigned long rnd_long(void)
   return rnd_array[rndtime];
 }
 
-unsigned long rnd_1279(void)
+unsigned long long rnd_1279(void)
 {
   t1279=next1279[t1279];
   t1279_1=next1279[t1279_1];
@@ -132,7 +137,7 @@ unsigned long rnd_1279(void)
   return rnd1279[t1279];
 }
 
-unsigned long rnd69069(void)
+unsigned long long rnd69069(void)
 {
   return (rnd69=rnd69*factor+1);
 }

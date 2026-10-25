@@ -1,44 +1,153 @@
-function out = SP_Summaries(y,psdMeth,windowType,nf,doLogAbs)
-% SP_Summaries  Statistics of the power spectrum of a time series
+function out = SP_Summaries(y, psdMeth, windowType, nf, doLogAbs)
+% SP_Summaries   Statistics of the power spectrum of a time series.
 %
-% The estimation can be done using a periodogram, using the periodogram code in
-% Matlab's Signal Processing Toolbox, or a fast fourier transform, implemented
-% using Matlab's fft code.
+% Estimates the power spectrum (as a periodogram, using Matlab's periodogram, as
+% a plain fast Fourier transform, or by Welch's method) and returns many summary
+% statistics: the location and width of its main peak, the number and prominence
+% of peaks, the distribution of power values, the autocorrelation of power across
+% frequency, the frequencies below which given fractions of the power lie,
+% power-weighted moments of frequency, fits to the cumulative power, a spectral
+% entropy and flatness, robust power-law fits to the log-log spectrum, the power in
+% 2 and 5 equal frequency bands, and the number of crossings of the log spectrum at
+% various levels. Many statistics have a log-domain version computed on log(S).
+% The spectrum is floored at 1e-12 of its maximum before any statistic is computed,
+% so that bins at the rounding level of the estimator do not determine the
+% log-domain statistics.
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-%
 % psdMeth, the method of obtaining the spectrum from the signal:
-%               (i) 'periodogram': periodogram
-%               (ii) 'fft': fast fourier transform
-%               (iii) 'welch': Welch's method
-%
-% windowType, the window to use:
+%               (i) 'periodogram': periodogram (window across the whole series)
+%               (ii) 'fft': fast fourier transform, single-sided power spectral
+%                    density; no window is applied and the DC bin is dropped
+%               (iii) 'welch': Welch's method, with windows of
+%                    max(min(256, round(N/4)), 16) samples and 50% overlap
+%               (default: 'fft')
+% windowType, the window to use (for 'periodogram' and 'welch'; ignored by 'fft'):
 %               (i) 'boxcar'
 %               (ii) 'rect'
 %               (iii) 'bartlett'
 %               (iv) 'hann'
-%               (v) 'hamming'
+%               (v) 'hamming' (default)
 %               (vi) 'none'
+% nf, the number of frequency components to include; used only by 'periodogram'.
+%           If empty (default), the periodogram's own frequency grid is used.
+% doLogAbs, if true, analyzes the spectrum of the log of the absolute values,
+%           log(abs(y)), in place of y (default: false)
 %
-% nf, the number of frequency components to include. If
-%           empty (default), it's approximately length(y).
+% ---OUTPUTS:
+% The spectrum S is a power spectral density in angular frequency w (radians per
+% sample, 0 to pi), for all three estimators normalized so that its area (the sum
+% of S times the bin spacing) equals the variance of the series, i.e. ~1 for a
+% z-scored series. Statistics that accumulate over bins (cumulative-area fits,
+% entropy) are therefore integrals over w, independent of the number of bins and
+% so of the series length. Output fields:
 %
-% doLogAbs, if 1, takes log amplitude of the signal before
-%           transforming to the frequency domain.
+% Peaks:
+% maxS, maxw: the maximum of S and the angular frequency at which it occurs
+% maxWidth: half-power bandwidth of the dominant peak
+% numPromPeaks_3, numPromPeaks_5, numPromPeaks_8: number of peaks of log(S) with
+%       prominence above 3, 5, 8 (natural-log units)
+% meanProm_5, meanPeakWidth_prom5: mean prominence and mean width of the peaks with
+%       prominence above 5
+% width_weighted_prom, w_weighted_peak_prom: mean peak width and mean peak location,
+%       weighted by prominence
+% peakPower_2, peakPower_5, peakPower_prom5: power (height x width) in the 2 and 5
+%       tallest peaks and in the peaks with prominence above 5
+% numPeaks_50power, peakpower_1: number of tallest peaks needed to hold half the
+%       peak power, and the fraction of peak power in the tallest peak
+% (These are calibrated for, and registered only with, psdMeth = 'welch'.)
 %
-% doPower, analyzes the power spectrum rather than amplitudes of a Fourier
-%          transform
+% Distribution of power values (and of log power values, with prefix log):
+% iqr, logiqr, q25, median, q75, logq25, logmedian, logq75, std, stdlog (= log of
+% std), logstd (= std of log(S)), mom3 and logmom3 (skewness)
 %
-%---OUTPUTS:
-% Statistics summarizing various properties of the spectrum,
-% including its maximum, minimum, spread, correlation, centroid, area in certain
-% (normalized) frequency bands, moments of the spectrum, Shannon spectral
-% entropy, a spectral flatness measure, power-law fits, and the number of
-% crossings of the spectrum at various amplitude thresholds.
+% Autocorrelation of the spectrum across frequency:
+% ac1, ac2, tau (first zero-crossing of the autocorrelation, in units of w), and
+% logac1, logac2, logtau for log(S)
+%
+% Cumulative power:
+% wq_5, wq_10, wq_25, wq_50, wq_75, wq_90, wq_95, wq_99: frequency quantiles of the
+% power spectrum, wq_p being the (angular) frequency below which p% of the power lies.
+% wq_50 is the median frequency.
+%
+% Power-weighted moments of frequency:
+% specCentroid, specSpread, specSkew, specKurt: mean, standard deviation, skewness
+% and kurtosis of frequency weighted by power
+%
+% Fits to the cumulative area under S (a running integral of S over w, which rises
+% to ~1 for a z-scored series, independent of the number of bins):
+% fpoly2csS_p1, fpoly2csS_p2, fpoly2csS_p3, fpoly2_sse, fpoly2_r2, fpoly2_rmse:
+%       coefficients and goodness of a quadratic fit to the cumulative area under S
+%       as a function of w (fpoly2_sse is the integrated squared error)
+% fpolysat_a, fpolysat_b, fpolysat_r2, fpolysat_rmse: parameters and goodness of
+%       the least-squares fit of a*w^2/(b+w^2), the global optimum over
+%       1e-6 <= b/max(w)^2 <= 100 (a curve that keeps rising like w^2 gives the
+%       largest b)
+%
+% Entropy, flatness and areas:
+% spect_shann_ent: differential Shannon entropy of the power distribution over
+%       frequency, -integral(Sn log Sn dw), for the unit-area spectrum Sn
+% spect_shann_ent_norm: exp(spect_shann_ent) as a fraction of the frequency range
+%       (1 for a flat spectrum, towards 0 for a narrow-band one)
+% sfm: spectral flatness measure, 10*log10(geometric mean / arithmetic mean)
+% areatopeak, ylogareatopeak: area under S, and under log(S), up to the peak
+%
+% Robust linear fits (a1 = intercept, a2 = gradient; sigrat = OLS/robust sigma ratio;
+% sigma = residual sigma estimate; sea1 = standard error of the intercept):
+% linfitloglog_all_a1, linfitloglog_all_a2, linfitloglog_all_sigrat,
+% linfitloglog_all_sigma, linfitloglog_all_sea1: log(S) against log(w), all
+%       frequencies
+% linfitloglog_lf_a2, linfitloglog_mf_a2: gradient over the lower half and the
+%       middle half of the frequencies
+% linfitloglog_hf_a1, linfitloglog_hf_a2, linfitloglog_hf_sigrat,
+% linfitloglog_hf_sigma, linfitloglog_hf_sea1: upper half of the frequencies
+% linfitsemilog_all_a1, linfitsemilog_all_sigrat, linfitsemilog_all_sigma,
+% linfitsemilog_all_sea1: log(S) against w, all frequencies
+%
+% Power in frequency bands (2 and 5 equal bands, from the lowest frequencies):
+% area_2_1, area_2_2, logarea_2_1, logarea_2_2: area under S and log(S) in each of
+%       2 bands
+% area_5_1, area_5_2, area_5_3, area_5_4, area_5_5, logarea_5_1, logarea_5_2,
+% logarea_5_3, logarea_5_4, logarea_5_5: the same for 5 bands
+% statav2_s, statav5_s: std across bands of the within-band std of S, relative to
+%       std(S), for 2 and 5 bands
+% logstatav2_m, logstatav2_s, logstatav5_m, logstatav5_s: std across bands of the
+%       band means (_m) and of the within-band stds (_s) of log(S), relative to
+%       std(log(S)), for 2 and 5 bands
+%
+% Crossings of the log spectrum:
+% ncross_log_f05, ncross_log_f10, ncross_log_f20, ncross_log_f50: crossings of a
+%       level 5%, 10%, 20%, 50% of the way from min(log S) to max(log S)
+%
+% ---NOTES:
+% The 2- and 5-band areas use buffer on the bins, so when the number of bins is not
+% divisible by the number of bands the last few bins are dropped.
+%
+% Note there are two distinct senses of 'moment' here, which the field
+% names can obscure: mom3 etc. are moments of the distribution of power
+% *values* (order-agnostic in frequency -- shuffling the spectrum
+% bin-for-bin leaves them unchanged), whereas specSkew/specKurt are
+% moments of *frequency itself*, weighted by power (so they describe
+% where in frequency the power sits). See the note on the
+% power-weighted-moment block below.
+%
+% A linear-scale power spectrum is typically extremely heavy-tailed (cf.
+% the peak-detection notes below), so several statistics that compare
+% values or thresholds across the whole spectrum -- spectral
+% autocorrelation (ac1/ac2/tau), quantiles (q25/median/q75), skewness
+% (mom3), and the per-band stationarity measures (statav2_s/statav5_s)
+% -- end up dominated by wherever the single largest value sits, rather
+% than reflecting the spectrum's broader shape. Each of these has a
+% log-domain companion (logac1/logac2/logtau, logq25/logmedian/logq75,
+% logmom3, logstatav2_s/logstatav5_s) that applies the same statistic to
+% logS instead (tests showed the two versions are not redundant).
+%
+% The crossing counts (ncross_log_*) and the per-band mean-stationarity
+% measures (logstatav2_m/logstatav5_m) are computed on logS only.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -73,108 +182,167 @@ function out = SP_Summaries(y,psdMeth,windowType,nf,doLogAbs)
 % ------------------------------------------------------------------------------
 % Check inputs, set defaults:
 % ------------------------------------------------------------------------------
-if size(y,2) > size(y,1)
-    y = y'; % Time series must be a column vector
+if size(y, 2) > size(y, 1)
+	y = y'; % Time series must be a column vector
 end
 if nargin < 2 || isempty(psdMeth)
-    psdMeth = 'fft'; % fft by default
+	psdMeth = 'fft'; % fft by default
 end
 if nargin < 3 || isempty(windowType)
-    windowType = 'hamming'; % Hamming window by default
+	windowType = 'hamming'; % Hamming window by default
 end
 if nargin < 4
-    nf = [];
+	nf = [];
 end
 if nargin < 5 || isempty(doLogAbs)
-    doLogAbs = false;
+	doLogAbs = false;
 end
 
 if doLogAbs % a boolean
-    % Analyze the spectrum of logarithmic absolute deviations
-    y = log(abs(y));
+	% Analyze the spectrum of logarithmic absolute deviations
+	y = log(abs(y));
+end
+
+if all(y == y(1)) % constant series has an all-zero spectrum -> log(0)
+	warning('Constant time series has no spectral structure');
+	out = NaN; return
 end
 
 doPlot = false; % plot outputs
 Ny = length(y); % time-series length
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Set window (for periodogram and welch):
-%-------------------------------------------------------------------------------
-if ismember(psdMeth,{'periodogram','welch'})
-    switch windowType % method to use for the window
-        case 'none'
-            window = [];
-        case 'hamming'
-            window = hamming(Ny);
-        case 'hann'
-            window = hann(Ny);
-        case 'bartlett'
-            window = bartlett(Ny);
-        case 'boxcar'
-            window = boxcar(Ny);
-        case 'rect'
-            window = rectwin(Ny);
-        otherwise
-            % There are other options, but these aren't implemented here
-            error('Unknown window, ''%s''',windowType);
-    end
+% -------------------------------------------------------------------------------
+if ismember(psdMeth, {'periodogram', 'welch'})
+	% Welch's method needs a window *shorter* than the full series so pwelch
+	% actually splits it into multiple overlapping segments to average over --
+	% that segment-averaging (trading frequency resolution for reduced
+	% estimate variance) is the entire point of the method. A window spanning
+	% the whole series (as used below for periodogram, a genuine
+	% single-segment, whole-series estimate) would silently collapse Welch's
+	% method to a single "segment" with no averaging at all, making it
+	% numerically near-indistinguishable from an unwindowed periodogram. noverlap
+	% is left at pwelch's default (50% of window length) below.
+	if strcmp(psdMeth, 'welch')
+		% winLength is capped at a fixed absolute length rather than scaling
+		% with Ny. A window of Ny/4 would keep the segment COUNT fixed (~4,
+		% ~7 with 50% overlap) but let the segment LENGTH -- and with it the
+		% intrinsic frequency resolution and smoothing bandwidth -- grow
+		% without bound as the series lengthens. That defeats the
+		% convergence guarantee of Welch's method (per-bin variance should
+		% shrink as more segments are averaged over a *fixed* resolution)
+		% and makes fields such as maxWidth drift with N.
+		% 256 matches both scipy.signal.welch's and pwelch's own default
+		% segment length (see the nfft note below), so above Ny ~ 1024 this
+		% behaves like a textbook Welch estimate: resolution fixed, more
+		% segments averaged as N grows, variance shrinks with N. Below that
+		% the window is round(Ny/4) (with a floor of 16 samples).
+		winLength = max(min(256, round(Ny / 4)), 16);
+	else
+		winLength = Ny;
+	end
+	switch windowType % method to use for the window
+		case 'none'
+			window = [];
+		case 'hamming'
+			window = hamming(winLength);
+		case 'hann'
+			window = hann(winLength);
+		case 'bartlett'
+			window = bartlett(winLength);
+		case 'boxcar'
+			window = boxcar(winLength);
+		case 'rect'
+			window = rectwin(winLength);
+		otherwise
+			% There are other options, but these aren't implemented here
+			error('Unknown window, ''%s''', windowType);
+	end
 end
 
 % ------------------------------------------------------------------------------
 % Compute the Fourier Transform
 % ------------------------------------------------------------------------------
 switch psdMeth
-    case 'periodogram'
-        if isempty(nf)
-            % (2) Estimate the spectrum
-            [S, w] = periodogram(y,window);
-        else
-            w = linspace(0,pi,nf);
-            [S, w] = periodogram(y,window,w);
-        end
+	case 'periodogram'
+		if isempty(nf)
+			% (2) Estimate the spectrum
+			[S, w] = periodogram(y, window);
+		else
+			w = linspace(0, pi, nf);
+			[S, w] = periodogram(y, window, w);
+		end
 
-    case 'fft'
-        % Fast Fourier Transform
-        Fs = 1; % sampling frequency
-        NFFT = 2^nextpow2(Ny);
-        f = Fs/2*linspace(0,1,NFFT/2+1); % frequency
-        w = 2*pi*f'; % angular frequency (as column vector)
-        S = fft(y,NFFT); % Fourier Transform
-        S = 2*abs(S(1:NFFT/2+1)).^2/Ny; % single-sided power spectral density
-        S = S/(2*pi); % convert to angular frequency space
+	case 'fft'
+		% Fast Fourier Transform
+		Fs = 1; % sampling frequency
+		NFFT = 2^nextpow2(Ny);
+		f = Fs / 2 * linspace(0, 1, NFFT / 2 + 1); % frequency
+		w = 2 * pi * f'; % angular frequency (as column vector)
+		S = fft(y, NFFT); % Fourier Transform
+		S = 2 * abs(S(1:NFFT / 2 + 1)).^2 / Ny; % single-sided power spectral density
+		S = S / (2 * pi); % convert to angular frequency space
+		% Drop the DC bin (w = 0). hctsa feeds this a z-scored series, whose sum
+		% is zero up to floating-point rounding, so S(1) is not a spectral
+		% estimate but the square of a ~1e-14 rounding residual (~1e-31), and
+		% log(S(1)) ~ -70 +/- a few, varying from series to series at random.
+		% Left in, that single bin would dominate every log-domain statistic of this
+		% estimate: std(logS), its skewness and autocorrelation, the
+		% semilog fit, and min(logS) -- making the range-relative crossing
+		% counts identically 1 for every series. (The windowed/Welch estimates
+		% have a genuine non-zero DC bin from spectral leakage, so are unaffected.)
+		w = w(2:end);
+		S = S(2:end);
 
-    case 'welch'
-        % Welch power spectral density estimate:
-        Fs = 1; % sampling frequency
-        N = 2^nextpow2(Ny);
-        [S, f] = pwelch(y,window,[],N,Fs);
-        w = 2*pi*f'; % angular frequency
-        S = S/(2*pi); % adjust so that area remains normalized in angular frequency space
+	case 'welch'
+		% Welch power spectral density estimate:
+		Fs = 1; % sampling frequency
+		% nfft is not tied to Ny (as in the 'fft' branch above): a frequency
+		% GRID that kept getting finer with N while the actual smoothing
+		% bandwidth (set by winLength) stayed fixed would introduce its own
+		% N-dependence in bin-lag statistics (ac1/ac2/logac1/logac2, which
+		% correlate adjacent *bins*, not a physical frequency lag) and in
+		% bin-count sums (spect_shann_ent, the poly/saturating cumsum fits)
+		% that are supposed to describe the spectrum's shape, not its number
+		% of samples. Passing [] lets pwelch fall back to its own documented
+		% default (max(256, 2^nextpow2(winLength))), i.e. resolution set by
+		% the window, not the series -- the textbook convention.
+		[S, f] = pwelch(y, window, [], [], Fs);
+		w = 2 * pi * f'; % angular frequency
+		S = S / (2 * pi); % adjust so that area remains normalized in angular frequency space
 
-    otherwise
-        error('Unknown spectral estimation method ''%s''',psdMeth);
+	otherwise
+		error('Unknown spectral estimation method ''%s''', psdMeth);
 end
 
 if ~any(isfinite(S)) % no finite values in the power spectrum
-    % This time series must be really weird -- return NaN (unsuitable operation)...
-    warning('NaN in power spectrum? A weird time series.');
-    out = NaN; return
+	% This time series must be really weird -- return NaN (unsuitable operation)...
+	warning('NaN in power spectrum? A weird time series.');
+	out = NaN; return
 end
 
 % Ensure both w and S are row vectors:
-if size(S,1) > size(S,2)
-    S = S';
+if size(S, 1) > size(S, 2)
+	S = S';
 end
-if size(w,1) > size(w,2)
-    w = w';
+if size(w, 1) > size(w, 2)
+	w = w';
 end
 
 if doPlot
-    figure('color','w')
-    plot(w,S,'.-k'); % plot the spectrum
-    % Area under S should sum to 1 if a power spectral density estimate:
-    title(sprintf('Area under psd curve = %.1f (= %.1f)',sum(S*(w(2)-w(1))),var(y)));
+	figure('color', 'w') %#ok<UNRCH>
+	plot(w, S, '.-k'); % plot the spectrum
+	% Area under S should sum to 1 if a power spectral density estimate:
+	title(sprintf('Area under psd curve = %.1f (= %.1f)', sum(S * (w(2) - w(1))), var(y)));
 end
+
+% Floor the spectrum at 1e-12 of its maximum (120 dB below the peak) before taking
+% logs: bins at the rounding level of the estimator (e.g., for a periodic signal that
+% fits the transform length, or a ramp) are otherwise arbitrary values of order
+% 1e-30 or exactly zero, and then set every log-domain statistic. The spectral
+% dynamic range of real-world series is well above this floor.
+S = max(S, 1e-12 * max(S));
 
 N = length(S); % = length(w)
 logS = log(S);
@@ -184,99 +352,209 @@ dw = w(2) - w(1); % spacing increment in w
 % Simple measures of the power spectrum
 % ------------------------------------------------------------------------------
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Peaks:
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Maximum, and max peak width:
 [out.maxS, i_maxS] = max(S);
 out.maxw = w(i_maxS);
-out.maxWidth = w(i_maxS + find(S(i_maxS+1:end) < out.maxS,1,'first')) - ...
-                    w(find(S(1:i_maxS-1) < out.maxS,1,'last'));
-if isempty(out.maxWidth)
-    out.maxWidth = 0;
+
+% Half-power (-3 dB) bandwidth of the dominant peak: the frequency interval
+% around the maximum over which the spectrum stays above half its peak value.
+halfPower = out.maxS / 2;
+iUpper = i_maxS + find(S(i_maxS + 1:end) < halfPower, 1, 'first');
+if isempty(iUpper) % never drops below half power above the peak
+	iUpper = length(S);
 end
+iLower = find(S(1:i_maxS - 1) < halfPower, 1, 'last');
+if isempty(iLower) % never drops below half power below the peak
+	iLower = 1;
+end
+out.maxWidth = w(iUpper) - w(iLower);
 
-% Characterize all peaks using findpeaks function:
-% Minimum angular separation of 0.02...?
+% Characterize all peaks using findpeaks function, run on logS rather than S:
+% a linear-scale power spectrum is typically extremely heavy-tailed (a single
+% dominant peak can be >100x the mean level -- cf. the notes in the header),
+% so prominence-based peak detection on raw S systematically buries
+% smaller-but-genuine peaks (e.g. harmonics) under the dominant one, and
+% findpeaks' fixed prominence thresholds below are only meaningfully
+% calibrated on the log scale. This also matches Matlab's own convention:
+% periodogram/pwelch plot in dB (log power) by default, not linear power.
+%
+% These prominence thresholds are set, relative to the spurious peaks of
+% white noise, specifically for a Welch-smoothed logS (i.e. psdMeth =
+% 'welch'): a raw single-segment periodogram/fft estimate is a
+% statistically inconsistent spectral estimator (per-bin variance doesn't
+% shrink with more data), so its logS has a much noisier peak structure,
+% with spurious peaks as prominent as genuine harmonic peaks. For
+% 'fft'/'periodogram', these fields are therefore computed for code-path
+% uniformity only and are deliberately NOT registered as hctsa features
+% for those two psdMeth variants -- only for 'welch'.
 minDist_w = 0.02;
-ptsPerw = length(S)/pi;
-minPkDist = ceil(minDist_w*ptsPerw);
-[pkHeight,pkLoc,pkWidth,pkProm] = findpeaks(S,'SortStr','descend','minPeakDistance',minPkDist);
-pkWidth = pkWidth/ptsPerw;
-pkLoc = pkLoc/ptsPerw;
+ptsPerw = length(S) / pi;
+minPkDist = ceil(minDist_w * ptsPerw);
+[pkHeight, pkLoc, pkWidth, pkProm] = findpeaks(logS, 'SortStr', 'descend', 'minPeakDistance', minPkDist);
+% Linear-domain height of each detected peak, for the 'power in peaks'
+% fields below: peak *detection* and prominence are done on logS (see
+% above), but height x width only means 'power' on the linear spectrum
+% (log heights are mostly negative, so the log-domain product is not a
+% power and would make numPeaks_50power identically 1 on every series):
+pkHeightLin = S(pkLoc);
+pkWidth = pkWidth / ptsPerw;
+pkLoc = pkLoc / ptsPerw;
 
-% Characterize mean peak prominence
-% (use prominence threshold of 2...?)
-out.numPeaks = length(pkHeight); % total number of peaks
-out.numPromPeaks_1 = sum(pkProm > 1); % number of peaks with prominence of at least 1
-out.numPromPeaks_2 = sum(pkProm > 2); % number of peaks with prominence of at least 2
-out.numPromPeaks_5 = sum(pkProm > 5); % number of peaks with prominence of at least 5
-out.numPeaks_overmean = sum(pkProm>mean(pkProm)); % number of peaks with prominence greater than the mean (low for skewed distn)
-out.maxProm = max(pkProm); % maximum prominence of any peak
-out.meanProm_2 = mean(pkProm(pkProm > 2)); % mean peak prominence of those with prominence of at least 2
+% Characterize mean peak prominence (thresholds in log-power units; see note above)
+%
+% The total number of peaks, numPeaks, is not returned as an output: it applies no
+% prominence threshold, so it counts noise-floor ripple and therefore measures
+% spectral resolution rather than the data. The prominence-thresholded counts below
+% are stable with series length.
+numPeaks = length(pkHeight); % local only: needed for the peakPower_* fields below, not itself an output
+out.numPromPeaks_3 = sum(pkProm > 3); % number of peaks with log-prominence of at least 3
+out.numPromPeaks_5 = sum(pkProm > 5); % number of peaks with log-prominence of at least 5
+out.numPromPeaks_8 = sum(pkProm > 8); % number of peaks with log-prominence of at least 8
+out.meanProm_5 = mean(pkProm(pkProm > 5)); % mean peak prominence of those with log-prominence of at least 5
 
-out.meanPeakWidth_prom2 = mean(pkWidth(pkProm > 2)); % mean peak width of peaks with prominence of at least 2
-out.width_weighted_prom = sum(pkWidth.*pkProm)/sum(pkProm);
+out.meanPeakWidth_prom5 = mean(pkWidth(pkProm > 5)); % mean peak width of peaks with log-prominence of at least 5
+out.width_weighted_prom = sum(pkWidth .* pkProm) / sum(pkProm);
 
 % Power in top N peaks:
-nn = @(x) 1:min(x,out.numPeaks);
-out.peakPower_2 = sum(pkHeight(nn(2)).*pkWidth(nn(2)));
-out.peakPower_5 = sum(pkHeight(nn(5)).*pkWidth(nn(5)));
-out.peakPower_prom2 = sum(pkHeight(pkProm > 2).*pkWidth(pkProm > 2)); % power in peaks with prominence of at least 2
-out.w_weighted_peak_prom = sum(pkLoc.*pkProm)/sum(pkProm); % where are prominent peaks located on average (weighted by prominence)
-out.w_weighted_peak_height = sum(pkLoc.*pkHeight)/sum(pkHeight); % where are prominent peaks located on average (weighted by height)
+nn = @(x) 1:min(x, numPeaks);
+out.peakPower_2 = sum(pkHeightLin(nn(2)) .* pkWidth(nn(2)));
+out.peakPower_5 = sum(pkHeightLin(nn(5)) .* pkWidth(nn(5)));
+out.peakPower_prom5 = sum(pkHeightLin(pkProm > 5) .* pkWidth(pkProm > 5)); % power in peaks with log-prominence of at least 5
+out.w_weighted_peak_prom = sum(pkLoc .* pkProm) / sum(pkProm); % where are prominent peaks located on average (weighted by prominence)
 
 % Number of peaks required to get to 50% of power in peaks
-peakPower = pkHeight.*pkWidth;
-out.numPeaks_50power = find(cumsum(peakPower) > 0.5*sum(peakPower),1,'first');
-out.peakpower_1 = peakPower(1)/sum(peakPower);
+peakPower = pkHeightLin .* pkWidth;
+if isempty(peakPower) % no peaks at all (e.g. a monotonic power spectrum)
+    out.numPeaks_50power = NaN;
+    out.peakpower_1 = NaN;
+else
+    out.numPeaks_50power = find(cumsum(peakPower) > 0.5 * sum(peakPower), 1, 'first');
+    out.peakpower_1 = peakPower(1) / sum(peakPower);
+end
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Distribution
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Quantiles:
 out.iqr = iqr(S);
 out.logiqr = iqr(logS);
-out.q25 = quantile(S,0.25);
+out.q25 = quantile(S, 0.25);
 out.median = median(S);
-out.q75 = quantile(S,0.75);
+out.q75 = quantile(S, 0.75);
+% Log-domain quantiles: counterparts of q25/median/q75 above (as logiqr is of
+% iqr).
+out.logq25 = quantile(logS, 0.25);
+out.logmedian = median(logS);
+out.logq75 = quantile(logS, 0.75);
 
 % Moments:
 out.std = std(S);
 out.stdlog = log(out.std);
 out.logstd = std(logS);
-out.mean = mean(S);
-out.logmean = mean(logS);
-for i = 3:5
-    out.(sprintf('mom%u',i)) = DN_Moments(S,i);
-end
+out.mom3 = DN_Moments(S, 3, true);
+out.logmom3 = DN_Moments(logS, 3, true);
 
 % Autocorrelation of amplitude spectrum:
-autoCorrs_S = CO_AutoCorr(S,1:4,'Fourier');
+autoCorrs_S = CO_AutoCorr(S, 1:4, 'Fourier');
 out.ac1 = autoCorrs_S(1);
 out.ac2 = autoCorrs_S(2);
-out.tau = CO_FirstCrossing(S,'ac',0,'continuous');
+% CO_FirstCrossing returns a lag measured in *bins*, not physical
+% frequency -- and the number of bins (NFFT) scales with the input
+% series length N, independent of any real spectral structure. Left
+% unconverted, tau is partly just re-deriving N. Multiply by dw (the bin
+% spacing in angular frequency) to convert to a genuine,
+% resolution-independent physical unit: doubling NFFT halves dw but
+% doubles the bin-count of any fixed physical correlation width, so the
+% product is invariant to N, leaving only the spectrum's actual
+% correlation structure.
+out.tau = CO_FirstCrossing(S, 'ac', 0, 'continuous') * dw;
+
+% Same, on logS: Pearson autocorrelation on the raw (heavy-tailed) linear
+% spectrum is effectively dominated by however far the single largest
+% value sits from the rest -- one point can carry most of the
+% correlation's covariance term. logS compresses that dominance so the
+% autocorrelation instead reflects genuine bin-to-bin shape structure.
+autoCorrs_logS = CO_AutoCorr(logS, 1:4, 'Fourier');
+out.logac1 = autoCorrs_logS(1);
+out.logac2 = autoCorrs_logS(2);
+out.logtau = CO_FirstCrossing(logS, 'ac', 0, 'continuous') * dw; % see tau's N-independence note above
 
 % ------------------------------------------------------------------------------
 % Shape of cumulative sum curve
 % ------------------------------------------------------------------------------
-csS = cumsum(S);
+% Cumulative area under the spectrum (a running integral over w, not a bare
+% running sum over bins): for a unit-variance series it rises from 0 to ~1
+% whatever the number of bins, so the fits to it below do not depend on how
+% finely the spectrum happens to be sampled (a bare cumsum(S) ends at ~1/dw,
+% i.e. at a value proportional to the transform length).
+csS = cumsum(S) * dw;
 
-f_frac_w_max = @(f) w(find(csS >= csS(end)*f,1,'first'));
+f_quantile_w = @(f) w(find(csS >= csS(end) * f, 1, 'first'));
 
 % At what frequency is csS a fraction p of its maximum?
-out.wmax_5 = f_frac_w_max(0.05);
-out.wmax_10 = f_frac_w_max(0.1);
-out.wmax_25 = f_frac_w_max(0.25);
-out.centroid = f_frac_w_max(0.5);
-out.wmax_75 = f_frac_w_max(0.75);
-out.wmax_90 = f_frac_w_max(0.9);
-out.wmax_95 = f_frac_w_max(0.95);
-out.wmax_99 = f_frac_w_max(0.99);
+out.wq_5 = f_quantile_w(0.05);
+out.wq_10 = f_quantile_w(0.1);
+out.wq_25 = f_quantile_w(0.25);
+out.wq_50 = f_quantile_w(0.5);
+out.wq_75 = f_quantile_w(0.75);
+out.wq_90 = f_quantile_w(0.9);
+out.wq_95 = f_quantile_w(0.95);
+out.wq_99 = f_quantile_w(0.99);
 
-% Width of saturation measures
-out.w10_90 = out.wmax_90 - out.wmax_10; % from 10% to 90%:
-out.w25_75 = out.wmax_75 - out.wmax_25;
+% ------------------------------------------------------------------------------
+% Power-weighted moments of the frequency distribution
+% ------------------------------------------------------------------------------
+% Note these are a genuinely different family from both of the
+% frequency-summarizing families above and the moments of S computed
+% earlier, in a way the naming can obscure:
+%   - `wq_50` above is the *median* frequency (where csS reaches 50%),
+%     NOT the power-weighted mean frequency computed here.
+%   - `mom3` (skewness of S) summarizes the distribution of power
+%     *values*, which is entirely order-agnostic in frequency: shuffle
+%     the spectrum bin-for-bin and mom3 is unchanged. It says nothing
+%     about *where* in frequency the power sits.
+% The moments below instead treat the (non-negative) spectrum as a
+% weighting over frequency and take moments of frequency itself -- the
+% standard spectral centroid/spread/skewness/kurtosis (cf. the MPEG-7
+% audio descriptors). Relative to the wq_* quantiles, which describe
+% the same frequency distribution non-parametrically, these weight the
+% tails much more heavily: a small amount of power far out in frequency
+% moves specSkew/specKurt substantially and wq_90 not at all.
+%
+% There is deliberately no log-domain companion here (unlike most of the
+% families above): S enters as a *weight*, not as a value being
+% summarized, and logS is negative wherever S < 1, so log-weighting
+% would produce meaningless (signed) 'weights'.
+%
+% The two low-order moments largely track the wq_* quantiles computed above
+% (a mean tracks a median, a standard deviation tracks an inter-quantile
+% width), but specCentroid and specSpread are the textbook spectral centroid
+% and bandwidth (the MPEG-7 audio descriptors), and so are easier to
+% interpret than the quantiles.
+Spos = max(S, 0); % guard against any tiny negative values from the estimator
+sumS = sum(Spos);
+if sumS > 0
+    pw = Spos / sumS; % normalized weighting over frequency
+    out.specCentroid = sum(pw .* w);
+    wDev = w - out.specCentroid;
+    specVar = sum(pw .* wDev.^2);
+    out.specSpread = sqrt(specVar);
+    if specVar > 0
+        out.specSkew = sum(pw .* wDev.^3) / specVar^(3/2);
+        out.specKurt = sum(pw .* wDev.^4) / specVar^2;
+    else % all power in a single frequency bin: shape undefined
+        out.specSkew = NaN;
+        out.specKurt = NaN;
+    end
+else % no power anywhere
+    out.specCentroid = NaN;
+    out.specSpread = NaN;
+    out.specSkew = NaN;
+    out.specKurt = NaN;
+end
 
 % ------------------------------------------------------------------------------
 % Fit some functions to this cumulative sum:
@@ -286,39 +564,51 @@ out.w25_75 = out.wmax_75 - out.wmax_25;
 out.fpoly2csS_p1 = c.p1;
 out.fpoly2csS_p2 = c.p2;
 out.fpoly2csS_p3 = c.p3;
-out.fpoly2_sse = gof.sse;
+out.fpoly2_sse = gof.sse * dw; % integrated (not summed) squared error
 out.fpoly2_r2 = gof.rsquare;
 out.fpoly2_rmse = gof.rmse;
 
-% (ii) Fit polysat a*x^2/(b+x^2) (has zero derivative at zero, though)
-s = BF_fitoptions('Method','NonlinearLeastSquares','StartPoint',[csS(end), 100]);
-f = BF_fittype('a*x^2/(b+x^2)','independent','x','options',s); % set 'a' from maximum
-[c, gof] = BF_fit(w',csS',f);
-out.fpolysat_a = c.a;
-out.fpolysat_b = c.b; % this is important
-out.fpolysat_r2 = gof.rsquare; % this is more important!
-out.fpolysat_rmse = gof.rmse;
+% (ii) Fit polysat a*x^2/(b+x^2) (has zero derivative at zero, though), by least squares:
+% the global optimum over 1e-6 <= b/max(w)^2 <= 100 (SUB_PolySatFit). a and b are only
+% separately determined when the curve bends over within the range of w; for a curve
+% that keeps rising like w^2 the best b is the upper limit (only a/b then matters).
+fSat = SUB_PolySatFit(w', csS');
+out.fpolysat_a = fSat.a;
+out.fpolysat_b = fSat.b; % this is important
+out.fpolysat_r2 = fSat.r2; % this is more important!
+out.fpolysat_rmse = fSat.rmse;
 
 % ------------------------------------------------------------------------------
 % Shannon spectral entropy
 % ------------------------------------------------------------------------------
-Hshann = -S.*log(S); % Shannon function
-out.spect_shann_ent = sum(Hshann);
-out.spect_shann_ent_norm = mean(Hshann);
+% Both are computed from the spectrum rescaled to exactly unit area, Sn =
+% S/(sum(S)*dw), so they describe the shape of the power distribution over
+% frequency only (not window/leakage effects on the total area, nor the number
+% of bins; a bare sum over bins grows in proportion to the number of bins, i.e. to
+% the series length, and the entropy of S/sum(S) over bins grows as log(bins)).
+% (i) spect_shann_ent: -integral of Sn log(Sn) dw, the differential Shannon entropy
+%     of the power distribution over frequency.
+% (ii) spect_shann_ent_norm: exp(spect_shann_ent) divided by the width of the
+%     frequency axis, N*dw: the fraction of the axis over which a flat spectrum
+%     would have the same entropy. Bounded in (0, 1]: 1 for a flat spectrum,
+%     towards 0 as the power concentrates in a narrow band.
+Sn = S / (sum(S) * dw);
+out.spect_shann_ent = sum(-Sn .* log(Sn)) * dw;
+out.spect_shann_ent_norm = exp(out.spect_shann_ent) / (N * dw);
 
 % ------------------------------------------------------------------------------
 % "Spectral Flatness Measure"
 % ------------------------------------------------------------------------------
 % which is given in dB as 10 log_10(gm/am) where gm is the geometric mean and am
 % is the arithmetic mean of the power spectral density
-out.sfm = 10*log10(geomean(S)/mean(S));
+out.sfm = 10 * log10(geomean(S) / mean(S));
 
 % ------------------------------------------------------------------------------
 % Areas under power spectrum
 % ------------------------------------------------------------------------------
 % Area up to peak: (may be more appropriate in squared log units?)
-out.areatopeak = sum(S(1:i_maxS))*dw;
-out.ylogareatopeak = sum(logS(1:i_maxS))*dw; % (semilogy)
+out.areatopeak = sum(S(1:i_maxS)) * dw;
+out.ylogareatopeak = sum(logS(1:i_maxS)) * dw; % (semilogy)
 % out.logareatopeak=sum(logS(1:i_maxS).*diff(logw(1:i_maxS+1)));
 
 % ------------------------------------------------------------------------------
@@ -330,121 +620,172 @@ out.ylogareatopeak = sum(logS(1:i_maxS))*dw; % (semilogy)
 % stats to the out structure.
 
 % Suppress rank deficient warnings for this section:
-warning('off','stats:robustfit:RankDeficient')
+warning('off', 'stats:robustfit:RankDeficient')
 
 % (1): Across full range
 r_all = (w > 0); % avoid -Inf for log(0) when w = 0;
-out = giveMeRobustStats(log(w(r_all)),log(S(r_all)),'linfitloglog_all',out);
+out = giveMeRobustStats(log(w(r_all)), log(S(r_all)), 'linfitloglog_all', out, {'a1','a2','sigrat','sigma','sea1'});
 
 % (2): First half (low frequency)
 r_lf = (w > 0); % w(1) = 0 -> log(0) = -Inf
-r_lf(floor(N/2)+1:end) = 0; % remove second half of angular frequenciesf
-out = giveMeRobustStats(log(w(r_lf)),log(S(r_lf)),'linfitloglog_lf',out);
+r_lf(floor(N / 2) + 1:end) = 0; % remove second half of angular frequenciesf
+out = giveMeRobustStats(log(w(r_lf)), log(S(r_lf)), 'linfitloglog_lf', out, {'a2'});
 
 % (3): Second half (high frequency)
-r_hf = floor(N/2)+1:N;
-out = giveMeRobustStats(log(w(r_hf)),log(S(r_hf)),'linfitloglog_hf',out);
+r_hf = floor(N / 2) + 1:N;
+out = giveMeRobustStats(log(w(r_hf)), log(S(r_hf)), 'linfitloglog_hf', out, {'a1','a2','sigrat','sigma','sea1'});
 
 % (4): Middle half (mid-frequencies)
-r_mf = round(N/4):round(N*3/4);
-out = giveMeRobustStats(log(w(r_mf)),log(S(r_mf)),'linfitloglog_mf',out);
+r_mf = round(N / 4):round(N * 3 / 4);
+out = giveMeRobustStats(log(w(r_mf)), log(S(r_mf)), 'linfitloglog_mf', out, {'a2'});
 
 % (5) Fit linear to semilog plot (across full range)
-out = giveMeRobustStats(w,log(S),'linfitsemilog_all',out);
+out = giveMeRobustStats(w, log(S), 'linfitsemilog_all', out, {'a1','sigrat','sigma','sea1'});
 
 % Turn the rank-deficient warnings back on
-warning('on','stats:robustfit:RankDeficient')
+warning('on', 'stats:robustfit:RankDeficient')
 
 % ------------------------------------------------------------------------------
 %% Power in specific frequency bands
 % ------------------------------------------------------------------------------
-% *** DO THIS BY BUFFER COMMAND: AND WHILE AT IT LOOK AT STATIONARITY OF
-% POWER SPECTRUM....
-
 % 2 bands
-split = buffer(S,floor(N/2));
-if size(split,2) > 2, split = split(:,1:2); end
-out.area_2_1 = sum(split(:,1))*dw;
-out.logarea_2_1 = sum(log(split(:,1)))*dw;
-out.area_2_2 = sum(split(:,2))*dw;
-out.logarea_2_2 = sum(log(split(:,2)))*dw;
-out.statav2_m = std(mean(split))/std(S);
-out.statav2_s = std(std(split))/std(S);
-
-% 3 bands
-split = buffer(S,floor(N/3));
-if size(split,2) > 3, split = split(:,1:3); end
-out.area_3_1 = sum(split(:,1))*dw;
-out.logarea_3_1 = sum(log(split(:,1)))*dw;
-out.area_3_2 = sum(split(:,2))*dw;
-out.logarea_3_2 = sum(log(split(:,2)))*dw;
-out.area_3_3 = sum(split(:,3))*dw;
-out.logarea_3_3 = sum(log(split(:,3)))*dw;
-out.statav3_m = std(mean(split))/std(S);
-out.statav3_s = std(std(split))/std(S);
-
-% 4 bands
-split = buffer(S,floor(N/4));
-if size(split,2) > 4, split = split(:,1:4); end
-out.area_4_1 = sum(split(:,1))*dw;
-out.logarea_4_1 = sum(log(split(:,1)))*dw;
-out.area_4_2 = sum(split(:,2))*dw;
-out.logarea_4_2 = sum(log(split(:,2)))*dw;
-out.area_4_3 = sum(split(:,3))*dw;
-out.logarea_4_3 = sum(log(split(:,3)))*dw;
-out.area_4_4 = sum(split(:,4))*dw;
-out.logarea_4_4 = sum(log(split(:,4)))*dw;
-out.statav4_m = std(mean(split))/std(S);
-out.statav4_s = std(std(split))/std(S);
+split = buffer(S, floor(N / 2));
+if size(split, 2) > 2, split = split(:, 1:2); end
+out.area_2_1 = sum(split(:, 1)) * dw;
+out.logarea_2_1 = sum(log(split(:, 1))) * dw;
+out.area_2_2 = sum(split(:, 2)) * dw;
+out.logarea_2_2 = sum(log(split(:, 2))) * dw;
+out.statav2_s = std(std(split)) / std(S);
+% Same on logS: whichever band happens to contain the dominant peak
+% swamps std(mean(split))/std(std(split)) on the raw linear spectrum, so
+% this is essentially "which band has the peak" rather than a nuanced
+% measure of stationarity across the spectrum's shape. (The mean-based
+% version is computed on logS only -- see the note at the top of this
+% file.)
+splitLog = buffer(logS, floor(N / 2));
+if size(splitLog, 2) > 2, splitLog = splitLog(:, 1:2); end
+out.logstatav2_m = std(mean(splitLog)) / std(logS);
+out.logstatav2_s = std(std(splitLog)) / std(logS);
 
 % 5 bands
-split = buffer(S,floor(N/5));
-if size(split,2) > 5, split = split(:,1:5); end
-out.area_5_1 = sum(split(:,1))*dw;
-out.logarea_5_1 = sum(log(split(:,1)))*dw;
-out.area_5_2 = sum(split(:,2))*dw;
-out.logarea_5_2 = sum(log(split(:,2)))*dw;
-out.area_5_3 = sum(split(:,3))*dw;
-out.logarea_5_3 = sum(log(split(:,3)))*dw;
-out.area_5_4 = sum(split(:,4))*dw;
-out.logarea_5_4 = sum(log(split(:,4)))*dw;
-out.area_5_5 = sum(split(:,5))*dw;
-out.logarea_5_5 = sum(log(split(:,5)))*dw;
-out.statav5_m = std(mean(split))/std(S);
-out.statav5_s = std(std(split))/std(S);
+split = buffer(S, floor(N / 5));
+if size(split, 2) > 5, split = split(:, 1:5); end
+out.area_5_1 = sum(split(:, 1)) * dw;
+out.logarea_5_1 = sum(log(split(:, 1))) * dw;
+out.area_5_2 = sum(split(:, 2)) * dw;
+out.logarea_5_2 = sum(log(split(:, 2))) * dw;
+out.area_5_3 = sum(split(:, 3)) * dw;
+out.logarea_5_3 = sum(log(split(:, 3))) * dw;
+out.area_5_4 = sum(split(:, 4)) * dw;
+out.logarea_5_4 = sum(log(split(:, 4))) * dw;
+out.area_5_5 = sum(split(:, 5)) * dw;
+out.logarea_5_5 = sum(log(split(:, 5))) * dw;
+out.statav5_s = std(std(split)) / std(S);
+splitLog = buffer(logS, floor(N / 5));
+if size(splitLog, 2) > 5, splitLog = splitLog(:, 1:5); end
+out.logstatav5_m = std(mean(splitLog)) / std(logS);
+out.logstatav5_s = std(std(splitLog)) / std(logS);
 
 % ------------------------------------------------------------------------------
 % Count crossings:
 % Get a horizontal line and count the number of crossings with the power spectrum
 % ------------------------------------------------------------------------------
-ncrossfn_rel = @(f) sum(BF_SignChange(S - f*max(S)));
+% A threshold that's a fixed fraction of max(S) sits far above the noise
+% floor whenever there's one dominant peak (the same heavy-tailed-
+% spectrum problem that motivates detecting peaks on logS), so crossing
+% counts on the raw linear spectrum end up governed almost entirely by
+% the shape immediately around that one peak. Crossings are therefore
+% counted on logS only, where differences correspond to power *ratios*
+% (dB), so a threshold set as a fraction of the full [min(logS),
+% max(logS)] range is a genuinely relative "how far up from the noise
+% floor" level, not just "how close to the single biggest value":
+logRange = max(logS) - min(logS);
+ncrossfn_rel_log = @(f) sum(BF_SignChange(logS - (min(logS) + f * logRange)));
 
-out.ncross_f05 = ncrossfn_rel(0.05);
-out.ncross_f01 = ncrossfn_rel(0.1);
-out.ncross_f02 = ncrossfn_rel(0.2);
-out.ncross_f05 = ncrossfn_rel(0.5);
+out.ncross_log_f05 = ncrossfn_rel_log(0.05);
+out.ncross_log_f10 = ncrossfn_rel_log(0.1);
+out.ncross_log_f20 = ncrossfn_rel_log(0.2);
+out.ncross_log_f50 = ncrossfn_rel_log(0.5);
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % function mel = w2mel(w) % convert to mel spectrum
 %     mel = 1127*log(w/(1400*pi)+1);
 % end
 
-function out = giveMeRobustStats(xData,yData,textID,out)
-    % Add statistics to the output structure from a robust linear fit
-    % between xData and yData
+function out = giveMeRobustStats(xData, yData, textID, out, whichStats)
+	% Add statistics to the output structure from a robust linear fit
+	% between xData and yData.
+	%
+	% whichStats selects which of the six available statistics to emit.
 
-    % Perform the fit:
-    [a, stats] = robustfit(xData,yData);
+	% Perform the fit:
+	[a, stats] = robustfit(xData, yData);
 
-    % Add the statistics to the output structure:
-    out.(sprintf('%s_a1',textID)) = a(1); % robust intercept
-    out.(sprintf('%s_a2',textID)) = a(2); % robust gradient
-    % ratio of sigma estimates between ordinary least squares (ols) and the robust fit:
-    out.(sprintf('%s_sigrat',textID)) = stats.ols_s/stats.robust_s;
-    % esimate of sigma as the larger of robust_s and a weighted average of ols_s and robust_s:
-    out.(sprintf('%s_sigma',textID)) = stats.s;
-    out.(sprintf('%s_sea1',textID)) = stats.se(1); % standard error of 1st coefficient estimate
-    out.(sprintf('%s_sea2',textID)) = stats.se(2); % standard error of 2nd coefficient estimate
+	% Add the requested statistics to the output structure:
+	if ismember('a1', whichStats)
+		out.(sprintf('%s_a1', textID)) = a(1); % robust intercept
+	end
+	if ismember('a2', whichStats)
+		out.(sprintf('%s_a2', textID)) = a(2); % robust gradient
+	end
+	if ismember('sigrat', whichStats)
+		% ratio of sigma estimates between ordinary least squares (ols) and the robust fit:
+		out.(sprintf('%s_sigrat', textID)) = stats.ols_s / stats.robust_s;
+	end
+	if ismember('sigma', whichStats)
+		% esimate of sigma as the larger of robust_s and a weighted average of ols_s and robust_s:
+		out.(sprintf('%s_sigma', textID)) = stats.s;
+	end
+	if ismember('sea1', whichStats)
+		out.(sprintf('%s_sea1', textID)) = stats.se(1); % standard error of 1st coefficient estimate
+	end
+	if ismember('sea2', whichStats)
+		out.(sprintf('%s_sea2', textID)) = stats.se(2); % standard error of 2nd coefficient estimate
+	end
 end
 
+end
+
+% ------------------------------------------------------------------------------
+function f = SUB_PolySatFit(w, y)
+	% Global least-squares fit of y = a*w^2/(b + w^2) with b in [1e-6, 100]*max(w)^2. For a
+	% given b the best a is linear least squares in closed form, so only b is searched: on
+	% 200 log-spaced values, then refined by 40 golden-section steps in log(b) around the
+	% best of these. r2 = 1 - SSE/SST; rmse uses n - 2 degrees of freedom. NaN if y is
+	% constant.
+	w = w(:); y = y(:);
+	n = length(y);
+	if n < 3 || ~all(isfinite(y)) || ~(max(y) - min(y) > 1e-12 * max(abs(y)))
+		f = struct('a', NaN, 'b', NaN, 'r2', NaN, 'rmse', NaN);
+		return
+	end
+	w2 = w.^2;
+	scale = max(w2);
+	u = linspace(log(1e-6 * scale), log(1e2 * scale), 200);
+	[~, k] = min(SSEofLogB(u));
+	lo = u(max(k - 1, 1));
+	hi = u(min(k + 1, length(u)));
+	phi = (sqrt(5) - 1) / 2;
+	for i = 1:40 % golden-section search in log(b)
+		u1 = hi - phi*(hi - lo);
+		u2 = lo + phi*(hi - lo);
+		if SSEofLogB(u1) <= SSEofLogB(u2)
+			hi = u2;
+		else
+			lo = u1;
+		end
+	end
+	b = exp((lo + hi) / 2);
+	g = w2 ./ (b + w2);
+	a = (g' * y) / (g' * g);
+	SSE = sum((y - a * g).^2);
+	f.a = a;
+	f.b = b;
+	f.r2 = 1 - SSE / sum((y - mean(y)).^2);
+	f.rmse = sqrt(SSE / (n - 2));
+
+	function sse = SSEofLogB(lb)
+		G = w2 ./ (exp(lb) + w2); % each column is w^2/(b + w^2) for one b
+		sse = sum(y.^2) - (G' * y)'.^2 ./ sum(G.^2, 1);
+	end
 end

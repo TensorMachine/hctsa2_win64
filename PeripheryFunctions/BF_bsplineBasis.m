@@ -13,8 +13,11 @@ for i = 1:numel(t)-1
     N(:,i) = (x >= t(i)) & (x < t(i+1));
 end
 % Points at (or beyond) the final knot belong to the last interval of positive
-% width, so the basis sums to 1 there rather than 0
+% width, so the basis sums to 1 there rather than 0. (HCTSA2 2.2.1: points
+% before the first knot likewise belong to the first one, k, so the spline
+% extrapolates at both ends as fnval does, instead of evaluating to 0 on the left.)
 N(x >= t(end),numel(t)-k) = 1;
+N(x < t(1),k) = 1;
 
 % Raise the order one at a time; terms over a zero-width knot span drop out
 for d = 2:k

@@ -1,4 +1,4 @@
-function [accuracy,Mdl] = GiveMeCfn(XTrain,yTrain,XTest,yTest,cfnParams,beVerbose)
+function [accuracy,Mdl] = GiveMeCfn(XTrain,yTrain,XTest,yTest,cfnParams,beVerbose,yAll)
 % GiveMeCfn    Returns classification results from training a classifier on
 %               training/test data
 %
@@ -9,6 +9,12 @@ function [accuracy,Mdl] = GiveMeCfn(XTrain,yTrain,XTest,yTest,cfnParams,beVerbos
 % yTest -- testing data labels
 % cfnParams -- parameters for classification
 % beVerbose -- [default: false] whether to give text output of progress
+% yAll -- [default: empty] when training on one fold of a cross-validation
+%           (cf. BF_CrossValidate), the labels of all observations. As in the
+%           built-in cross-validation of the fitc* functions, the class names,
+%           the class prior and (except for fitcdiscr) the observation weights
+%           (if cfnParams.doReweight) are then those of all observations rather
+%           than of the training fold.
 %
 %---OUTPUTS:
 % accuracy -- IF cfnParams.computePerFold = true:
@@ -19,7 +25,7 @@ function [accuracy,Mdl] = GiveMeCfn(XTrain,yTrain,XTest,yTest,cfnParams,beVerbos
 % Mdl -- the trained classification model.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -56,6 +62,46 @@ end
 if nargin < 6
     beVerbose = false;
 end
+if nargin < 7
+    yAll = [];
+end
+
+% Observation weights (inverse class probability, used if cfnParams.doReweight),
+% and any additional inputs for fitting with (argsW) and without (argsU) weights.
+% With yAll, these follow the built-in cross-validation of the fitc* functions:
+% fitcdiscr uses the inverse class probabilities of the training observations
+% (wFold), and the others those of all observations (w).
+doReweight = isfield(cfnParams,'doReweight') && cfnParams.doReweight;
+if doReweight
+    % (as InverseProbWeight(yTrain))
+    [~,~,classTrain] = unique(yTrain);
+    wFold = length(yTrain)./accumarray(classTrain,1);
+    wFold = wFold(classTrain);
+else
+    wFold = [];
+end
+if isempty(yAll)
+    w = wFold;
+    argsW = {};
+    argsU = {};
+    priorEmpirical = {'Prior','empirical'};
+else
+    % Class names, class prior and weights from all observations:
+    [classNames,~,classAll] = unique(yAll(:));
+    numAll = accumarray(classAll,1);
+    [~,classTrain] = ismember(yTrain,classNames);
+    if doReweight
+        wAll = length(yAll)./numAll(classAll); % (as InverseProbWeight(yAll))
+        w = length(yAll)./numAll(classTrain); % (the same, for the training observations)
+        priorW = accumarray(classAll,wAll);
+        argsW = {'ClassNames',classNames,'Prior',priorW/sum(priorW)};
+    else
+        w = [];
+        argsW = {};
+    end
+    argsU = {'ClassNames',classNames,'Prior',numAll/sum(numAll)};
+    priorEmpirical = {};
+end
 
 %-------------------------------------------------------------------------------
 %% Define the classification model
@@ -66,21 +112,24 @@ if strcmp(cfnParams.whatClassifier,'fast-linear')
     %--------------------------------------------------------------------------
     if cfnParams.numFolds > 0
         if cfnParams.doReweight
-            Mdl = fitcdiscr(XTrain,yTrain,'Prior','empirical',...
-            'DiscrimType','linear','Weights',InverseProbWeight(yTrain),...
-            'KFold',cfnParams.numFolds);
+            Mdl = fitcdiscr(XTrain,yTrain,priorEmpirical{:},...
+            'DiscrimType','linear','Weights',wFold,...
+            'KFold',cfnParams.numFolds,argsW{:});
         else
-            Mdl = fitcdiscr(XTrain,yTrain,'Prior','empirical',...
-            'DiscrimType','linear','KFold',cfnParams.numFolds);
+            Mdl = fitcdiscr(XTrain,yTrain,priorEmpirical{:},...
+            'DiscrimType','linear','KFold',cfnParams.numFolds,argsU{:});
         end
     else
-        if nargout == 1
+        if nargout == 1 && ~cfnParams.doReweight
             % It's faster to use classify if we only want the accuracy
-            accuracy = BF_LossFunction(yTest,classify(yTest,XTrain,yTrain),...
+            accuracy = BF_LossFunction(yTest,classify(XTest,XTrain,yTrain,'linear','empirical'),...
                             cfnParams.whatLoss,cfnParams.classLabels);
             return;
+        elseif cfnParams.doReweight
+            Mdl = fitcdiscr(XTrain,yTrain,priorEmpirical{:},...
+                'DiscrimType','linear','Weights',wFold,argsW{:});
         else
-            Mdl = fitcdiscr(XTrain,yTrain,'Prior','empirical');
+            Mdl = fitcdiscr(XTrain,yTrain,priorEmpirical{:},argsU{:});
         end
     end
 else
@@ -93,39 +142,62 @@ else
             if beVerbose
                 fprintf(1,'Using three neighbors for knn\n');
             end
-            if cfnParams.numFolds > 0
-                Mdl = fitcknn(XTrain,yTrain,'NumNeighbors',3,'KFold',cfnParams.numFolds);
+            % (HCTSA2 2.2.1, C3: knn and tree are weighted too, when doReweight)
+            if cfnParams.doReweight
+                if cfnParams.numFolds > 0
+                    Mdl = fitcknn(XTrain,yTrain,'NumNeighbors',3,'Weights',w,'KFold',cfnParams.numFolds,argsW{:});
+                else
+                    Mdl = fitcknn(XTrain,yTrain,'NumNeighbors',3,'Weights',w,argsW{:});
+                end
+            elseif cfnParams.numFolds > 0
+                Mdl = fitcknn(XTrain,yTrain,'NumNeighbors',3,'KFold',cfnParams.numFolds,argsU{:});
             else
-                Mdl = fitcknn(XTrain,yTrain,'NumNeighbors',3);
+                Mdl = fitcknn(XTrain,yTrain,'NumNeighbors',3,argsU{:});
             end
         case 'tree'
-            if cfnParams.numFolds > 0
-                Mdl = fitctree(XTrain,yTrain,'KFold',cfnParams.numFolds);
+            if cfnParams.doReweight
+                if cfnParams.numFolds > 0
+                    Mdl = fitctree(XTrain,yTrain,'Weights',w,'KFold',cfnParams.numFolds,argsW{:});
+                else
+                    Mdl = fitctree(XTrain,yTrain,'Weights',w,argsW{:});
+                end
+            elseif cfnParams.numFolds > 0
+                Mdl = fitctree(XTrain,yTrain,'KFold',cfnParams.numFolds,argsU{:});
             else
-                Mdl = fitctree(XTrain,yTrain);
+                Mdl = fitctree(XTrain,yTrain,argsU{:});
             end
         case {'linear','linclass'}
-            if cfnParams.numFolds > 0
-                Mdl = fitcdiscr(XTrain,yTrain,'FillCoeffs','off','SaveMemory','on','KFold',cfnParams.numFolds);
+            if cfnParams.doReweight
+                if cfnParams.numFolds > 0
+                    Mdl = fitcdiscr(XTrain,yTrain,'FillCoeffs','off','SaveMemory','on',...
+                                'Weights',wFold,'KFold',cfnParams.numFolds,argsW{:});
+                else
+                    Mdl = fitcdiscr(XTrain,yTrain,'FillCoeffs','off','SaveMemory','on',...
+                                'Weights',wFold,argsW{:});
+                end
             else
-                Mdl = fitcdiscr(XTrain,yTrain,'FillCoeffs','off','SaveMemory','on');
+                if cfnParams.numFolds > 0
+                    Mdl = fitcdiscr(XTrain,yTrain,'FillCoeffs','off','SaveMemory','on','KFold',cfnParams.numFolds,argsU{:});
+                else
+                    Mdl = fitcdiscr(XTrain,yTrain,'FillCoeffs','off','SaveMemory','on',argsU{:});
+                end
             end
         case 'logistic'
             if cfnParams.doReweight
                 if cfnParams.numFolds > 0
                     Mdl = fitclinear(XTrain,yTrain,'Learner','logistic','Regularization','ridge',...
-                                'Lambda','auto','Weights',InverseProbWeight(yTrain),'KFold',cfnParams.numFolds);
+                                'Lambda','auto','Weights',w,'KFold',cfnParams.numFolds,argsW{:});
                 else
                     Mdl = fitclinear(XTrain,yTrain,'Learner','logistic','Regularization','ridge',...
-                                'Lambda','auto','Weights',InverseProbWeight(yTrain));
+                                'Lambda','auto','Weights',w,argsW{:});
                 end
             else
                 if cfnParams.numFolds > 0
                     Mdl = fitclinear(XTrain,yTrain,'Learner','logistic','Regularization','ridge',...
-                                'Lambda','auto','KFold',cfnParams.numFolds);
+                                'Lambda','auto','KFold',cfnParams.numFolds,argsU{:});
                 else
                     Mdl = fitclinear(XTrain,yTrain,'Learner','logistic','Regularization','ridge',...
-                                'Lambda','auto');
+                                'Lambda','auto',argsU{:});
                 end
             end
         case {'svm-linear','svm-linear-highdim'}
@@ -135,17 +207,17 @@ else
             if cfnParams.doReweight
                 if cfnParams.numFolds > 0
                     Mdl = fitclinear(XTrain,yTrain,'Learner','svm','Lambda','auto','Regularization','ridge',...
-                                'Weights',InverseProbWeight(yTrain),'KFold',cfnParams.numFolds);
+                                'Weights',w,'KFold',cfnParams.numFolds,argsW{:});
                 else
                     Mdl = fitclinear(XTrain,yTrain,'Learner','svm','Lambda','auto','Regularization','ridge',...
-                                'Weights',InverseProbWeight(yTrain));
+                                'Weights',w,argsW{:});
                 end
             else
                 if cfnParams.numFolds > 0
                     Mdl = fitclinear(XTrain,yTrain,'Learner','svm','Lambda','auto',...
-                                        'Regularization','ridge','KFold',cfnParams.numFolds);
+                                        'Regularization','ridge','KFold',cfnParams.numFolds,argsU{:});
                 else
-                    Mdl = fitclinear(XTrain,yTrain,'Learner','svm','Lambda','auto','Regularization','ridge');
+                    Mdl = fitclinear(XTrain,yTrain,'Learner','svm','Lambda','auto','Regularization','ridge',argsU{:});
                 end
             end
         case {'svm','svm-linear-lowdim'}
@@ -154,15 +226,15 @@ else
             if cfnParams.doReweight
                 if cfnParams.numFolds > 0
                     Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear','Weights',...
-                                    InverseProbWeight(yTrain),'KFold',cfnParams.numFolds);
+                                    w,'KFold',cfnParams.numFolds,argsW{:});
                 else
-                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear','Weights',InverseProbWeight(yTrain));
+                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear','Weights',w,argsW{:});
                 end
             else
                 if cfnParams.numFolds > 0
-                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear','KFold',cfnParams.numFolds);
+                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear','KFold',cfnParams.numFolds,argsU{:});
                 else
-                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear');
+                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','linear',argsU{:});
                 end
             end
         case 'svm-rbf'
@@ -170,23 +242,31 @@ else
             if cfnParams.doReweight
                 if cfnParams.numFolds > 0
                     Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','rbf','Weights',...
-                                    InverseProbWeight(yTrain),'KFold',cfnParams.numFolds);
+                                    w,'KFold',cfnParams.numFolds,argsW{:});
                 else
                     Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','rbf','Weights',...
-                                                    InverseProbWeight(yTrain));
+                                                    w,argsW{:});
                 end
             else
                 if cfnParams.numFolds > 0
-                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','rbf','KFold',cfnParams.numFolds);
+                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','rbf','KFold',cfnParams.numFolds,argsU{:});
                 else
-                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','rbf');
+                    Mdl = fitcsvm(XTrain,yTrain,'KernelFunction','rbf',argsU{:});
                 end
             end
         case 'diaglinear'
-            if cfnParams.numFolds > 0
-                Mdl = fitcnb(XTrain,yTrain,'KFold',cfnParams.numFolds);
+            if cfnParams.doReweight
+                if cfnParams.numFolds > 0
+                    Mdl = fitcnb(XTrain,yTrain,'Weights',w,'KFold',cfnParams.numFolds,argsW{:});
+                else
+                    Mdl = fitcnb(XTrain,yTrain,'Weights',w,argsW{:});
+                end
             else
-                Mdl = fitcnb(XTrain,yTrain);
+                if cfnParams.numFolds > 0
+                    Mdl = fitcnb(XTrain,yTrain,'KFold',cfnParams.numFolds,argsU{:});
+                else
+                    Mdl = fitcnb(XTrain,yTrain,argsU{:});
+                end
             end
         otherwise
             error('Unknown classifier: ''%s''',cfnParams.whatClassifier);
@@ -210,7 +290,7 @@ else
             % Naive Bayes classifier:
             t = templateNaiveBayes('DistributionNames','normal');
             if beVerbose, fprintf(1,'Using a naive Bayes classifier\n'); end
-        case {'svm','svm-linear','svm-linear-lowdim'}
+        case {'svm','svm-linear','svm-linear-highdim','svm-linear-lowdim'}
             t = templateSVM('KernelFunction','linear');
             if beVerbose, fprintf(1,'Using a linear svm classifier\n'); end
         case 'svm-rbf'
@@ -223,19 +303,21 @@ else
         end
 
         % Fit the model:
-        if ismember(cfnParams.whatClassifier,{'svm-linear','svm-rbf','linear','linclass','diaglinear'}) && cfnParams.doReweight
+        % (HCTSA2 2.2.1, C3: every classifier is reweighted when doReweight, knn, tree
+        % and the fitcsvm linear SVM included)
+        if cfnParams.doReweight
             % Reweight to give equal weight to each class (in case of class imbalance)
             if cfnParams.numFolds > 0
-                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,'Weights',InverseProbWeight(yTrain),'KFold',cfnParams.numFolds);
+                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,'Weights',w,'KFold',cfnParams.numFolds,argsW{:});
             else
-                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,'Weights',InverseProbWeight(yTrain));
+                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,'Weights',w,argsW{:});
             end
         else
             % Don't reweight:
             if cfnParams.numFolds > 0
-                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,'KFold',cfnParams.numFolds);
+                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,'KFold',cfnParams.numFolds,argsU{:});
             else
-                Mdl = fitcecoc(XTrain,yTrain,'Learners',t);
+                Mdl = fitcecoc(XTrain,yTrain,'Learners',t,argsU{:});
             end
         end
     end

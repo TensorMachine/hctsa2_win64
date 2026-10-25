@@ -1,25 +1,31 @@
 function out = CO_CompareMinAMI(y, binMethod, numBins)
-% CO_CompareMinAMI  Variability in first minimum of automutual information
+% CO_CompareMinAMI   Variability of the first minimum of the automutual information.
 %
-% Finds the first minimum of the automutual information by various different
-% estimation methods, and sees how this varies over different coarse-grainings
-% of the time series.
-%
-% The function returns a set of statistics on the set of first minimums of the
-% automutual information function obtained over a range of the number of bins
-% used in the histogram estimation, when specifying 'numBins' as a vector
+% Finds the first minimum of the automutual information (AMI), as estimated by
+% CO_HistogramAMI, for each number of histogram bins in numBins, up to a maximum
+% lag of round(N/2) (set to this maximum if no minimum is found). The first
+% minimum is taken to be the lag at the first change in the sign of the slope of
+% the AMI, so it is a local maximum if the AMI first rises. The function
+% returns statistics on the resulting set of first-minimum lags, which measure how
+% sensitive the AMI timescale is to the coarse-graining of the time series.
 %
 % ---INPUTS:
 % y, the input time series
+% binMethod, the method for estimating mutual information (the meth input to
+%            CO_HistogramAMI): 'even', 'std1', 'std2' or 'quantiles'
+% numBins, the numbers of bins to compare over (a scalar or a vector; default 10)
 %
-% binMethod, the method for estimating mutual information (input to CO_HistogramAMI)
-%
-% numBins, the number of bins for the AMI estimation to compare over (can be a
-%           scalar or vector)
-%
-% Outputs include the minimum, maximum, range, number of unique values, and the
-% position and periodicity of peaks in the set of automutual information
-% minimums.
+% ---OUTPUTS:
+% min, max, range, median, mean, std, the minimum, maximum, range, median, mean and
+%       standard deviation of the first-minimum lags,
+% nunique, the number of unique first-minimum lags,
+% mode, the most common first-minimum lag,
+% modef, the proportion of the bin numbers that give that most common lag,
+% conv4, the mean first-minimum lag for the last five bin numbers,
+% nprompeaks, the number of prominent peaks (local maxima) of the first-minimum lag as
+%       a function of the number of bins: peaks that rise at least 5% of the range of
+%       the lags above the higher of the valleys on either side of them, so a small
+%       fluctuation does not add a peak.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -54,7 +60,7 @@ function out = CO_CompareMinAMI(y, binMethod, numBins)
 %% Check inputs and set defaults:
 % ------------------------------------------------------------------------------
 % Default number of bins
-if nargin < 3,
+if nargin < 3
 	numBins = 10;
 end
 % ------------------------------------------------------------------------------
@@ -88,7 +94,7 @@ end
 
 % Plot:
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	plot(numBins, amiMins, 'o-k');
 end
 
@@ -108,16 +114,39 @@ out.nunique = length(unique(amiMins));
 out.modef = out.modef / numBinsRange;
 
 % Converged value?
-out.conv4 = mean(amiMins(end - 4:end));
+out.conv4 = mean(amiMins(max(1, end - 4):end));
 
 % -------------------------------------------------------------------------------
 % Look for peaks (local maxima)
 % -------------------------------------------------------------------------------
-% local maxima above 1*std from mean
 % inspired by curious result of periodic maxima for periodic signal with
 % bin size... ('quantiles', [2:80])
-loc_extr = intersect(find(diff(amiMins(1:end - 1)) > 0), BF_SignChange(diff(amiMins(1:end - 1)), 1)) + 1;
-big_loc_extr = intersect(find(amiMins > out.mean + out.std), loc_extr);
-out.nlocmax = length(big_loc_extr);
+% Only prominent peaks are counted: a count of every local maximum, or of those
+% above a fixed height such as the mean plus one standard deviation, changes with
+% each small fluctuation of the curve
+out.nprompeaks = SUB_NumProminentPeaks(amiMins, 0.05 * out.range);
 
+end
+
+% -------------------------------------------------------------------------------
+function numPeaks = SUB_NumProminentPeaks(x, minProminence)
+	% The number of local maxima of x (interior points higher than both neighbors,
+	% a flat top counting once) whose prominence is at least minProminence: how far
+	% the peak rises above the higher of the lowest values reached on each side
+	% before meeting a higher value (or the end of the series).
+	x = x(:);
+	x = x([true; diff(x) ~= 0]); % merge runs of equal values
+	numPeaks = 0;
+	for i = 2:length(x) - 1
+		if x(i) > x(i - 1) && x(i) > x(i + 1)
+			iHigherLeft = find(x(1:i - 1) > x(i), 1, 'last');
+			iHigherRight = i + find(x(i + 1:end) > x(i), 1, 'first');
+			if isempty(iHigherLeft), iHigherLeft = 1; end
+			if isempty(iHigherRight), iHigherRight = length(x); end
+			valley = max(min(x(iHigherLeft:i)), min(x(i:iHigherRight)));
+			if x(i) - valley >= minProminence
+				numPeaks = numPeaks + 1;
+			end
+		end
+	end
 end

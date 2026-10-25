@@ -1,31 +1,38 @@
 function out = SY_DriftingMean(y, segmentHow, l)
 % SY_DriftingMean   Mean and variance in local time-series subsegments.
 %
-% Splits the time series into segments, computes the mean and variance in each
-% segment and compares the maximum and minimum mean to the mean variance.
+% Splits the time series into consecutive segments, computes the mean and variance
+% in each segment, and compares the maximum and minimum segment means to the mean
+% of the segment variances. A drifting mean makes the extreme segment means large
+% relative to the within-segment variance. A final partial segment is dropped.
+% Returns NaN if the segments are longer than the series.
 %
-% This function implements an idea found in the Matlab Central forum:
-% http://www.mathworks.de/matlabcentral/newsreader/view_thread/136539
-%
-% >> It seems to me that you are looking for a measure for a drifting mean.
-% >> If so, this is what I would try:
-% >>
-% >> - Decide on a frame length N
-% >> - Split your signal in a number of frames of length N
-% >> - Compute the means of each frame
-% >> - Compute the variance for each frame
-% >> - Compare the ratio of maximum and minimum mean
-% >>   with the mean variance of the frames.
-% >>
-% >> Rune
+% The idea is from a comp.soft-sys.matlab (MATLAB newsgroup) posting by Rune
+% ("It seems to me that you are looking for a measure for a drifting mean. If so,
+% this is what I would try: decide on a frame length N; split your signal in a
+% number of frames of length N; compute the means of each frame; compute the
+% variance for each frame; compare the ratio of maximum and minimum mean with the
+% mean variance of the frames.")
 %
 % ---INPUTS:
 % y, the input time series
 %
-% segmentHow, (i) 'fix': fixed-length segments (of length l)
-%             (ii) 'num': a given number, l, of segments
+% segmentHow, how to segment the series:
+%       (i) 'fix': fixed-length segments (of length l)
+%       (ii) 'num': a given number, l, of segments (default)
 %
-% l, either the length ('fix') or number of segments ('num')
+% l, either the length ('fix') or number ('num') of segments (default: 5 segments
+%       for 'num', 200 samples for 'fix')
+%
+% ---OUTPUTS:
+% max, the maximum segment mean divided by the mean of the segment variances
+% min, the minimum segment mean divided by the mean of the segment variances
+% mean, the mean of the segment means divided by the mean of the segment variances
+%       (when the segments tile the series exactly this is the mean of the series
+%       divided by the mean segment variance, so it is zero up to rounding for a
+%       z-scored series, and carries no information there)
+% meanmaxmin, the average of max and min
+% meanabsmaxmin, the average of the absolute values of max and min
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -64,12 +71,8 @@ N = length(y); % length of the input time series
 if nargin < 2 || isempty(segmentHow)
 	segmentHow = 'num'; % a specified number of segments
 end
-if strcmp(segmentHow, 'num')
-	l = floor(N / l);
-elseif ~strcmp(segmentHow, 'fix')
-	error('Unknown input setting ''%s''', segmentHow)
-end
-
+% (l's default must be set BEFORE the 'num' branch below converts it to a segment
+% length, since that branch reads l.)
 if nargin < 3 || isempty(l)
 	switch segmentHow
 		case 'num'
@@ -77,6 +80,12 @@ if nargin < 3 || isempty(l)
 		case 'fix'
 			l = 200; % 200-sample segments
 	end
+end
+
+if strcmp(segmentHow, 'num')
+	l = floor(N / l);
+elseif ~strcmp(segmentHow, 'fix')
+	error('Unknown input setting ''%s''', segmentHow)
 end
 
 % ------------------------------------------------------------------------------

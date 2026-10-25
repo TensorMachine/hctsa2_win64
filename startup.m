@@ -2,7 +2,7 @@ function startup()
 % STARTUP   Add all paths required for the hctsa package.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -23,21 +23,37 @@ function startup()
 % California, 94041, USA.
 % ------------------------------------------------------------------------------
 
+% Resolve paths relative to this file's own location (not the current
+% working directory), so startup works regardless of where it's called from:
+hctsaDir = fileparts(mfilename('fullpath'));
+
 % We use this function a bit:
-addfcn = @(x) addpath(fullfile(pwd,x));
+addfcn = @(x) addpath(fullfile(hctsaDir,x));
+
+catch22Dir = fullfile(hctsaDir,'Toolboxes','catch22','wrap_Matlab');
+% hctsa2: catch22 is vendored in Toolboxes/catch22 (not a git submodule), so
+% upstream's automatic "git submodule update" is not needed and is left out: it
+% would also need git and a network connection.
 
 fprintf(1,'Adding paths for the highly comparative time-series analysis package...\n')
 
 % ------------------------------------------------------------------------------
 %% First add all the basic paths:
 % ------------------------------------------------------------------------------
-addfcn('Database'); % code for setting up and communicating with the mySQL database
+% hctsa2: the root itself, which holds the HCTSA2_* tools (HCTSA2_Analyse,
+% HCTSA2_CheckInstall, HCTSA2_BuildTisean, ...). They resolve from any folder
+% once startup has run, e.g. when it is called from a MATLAB startup file.
+addpath(hctsaDir);
 addfcn('FeatureSets'); % files for setting input files corresponding to various feature sets
 addfcn('Calculation'); % code for calculating results
 addfcn('PlottingAnalysis'); % code for analysing and plotting results
 addfcn('Operations'); % core code files for performing operations
 addfcn('PeripheryFunctions'); % periphery functions used in the code toolbox
 addfcn('TimeSeries'); % time series data files for analysis
+% hctsa2 (3.0.0): Tests/ holds HCTSA2's test and debug tools (HCTSA2_TestRun,
+% HCTSA2_TestTisean, ...) as well as upstream's unit tests, so the top level holds
+% only the tools a user works with; on the path, the test tools run by name as before.
+addfcn('Tests');
 fprintf(1,'Core directories added.\n')
 
 % ------------------------------------------------------------------------------
@@ -46,111 +62,92 @@ fprintf(1,'Core directories added.\n')
 fprintf(1,'Adding external time-series toolboxes...')
 % Kaplan's routines:
 fprintf(1,' Danny Kaplan')
-addpath(fullfile(pwd,'Toolboxes','Danny_Kaplan'));
-
-% Code by Marwan, from CRP Toolbox version 5.17  (R28.16)
-fprintf(1,', Marwan')
-addpath(fullfile(pwd,'Toolboxes','Marwan_crptool'));
+addpath(fullfile(hctsaDir,'Toolboxes','Danny_Kaplan'));
 
 % Gaussian Process Toolbox, gpml, by Carl Edward Rasmussen & Hannes Nickisch:
 fprintf(1,', Gaussian Process Code\n')
-addpath(fullfile(pwd,'Toolboxes','gpml'));
+addpath(fullfile(hctsaDir,'Toolboxes','gpml'));
 GP_startup % add nested directories
 
 % Zoubin Gharamani's hmm toolbox, ZG_hmm
 fprintf(1,'HMM toolbox')
-addpath(fullfile(pwd,'Toolboxes','ZG_hmm'));
+addpath(fullfile(hctsaDir,'Toolboxes','ZG_hmm'));
 
 % ARFIT Toolbox
 fprintf(1,', ARfit toolbox')
-addpath(fullfile(pwd,'Toolboxes','ARFIT'));
+addpath(fullfile(hctsaDir,'Toolboxes','ARFIT'));
 
 % Michael Small's utilities
-fprintf(1,', Michael Small')
-addpath(fullfile(pwd,'Toolboxes','Michael_Small'));
-
-% Code from Matlab Central
-fprintf(1,', Matlab Central code')
-addpath(fullfile(pwd,'Toolboxes','MatlabCentral'));
-
-% Rudy Moddemeijer's code
-fprintf(1,', Rudy Moddemeijer\n')
-addpath(fullfile(pwd,'Toolboxes','Rudy_Moddemeijer'));
+fprintf(1,', Michael Small\n')
+addpath(fullfile(hctsaDir,'Toolboxes','Michael_Small'));
 
 % DVV Toolbox
 fprintf(1,'DVV Toolbox')
-addpath(fullfile(pwd,'Toolboxes','DVV_Toolbox'));
+addpath(fullfile(hctsaDir,'Toolboxes','DVV_Toolbox'));
 
 % Physionet
 fprintf(1,', Physionet');
-addpath(fullfile(pwd,'Toolboxes','Physionet'));
+addpath(fullfile(hctsaDir,'Toolboxes','Physionet'));
 
 % Max Little's steps/bumps toolbox
 fprintf(1,', Max Little''s steps_bumps toolkit')
-addpath(fullfile(pwd,'Toolboxes','Max_Little','steps_bumps_toolkit'));
-
-% Max Little's fastdfa code
-fprintf(1,', fastdfa')
-addpath(fullfile(pwd,'Toolboxes','Max_Little','fastdfa'));
+addpath(fullfile(hctsaDir,'Toolboxes','Max_Little','steps_bumps_toolkit'));
 
 % Max Little's rpde code
 fprintf(1,', rpde')
-addpath(fullfile(pwd,'Toolboxes','Max_Little','rpde'));
+addpath(fullfile(hctsaDir,'Toolboxes','Max_Little','rpde'));
 
 % nsamdf
 fprintf(1,', nsamdf,\n');
-addpath(fullfile(pwd,'Toolboxes','nsamdf'));
+addpath(fullfile(hctsaDir,'Toolboxes','nsamdf'));
 
-% Misc code
-fprintf(1,'misc')
-addpath(fullfile(pwd,'Toolboxes','Misc'));
+% catch22 (vendored; optional: no operation of the hctsa library needs it)
+if isfolder(catch22Dir)
+    fprintf(1,'catch22, ')
+    addpath(catch22Dir);
+end
 
-% catch22
-fprintf(1,', catch22')
-addpath(fullfile(pwd,'Toolboxes','catch22','wrap_Matlab'));
-
-% TSTOOL was removed in upstream v2.0.0 and its operations replaced with native
-% and TISEAN-based equivalents. Nothing adds OpenTSTOOL to the path any more --
-% the toolbox itself has been deleted from Toolboxes/.
-
-% Java information dynamics toolkit written by Joseph Lizier
-% (should be ok to re-add this every time startup is run)
-fprintf(1,', Information dynamics toolkit, ')
-javaaddpath(fullfile(pwd,'Toolboxes','infodynamics-dist','infodynamics.jar'));
+% Kraskov (KSG) mutual information, the KSG_mi MEX (hctsa2 2.4.0: replaces the Java
+% information dynamics toolkit, JIDT, which hctsa2 no longer ships)
+fprintf(1,'KSG mutual information')
+addpath(fullfile(hctsaDir,'Toolboxes','KSG'));
 
 % ------------------------------------------------------------------------------
-% Add path for TISEAN binaries.
+% Add paths for the TISEAN and ripser executables.
 % ------------------------------------------------------------------------------
-% Platform-aware. The original assumed macOS/Linux: it read $HOME via a shell
-% echo, joined PATH with ':', and set DYLD_LIBRARY_PATH (a macOS-only variable).
-% All three are wrong on Windows, where the separator is ';' and the TISEAN
-% executables are .exe files that hctsa 2.0 expects under Toolboxes/Tisean_bin.
+% hctsa2: platform-aware. On Windows the executables are built by
+% HCTSA2_BuildTisean into Toolboxes/Tisean_bin (ripser.exe included) and PATH
+% entries are separated by ';'. Elsewhere, upstream's layout: TISEAN compiled
+% into Toolboxes/Tisean_3.0.1/bin by compile_tisean (falling back to ~/bin for
+% older manual installations), ripser into Toolboxes/ripser/bin. Prepended, not
+% appended, so an older install elsewhere on the PATH cannot shadow them.
+% BF_RunTisean looks in the same places directly, so this is for the shell.
+fprintf(1,', TISEAN')
 if ispc
-    tiseanBinaryLocation = fullfile(pwd,'Toolboxes','Tisean_bin');
-    pathSep = ';';
+    tiseanBinaryLocation = fullfile(hctsaDir,'Toolboxes','Tisean_bin');
 else
-    homeDir = getenv('HOME');
-    if isempty(homeDir)
-        [~,homeDir] = system('echo $HOME');
-        homeDir = regexprep(homeDir,'[\s]','');
+    tiseanBinaryLocation = fullfile(hctsaDir,'Toolboxes','Tisean_3.0.1','bin');
+    if ~isfolder(tiseanBinaryLocation)
+        homeDir = getenv('HOME');
+        if isempty(homeDir)
+            [~,homeDir] = system('echo $HOME'); % get system home directory
+            homeDir = regexprep(homeDir,'[\s]',''); % remove whitespace
+        end
+        tiseanBinaryLocation = fullfile(homeDir,'bin');
     end
-    tiseanBinaryLocation = fullfile(homeDir,'bin');
-    pathSep = ':';
 end
-if exist(tiseanBinaryLocation,'dir') == 7
-    if isempty(strfind(getenv('PATH'),tiseanBinaryLocation)) %#ok<STREMP>
-        setenv('PATH',[getenv('PATH'),pathSep,tiseanBinaryLocation]);
+ripserBinaryLocation = fullfile(hctsaDir,'Toolboxes','ripser','bin');
+fprintf(1,', ripser\n')
+for binDir = {ripserBinaryLocation,tiseanBinaryLocation}
+    if isfolder(binDir{1}) && ~any(strcmp(strsplit(getenv('PATH'),pathsep),binDir{1}))
+        setenv('PATH',[binDir{1},pathsep,getenv('PATH')]);
     end
+end
+if isfolder(tiseanBinaryLocation)
     fprintf(1,'TISEAN binaries: %s\n',tiseanBinaryLocation);
-elseif exist('tisean_nstat_z','file') ~= 3
-    fprintf(1,'TISEAN binaries not found (%s) -- TISEAN-based features will error.\n', ...
-        tiseanBinaryLocation);
-end
-
-% DYLD_LIBRARY_PATH is macOS-specific; setting it elsewhere is harmless but
-% pointless, and on Windows it is meaningless.
-if ismac
-    setenv('DYLD_LIBRARY_PATH','/usr/local/bin');
+else
+    fprintf(1,['TISEAN binaries not found (%s) -- TISEAN-based features will error. ' ...
+        'Build them with HCTSA2_BuildTisean (Windows) or compile_tisean.\n'],tiseanBinaryLocation);
 end
 
 % ------------------------------------------------------------------------------

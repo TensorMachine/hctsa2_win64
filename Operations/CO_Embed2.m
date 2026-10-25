@@ -1,18 +1,42 @@
 function out = CO_Embed2(y, tau)
-% CO_Embed2    Statistics of the time series in a 2-dimensional embedding space
+% CO_Embed2   Statistics of the time series in a 2-dimensional delay embedding.
 %
-% Embeds the (z-scored) time series in a two-dimensional time-delay
-% embedding space with a given time-delay, tau, and outputs a set of
-% statistics about the structure in this space, including angular
-% distribution, etc.
+% Embeds the (z-scored) time series in a two-dimensional time-delay embedding, the
+% points (y(t), y(t+tau)), and returns statistics on the trajectory: the angles of
+% the steps between successive points (their autocorrelation, mean, spread and
+% histogram), how the angle distribution, the distances of points from the origin
+% and the area covered change over fifths of the series, and the area spanned by
+% the points nearest the origin relative to all points (outliers).
 %
 % ---INPUTS:
-% y, the column-vector time series
-% tau, the time-delay (can be 'tau' for first zero-crossing of ACF)
+% y, the input time series (a z-scored column vector)
+% tau, the time delay: an integer number of samples, or a string that sets it from the
+%      series: 'tau' (default; the first zero-crossing of the autocorrelation
+%      function), 'ac1e' (the floor of its first 1/e crossing), or
+%      'mi' (the smaller of the first minimum of the Kraskov automutual information
+%      and the 'ac1e' delay); see BF_GetTau. All three are capped
+%      at N/10
 %
-% ---OUTPUTS: include the distribution of angles between successive points in the
-% space, stationarity of this angular distribution, euclidean distances from the
-% origin, and statistics on outliers.
+% ---OUTPUTS:
+% theta_ac1, theta_ac2, theta_ac3, the autocorrelation of the sequence of step angles
+%       (measured from the horizontal, in (-pi/2, pi/2)) at lags 1, 2 and 3,
+% theta_mean, theta_std, the mean and standard deviation of the step angles,
+% hist10std, the standard deviation of the proportions in a 10-bin histogram of
+%       the angles,
+% histent, the entropy of that angle distribution (nats; at most log(pi)),
+% stdb1, stdb2, stdb3, stdb4, the standard deviation across the five fifths of the
+%       series of the proportion of angles falling in each of four angle bins,
+% eucdm1, eucdm2, eucdm3, eucdm4, eucdm5, the mean distance of the points from the origin in each fifth
+%       of the series,
+% std_eucdm, mean_eucdm, the standard deviation and mean of those five means,
+% eucds1, eucds2, eucds3, eucds4, eucds5, the standard deviation of the distance from the origin in
+%       each fifth,
+% std_eucds, mean_eucds, the standard deviation and mean of those five values,
+% stdspana, meanspana, the standard deviation and mean across fifths of the area of
+%       the bounding rectangle of the points,
+% areas_all, the area of the bounding rectangle of all points,
+% areas_50, the same for the half of the points nearest the origin,
+% arearat, the ratio areas_50/areas_all.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -53,15 +77,29 @@ if nargin < 2 || isempty(tau)
 end
 
 % Set tau to the first zero-crossing of the autocorrelation function, with the 'tau' input
-if strcmp(tau, 'tau'),
+if ischar(tau) && ismember(tau, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		out = NaN; return
+	end
+	% Cannot set the time delay greater than 10% the length of the time series
+	if tau > length(y) / 10
+		tau = floor(length(y) / 10);
+	end
+end
+if strcmp(tau, 'tau')
 	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	if isnan(tau)
+		out = NaN; return
+	end
 	if tau > length(y) / 10
 		tau = floor(length(y) / 10);
 	end
 end
 
 % Ensure that y is a column vector
-if size(y, 2) > size(y, 1);
+if size(y, 2) > size(y, 1)
 	y = y';
 end
 
@@ -70,7 +108,7 @@ m = [y(1:end - tau), y(1 + tau:end)];
 N = size(m, 1); % number of points in the recurrence space
 
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	plot(m(:, 1), m(:, 2), '.');
 end
 
@@ -80,7 +118,8 @@ end
 theta = diff(m(:, 2)) ./ diff(m(:, 1));
 theta = atan(theta); % measured as deviation from the horizontal
 
-if doPlot, ksdensity(theta); end % can plot distribution of angles
+% Can plot the distribution of angles:
+if doPlot, [f, xi] = BF_KSDensity(theta); plot(xi, f); end %#ok<UNRCH>
 out.theta_ac1 = CO_AutoCorr(theta, 1, 'Fourier');
 out.theta_ac2 = CO_AutoCorr(theta, 2, 'Fourier');
 out.theta_ac3 = CO_AutoCorr(theta, 3, 'Fourier');
@@ -88,8 +127,11 @@ out.theta_ac3 = CO_AutoCorr(theta, 3, 'Fourier');
 out.theta_mean = mean(theta);
 out.theta_std = std(theta);
 
-binEdges = linspace(-pi / 2, pi / 2, 11); % 10 bins in the histogram
-[px, binEdges] = histcounts(theta, binEdges, 'Normalization', 'probability');
+% 10 equal bins on the support of the angles (-pi/2, pi/2) (explicit edges, so that
+% angles of exactly zero from tied values or of exactly +/-pi/2 from a vertical
+% step fall in the same bin whatever the rounding):
+binEdges = BF_HistEdges(theta, 10, [-pi / 2, pi / 2]);
+px = histcounts(theta, binEdges, 'Normalization', 'probability');
 binWidths = diff(binEdges);
 out.hist10std = std(px);
 out.histent = -sum(px(px > 0) .* log(px(px > 0) ./ binWidths(px > 0)));
@@ -98,19 +140,17 @@ out.histent = -sum(px(px > 0) .* log(px(px > 0) ./ binWidths(px > 0)));
 % Stationarity in fifths of the time series
 % -------------------------------------------------------------------------------
 % Use histograms with 4 bins
-x = linspace(-pi / 2, pi / 2, 5); % 4 bins
+binEdges4 = BF_HistEdges(theta, 4, [-pi / 2, pi / 2]);
 afifth = floor((N - 1) / 5); % -1 because angles are correlations *between* points
-n = zeros(length(x), 5);
+n = zeros(4, 5);
 for i = 1:5
-	n(:, i) = histc(theta(afifth * (i - 1) + 1:afifth * i), x);
+	n(:, i) = histcounts(theta(afifth * (i - 1) + 1:afifth * i), binEdges4);
 end
 n = n / afifth;
-n(4, :) = n(4, :) + n(5, :);
-n(5, :) = [];
 
-% Output the standard deviation in each bin:
+% Output the standard deviation across fifths of the proportion in each bin:
 for i = 1:4
-	out.(sprintf('stdb%u', i)) = std(n(:, i));
+	out.(sprintf('stdb%u', i)) = std(n(i, :));
 end
 
 % -------------------------------------------------------------------------------

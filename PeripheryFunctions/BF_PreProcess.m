@@ -2,7 +2,7 @@ function y = BF_PreProcess(y,preProcessHow)
 % BF_PreProcess   Preprocess a time series, y
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -39,10 +39,22 @@ if ~isempty(preProcessHow)
         % Coarse-graining at a given scale, as in multiscale entropy approaches
         % Find first zero of the autocorrelation function
         tau = CO_FirstCrossing(y,'ac',0,'discrete');
+        if isnan(tau)
+            y = NaN; return
+        end
         % Buffer the time series into nonoverlapping windows of length tau
         y_buffer = BF_MakeBuffer(y,tau);
         % Mean each window to get a coarse-grained time series
         y = mean(y_buffer,2);
+    case 'decimate_ac1e'
+        % Keep one sample per (floored) 1/e autocorrelation time (cf. BF_GetTau),
+        % so that features computed on the result do not change trivially with
+        % the sampling rate. Iterated maps (ACF below 1/e at lag 1) are unchanged.
+        tau = BF_GetTau(y,'ac1e');
+        if isnan(tau)
+            y = NaN; return
+        end
+        y = y(1:tau:end);
     otherwise
         error('Unknown preprocessing setting: ''%s''',preProcessHow);
     end

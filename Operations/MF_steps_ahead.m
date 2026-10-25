@@ -1,33 +1,62 @@
-function out = MF_steps_ahead(y,model,order,maxSteps)
-% MF_steps_ahead    Goodness of model predictions across prediction lengths.
+function out = MF_steps_ahead(y, model, order, maxSteps)
+% MF_steps_ahead   How the accuracy of multi-step-ahead model predictions compares with trivial predictors and changes with the horizon.
 %
 % Given a model, characterizes the variation in goodness of model predictions
 % across a range of prediction lengths, l, which is made to vary from
 % 1-step ahead to maxSteps steps-ahead predictions.
 %
-% Models are fit using code from Matlab's System Identification Toolbox:
-%       (i) AR models using the ar function,
-%       (ii) ARMA models using armax code, and
-%       (iii) state-space models using n4sid code.
+% Models are fitted (BF_FitPredictorModel) as:
+%       (i) AR models by forward-backward least squares (BF_ARfb),
+%       (ii) ARMA models by conditional least squares (BF_ARMAfit), and
+%       (iii) state-space models by N4SID subspace identification (BF_SubspaceID).
 %
 % The model is fitted on the full time series and then used to predict the same
-% data.
+% data (so all predictions are within the sample).
 %
-%---INPUTS:
+% At each horizon, the errors of the model are compared with those of three trivial
+% predictors: (i) the value l samples earlier (a sliding mean of length 1),
+% (ii) the average of the last two values, iterated forward l steps (a sliding mean
+% of length 2), and (iii) the mean of the full time series.
+%
+% ---INPUTS:
 % y, the input time series
 % model, the time-series model to fit: 'ar', 'arma', or 'ss'
-% order, the order of the model to fit
-% maxSteps, the maximum number of steps ahead to predict
+% order, the order of the model to fit: an integer for 'ar' and 'ss', a two-vector
+%       [p, q] for 'arma', or the string 'best'. For 'ar', 'best' picks the order
+%       (1 to 10) by Schwarz's Bayesian criterion using ARfit; for 'ss', the order
+%       from 1 to 10 that minimizes Akaike's information criterion (BF_SubspaceID).
+%       (Default: 2)
+% maxSteps, the maximum number of steps ahead to predict (default: 6)
 %
-%---OUTPUTS: include the errors, for prediction lengths l = 1, 2, ..., maxSteps,
-% returned for each model relative to the best performance from basic null
-% predictors, including sliding 1- and 2-sample mean predictors and simply
-% predicting each point as the mean of the full time series.
-% Additional outputs quantify how the errors change as the prediction length
-% increases from l = 1, ..., maxSteps (relative to a simple predictor).
+% ---OUTPUTS:
+% stde_h1, stde_h2, stde_h3, stde_h4, stde_h5, stde_h6: the root-mean-square error of
+%       the model at horizon l = 1, ..., maxSteps, divided by the lowest root-mean-square
+%       error of the three trivial predictors at that horizon (stde_h<l>)
+% meanabs_h1, meanabs_h2, meanabs_h3, meanabs_h4, meanabs_h5, meanabs_h6: the same for the
+%       mean absolute error (meanabs_h<l>)
+% ac1_h1, ac1_h2, ac1_h3, ac1_h4, ac1_h5, ac1_h6: the absolute lag-1 autocorrelation of the
+%       model's errors at each horizon (ac1_h<l>; not a ratio; NaN if the errors do not
+%       vary beyond the level of rounding: their standard deviation is at most 1e-9 times
+%       the larger of the standard deviation of the series and their mean absolute value)
+% stde_meanabs_diff: the absolute value of the mean difference between the model's
+%       root-mean-square and mean absolute errors across horizons
+% stde_meandiff, stde_maxdiff, stde_stddiff: the mean, maximum, and standard
+%       deviation of the change in the model's root-mean-square error from one horizon
+%       to the next
+% stde_ndown: the number of horizon steps at which the model's root-mean-square error
+%       falls
+% (The last five outputs use the model's raw errors, not the ratios to the trivial
+% predictors.)
+%
+% ---NOTES:
+% The predictions of the fitted model start from a diffuse (completely unknown)
+% initial state (BF_SSPredict): the first samples, which determine it, are not predicted
+% (the first n + l - 1 at horizon l for a model of order n), and the error statistics
+% average over the samples predicted. All outputs are NaN if the model cannot be
+% fitted.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -56,66 +85,38 @@ function out = MF_steps_ahead(y,model,order,maxSteps)
 % ------------------------------------------------------------------------------
 
 % ------------------------------------------------------------------------------
-%% Check that a System Identification Toolbox license is available:
-% ------------------------------------------------------------------------------
-
-% ------------------------------------------------------------------------------
 %% Preliminaries
 % ------------------------------------------------------------------------------
+y = y(:);
 N = length(y); % length of the input time series
-
-% ------------------------------------------------------------------------------
-%% Inputs
-% ------------------------------------------------------------------------------
-% y, column vector of equally-spaced time series measurements
-y = BF_iddata(y,[],1); % Convert y to time series object
 
 % model, a string specifying the model type to fit
 if nargin < 2 || isempty(model)
-    model = 'ar'; % use an AR model as default
+	model = 'ar'; % use an AR model as default
 end
 
 % order, an extra parameter specific to the model choice specifying
 % additional parameters, typically an integer or set of integers indicating
 % the 'order' of the model.
 if nargin < 3 || isempty(order)
-    order = 2; % hopefully this is meaningful!
+	order = 2; % hopefully this is meaningful!
 end
 
 % maxSteps, maximum number of steps ahead for prediction
 if nargin < 4 || isempty(maxSteps)
-    maxSteps = 6; % compare up to 5 steps ahead by default
+	maxSteps = 6; % compare up to 6 steps ahead by default
 end
 
 % ------------------------------------------------------------------------------
-%% Set up training and test sets
+%% Fit the model on the whole time series
 % ------------------------------------------------------------------------------
-yTrain = y; % the whole time series
-yTest = y; % the whole time series
-
-% ------------------------------------------------------------------------------
-%% Fit the model on training data, yTrain (all data)
-% ------------------------------------------------------------------------------
-switch model
-    case 'ar' % AR model
-        if strcmp(order,'best') % fit 'best' AR model; by sbc
-            % Use arfit software to retrieve the optimum ar order by some
-            % criterion (Schwartz's Bayesian Criterion, SBC)
-            % Uses Matlab code from ARfit
-            % http://www.gps.caltech.edu/~tapio/arfit/
-            [~, Aest] = ARFIT_arfit(yTrain, 1, 10, 'sbc', 'zero');
-            order = length(Aest);
-        end
-        m = BF_ar(yTrain,order);
-
-    case 'arma'
-        m = BF_armax(yTrain,order);
-
-    case 'ss'
-        m = BF_n4sid(yTrain,order);
-
-    otherwise
-        error('Unknown model ''%s''',model);
+try
+	[A, K, C] = BF_FitPredictorModel(y, model, order);
+catch emsg
+	if contains(emsg.message, 'Unknown model')
+		rethrow(emsg);
+	end
+	out = NaN; return % the model cannot be fitted
 end
 
 % ------------------------------------------------------------------------------
@@ -126,63 +127,59 @@ steps = 1:maxSteps;
 
 % Initialize statistic vectors
 % ((-)) mf structure: for the model fit
-mf.rmserrs = zeros(maxSteps,1);
-mf.mabserrs = zeros(maxSteps,1);
-mf.ac1s = zeros(maxSteps,1);
+mf.rmserrs = zeros(maxSteps, 1);
+mf.mabserrs = zeros(maxSteps, 1);
+mf.ac1s = zeros(maxSteps, 1);
 
 % ((-)) sliding mean 1
-sm1.rmserrs = zeros(maxSteps,1);
-sm1.mabserrs = zeros(maxSteps,1);
-sm1.ac1s = zeros(maxSteps,1);
+sm1.rmserrs = zeros(maxSteps, 1);
+sm1.mabserrs = zeros(maxSteps, 1);
+sm1.ac1s = zeros(maxSteps, 1);
 
 % ((-)) sliding mean 2
-sm2.rmserrs = zeros(maxSteps,1);
-sm2.mabserrs = zeros(maxSteps,1);
-sm2.ac1s = zeros(maxSteps,1);
+sm2.rmserrs = zeros(maxSteps, 1);
+sm2.mabserrs = zeros(maxSteps, 1);
+sm2.ac1s = zeros(maxSteps, 1);
 
 for i = 1:maxSteps
-    % (1) *** Model m ***
-    yp = BF_predict(m, yTest, steps(i)); % across test set
+	% (1) *** Model m ***
+	yp = BF_SSPredict(A, K, C, y, steps(i)); % across the whole series
 
-    % Get statistics on residuals
-    mres = yp - yTest;
-    mres = mres(i:end);
+	% Get statistics on residuals (of the samples that can be predicted)
+	mres = yp - y;
+	mres = mres(~isnan(mres));
 
-    mf.rmserrs(i) = sqrt(mean(mres.^2));
-    mf.mabserrs(i) = mean(abs(mres));
-    mf.ac1s(i) = CO_AutoCorr(mres,1,'Fourier');
+	mf.rmserrs(i) = sqrt(mean(mres.^2));
+	mf.mabserrs(i) = mean(abs(mres));
+	if ~(std(mres) > 1e-9 * max(std(y), mean(abs(mres)))) % (the rule of MF_ResidualAnalysis)
+		% Errors that do not vary beyond the level of rounding (e.g., an exactly
+		% predictable series): their autocorrelation is not meaningful
+		mf.ac1s(i) = NaN;
+	else
+		mf.ac1s(i) = CO_AutoCorr(mres, 1, 'Fourier');
+	end
 
-    % (2) *** Sliding mean 1 ***
-    % A sliding mean of length 1
-    % for n-step-ahead prediction, will predict using the value n steps
-    % before it.
-    mres = yy(i+1:end) - yy(1:N-i);
+	% (2) *** Sliding mean 1 ***
+	% A sliding mean of length 1
+	% for n-step-ahead prediction, will predict using the value n steps
+	% before it.
+	mres = yy(i + 1:end) - yy(1:N - i);
 
-    sm1.rmserrs(i) = sqrt(mean(mres.^2));
-    sm1.mabserrs(i) = mean(abs(mres));
-    sm1.ac1s(i) = CO_AutoCorr(mres,1,'Fourier');
+	sm1.rmserrs(i) = sqrt(mean(mres.^2));
+	sm1.mabserrs(i) = mean(abs(mres));
+	sm1.ac1s(i) = CO_AutoCorr(mres, 1, 'Fourier');
 
-    % (3) *** Sliding mean 2 ***
-    % A sliding mean of length 2
-    sm2p = zeros(N-i-1,1);
-    for j = 1:N-i-1
-        % Two scalars instead of a 2-element array: mean([s1 s2]) is exactly
-        % (s1+s2)/2, and this avoids reallocating `seeds` on every one of the
-        % ~N*maxSteps innermost iterations. Bitwise identical (verified over
-        % 2400 cases); 16.7x faster on the kernel.
-        s1 = yy(j); s2 = yy(j+1);
-        for k = 1:i % average with itself this many times
-            p = (s1 + s2)/2;
-            s1 = s2;
-            s2 = p;
-        end
-        sm2p(j) = p;
-    end
-    mres = yy(i+2:end) - sm2p;
+	% (3) *** Sliding mean 2 ***
+	% A sliding mean of length 2
+	% Closed-form solution of the order-2 linear recurrence p(n) = (p(n-1)+p(n-2))/2
+	% that the naive iterative averaging below converges to, avoiding the loop:
+	weights = [1 + (-1)^(i + 1)/2^i; 2 + (-1)^i/2^i]./3;
+	sm2p = [yy(1:N - i - 1), yy(2:N - i)] * weights;
+	mres = yy(i + 2:end) - sm2p;
 
-    sm2.rmserrs(i) = sqrt(mean(mres.^2));
-    sm2.mabserrs(i) = mean(abs(mres));
-    sm2.ac1s(i) = CO_AutoCorr(mres,1,'Fourier');
+	sm2.rmserrs(i) = sqrt(mean(mres.^2));
+	sm2.mabserrs(i) = mean(abs(mres));
+	sm2.ac1s(i) = CO_AutoCorr(mres, 1, 'Fourier');
 end
 
 % ------------------------------------------------------------------------------
@@ -192,7 +189,7 @@ end
 sminf.res = yy - mean(yy);
 sminf.rmserr = sqrt(mean(sminf.res.^2));
 sminf.mabserr = mean(abs(sminf.res));
-sminf.ac1 = CO_AutoCorr(sminf.res,1,'Fourier');
+sminf.ac1 = CO_AutoCorr(sminf.res, 1, 'Fourier');
 
 % ------------------------------------------------------------------------------
 %% Get some output statistics
@@ -202,27 +199,27 @@ sminf.ac1 = CO_AutoCorr(sminf.res,1,'Fourier');
 % bestdumbac1 = min(abs([sm1.ac1,sm2.ac1,sminf.ac1]));
 
 for i = 1:maxSteps
-    % Relative to the best null (dumb) predictor
-    mirms = mf.rmserrs(i)/min([sm1.rmserrs(i), sm2.rmserrs(i), sminf.rmserr]); % rms error
-    miabs = mf.mabserrs(i)/min([sm1.mabserrs(i), sm2.mabserrs(i), sminf.mabserr]); % absolute error
+	% Relative to the best null (dumb) predictor
+	mirms = mf.rmserrs(i) / min([sm1.rmserrs(i), sm2.rmserrs(i), sminf.rmserr]); % rms error
+	miabs = mf.mabserrs(i) / min([sm1.mabserrs(i), sm2.mabserrs(i), sminf.mabserr]); % absolute error
 
-    out.(sprintf('rmserr_%u',i)) = mirms;
-    out.(sprintf('mabserr_%u',i)) = miabs;
+	out.(sprintf('stde_h%u', i)) = mirms;
+	out.(sprintf('meanabs_h%u', i)) = miabs;
 
-    % raw ac1 values -- ratios don't really make sense
-    makeItSo = abs(mf.ac1s(i));
-    out.(sprintf('ac1_%u',i)) = makeItSo;
+	% raw ac1 values -- ratios don't really make sense
+	makeItSo = abs(mf.ac1s(i));
+	out.(sprintf('ac1_h%u', i)) = makeItSo;
 end
 
-out.meandiffrmsabs = abs(mean(mf.rmserrs - mf.mabserrs));
+out.stde_meanabs_diff = abs(mean(mf.rmserrs - mf.mabserrs));
 
 % ------------------------------------------------------------------------------
 % Quantify shape:
 % ------------------------------------------------------------------------------
 % Other than being a boring increasing curve
-out.meandiffrms = mean(diff(mf.rmserrs));
-out.maxdiffrms = max(diff(mf.rmserrs));
-out.stddiffrms = std(diff(mf.rmserrs));
-out.ndown = sum(diff(mf.rmserrs)<0);
+out.stde_meandiff = mean(diff(mf.rmserrs));
+out.stde_maxdiff = max(diff(mf.rmserrs));
+out.stde_stddiff = std(diff(mf.rmserrs));
+out.stde_ndown = sum(diff(mf.rmserrs) < 0);
 
 end

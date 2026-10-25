@@ -1,22 +1,66 @@
 function out = WL_cwt(y, wname, maxScale)
-% WL_cwt    Continuous wavelet transform of a time series
+% WL_cwt   Statistics of the continuous wavelet transform of a time series.
 %
-% Uses the function cwt from Matlab's Wavelet Toolbox.
+% Computes the continuous wavelet transform (cwt from Matlab's Wavelet Toolbox) at
+% scales 1, ..., maxScale, takes the coefficients C and the scaled power SC (the
+% power of each coefficient relative to the mean power over all coefficients), and
+% returns statistics on the coefficients, on the distribution of the scaled power
+% (its gamma fit and entropy), on the power summed across scales as a function of
+% time, and on how the power differs between the two halves of the series.
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
+% wname, the wavelet name. For a continuous wavelet transform, a proper continuous
+%        analyzing wavelet like 'morl' (Morlet) is the standard choice; discrete
+%        orthogonal wavelets like 'db3' are also accepted (their wavelet function,
+%        evaluated on a fine grid, is used as the analyzing wavelet) and give a
+%        genuinely different, complementary decomposition (see Wavelet Toolbox
+%        Documentation for all options; default: 'db3')
+% maxScale, the maximum scale of wavelet analysis (default: 32)
 %
-% wname, the wavelet name, e.g., 'db3' (Daubechies wavelet), 'sym2' (Symlet),
-%                           etc. (see Wavelet Toolbox Documentation for all
-%                           options)
+% ---OUTPUTS:
+% meanC, meanabsC, medianabsC, maxabsC: the mean, mean magnitude, median magnitude
+%        and maximum magnitude of the coefficients
+% maxonmeanC, maxonmeanSC: the maximum relative to the mean, of the coefficient
+%        magnitudes and of the scaled power
+% pover99, pover98, pover95, pover90, pover80: the proportion of the total energy
+%        held by the coefficients whose scaled power exceeds its 99th, 98th, 95th,
+%        90th, 80th percentile (the strongest 1%, 2%, 5%, 10%, 20% of coefficients)
+% gam1, gam2: the shape and scale parameters of a gamma distribution fitted to the
+%        scaled power (gamfit; as the scaled power has mean 1, gam2 = 1/gam1); NaN if
+%        any scaled power is exactly zero, which the gamma distribution cannot describe
+% SC_h: the entropy of the energy distribution over all coefficients (in nats),
+%        relative to its maximum possible value, the log of the number of
+%        coefficients: 0 if the energy is spread evenly, negative when concentrated
+% dd_SC_h: the entropy of the maximum scaled power in each of 10 equal time boxes at
+%        each scale
+% max_ssc, min_ssc, maxonmed_ssc, std_ssc: the maximum, minimum, maximum relative to
+%        the median, and standard deviation over time of the scaled power summed
+%        across scales
+% pcross_maxssc50: the number of crossings of half its maximum by the summed power,
+%        divided by N - 1
+% stat_2_m_s: the mean of the standard deviations of the scaled power in the two
+%        halves of the series, relative to the mean scaled power
+% stat_2_s_m, stat_2_s_s: the standard deviation of the two halves' means (_m) and
+%        of their standard deviations (_s), relative to the standard deviation of
+%        the scaled power
 %
-% maxScale, the maximum scale of wavelet analysis.
+% ---NOTES:
+% The transform uses the legacy syntax cwt(y, scales, wname), which is the only form of
+% cwt that takes integer scales and a discrete or real wavelet name ('db3', 'morl'): the
+% current syntax is limited to the analytic wavelets 'morse', 'amor' and 'bump' on a
+% frequency grid of its own. In recent MATLAB releases the legacy syntax is still
+% accepted without a warning, and is equal to the textbook algorithm of convolving y
+% with the integrated, dilated wavelet (to machine precision).
 %
-%---OUTPUTS: statistics on the coefficients, entropy, and results of
-% coefficients summed across scales.
+% The scaled power SC is normalized by the mean power over all coefficients (not by the
+% total energy), so that its distribution, and the statistics that depend on it, do
+% not depend on the number of coefficients (the series length). The maximum-type
+% statistics (maxonmeanSC, max_ssc) still grow slowly with length, as the extreme of
+% more samples does.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -48,12 +92,12 @@ function out = WL_cwt(y, wname, maxScale)
 %% Check inputs:
 % ------------------------------------------------------------------------------
 if nargin < 2 || isempty(wname)
-    wname = 'db3';
-    fprintf(1,'Using default wavelet ''%s''\n',wname);
+	wname = 'db3';
+	fprintf(1, 'Using default wavelet ''%s''\n', wname);
 end
 if nargin < 3 || isempty(maxScale)
-    maxScale = 32;
-    fprintf(1,'Using default maxScale of %u\n',maxScale);
+	maxScale = 32;
+	fprintf(1, 'Using default maxScale of %u\n', maxScale);
 end
 
 % ------------------------------------------------------------------------------
@@ -62,28 +106,33 @@ end
 doPlot = false; % plot outputs to figures
 N = length(y); % length of the time series
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 scales = (1:maxScale);
 coeffs = BF_cwt(y,scales,wname);
 
-S = abs(coeffs.*coeffs); % power
-SC = 100*S./sum(S(:)); % scaled power is length-dependent
-
-% These SC values (percentage of energy in each coefficient) are what are
-% displayed in a scalogram (c.f., wscalogram function)
+S = abs(coeffs .* coeffs); % power
+% Scaled power: each coefficient's power relative to the mean power over all
+% coefficients (so it has mean 1, whatever the length of the series). The
+% percentage of the total energy in each coefficient, 100*S/sum(S), would instead
+% have mean 100/numEntries and so shrink, and its sums over scales, extremes and
+% fitted parameters would all drift, with the number of coefficients (the series
+% length). Dividing by the mean power keeps the shape of the power distribution
+% (how concentrated it is, in scales and in time) and removes the dependence on
+% how many coefficients there are.
+SC = S ./ mean(S(:));
 
 if doPlot
-    figure('color','w'); box('on');
-    subplot(3,1,1)
-    plot(y);
-    subplot(3,1,2:3);
-    pcolor(SC); shading interp;
+	figure('color', 'w'); box('on'); %#ok<UNRCH>
+	subplot(3, 1, 1)
+	plot(y);
+	subplot(3, 1, 2:3);
+	pcolor(SC); shading interp;
 end
 
 % ------------------------------------------------------------------------------
 %% Get statistics from CWT
 % ------------------------------------------------------------------------------
-numEntries = size(coeffs,1)*size(coeffs,2); % number of entries in coeffs matrix
+numEntries = size(coeffs, 1) * size(coeffs, 2); % number of entries in coeffs matrix
 
 % 1) Coefficients, coeffs
 allCoeffs = coeffs(:);
@@ -91,42 +140,59 @@ out.meanC = mean(allCoeffs);
 out.meanabsC = mean(abs(allCoeffs));
 out.medianabsC = median(abs(allCoeffs));
 out.maxabsC = max(abs(allCoeffs));
-out.maxonmeanC = out.maxabsC/out.meanabsC;
+out.maxonmeanC = out.maxabsC / out.meanabsC;
 
 % 2) Power, SC -- it's highly length-dependent
 % out.meanSC = mean(SC(:)); % (reproduces the mean power of power spectrum)
 % out.medianSC = median(SC(:));
 % out.maxSC = max(SC(:));
-out.maxonmeanSC = max(SC(:))/mean(SC(:));
+out.maxonmeanSC = max(SC(:)) / mean(SC(:));
 
-% Proportion of coeffs matrix over ___ maximum (thresholded)
-poverfn = @(x) sum(SC(SC > x*max(SC(:))))/numEntries;
-out.pover99 = poverfn(0.99);
-out.pover98 = poverfn(0.88);
-out.pover95 = poverfn(0.95);
-out.pover90 = poverfn(0.90);
-out.pover80 = poverfn(0.80);
+% Proportion of the total energy held by the coefficients whose power exceeds its
+% p-th percentile (i.e., the strongest (100-p)% of the coefficients; the sum of SC is
+% numEntries, so dividing by it gives a proportion of the energy). A threshold at a
+% fraction p of the *maximum* would instead depend on the extreme value of the
+% coefficients, and so fall steadily as the series (and the number of coefficients)
+% gets longer, even for white noise.
+SCsorted = sort(SC(:), 'descend');
+poverfn = @(p) sum(SCsorted(1:max(1, floor((100 - p) / 100 * numEntries)))) / numEntries;
+out.pover99 = poverfn(99);
+out.pover98 = poverfn(98);
+out.pover95 = poverfn(95);
+out.pover90 = poverfn(90);
+out.pover80 = poverfn(80);
 
 % Distribution of scaled power
 % Fit using Statistics Toolbox
 
 if doPlot
-    figure('color','w');
-    ksdensity(SC(:));
+	figure('color', 'w'); %#ok<UNRCH>
+	ksdensity(SC(:));
 end
 
-gamma_phat = gamfit(SC(:));
-out.gam1 = gamma_phat(1);
-out.gam2 = gamma_phat(2);
+if any(SC(:) <= 0)
+	% A gamma distribution has no mass at exactly zero power (a coefficient that is
+	% exactly zero, as for an exactly constant stretch of the series), so its
+	% maximum-likelihood fit does not exist
+	out.gam1 = NaN;
+	out.gam2 = NaN;
+else
+	gamma_phat = gamfit(SC(:));
+	out.gam1 = gamma_phat(1);
+	out.gam2 = gamma_phat(2);
+end
 
 % ------------------------------------------------------------------------------
 %% 2D entropy
 % ------------------------------------------------------------------------------
 % turn into probabilities
-SC_a = SC./sum(SC(:));
-% compute entropy
+SC_a = SC ./ sum(SC(:));
+% compute entropy, relative to its maximum possible value, log(numEntries): the
+% entropy itself grows as log(numEntries) with the series length, whereas
+% -sum(p*log(p)) - log(numEntries) = -mean(SC*log(SC)) (<= 0) does not
 SC_a = SC_a(:);
-out.SC_h = -sum(SC_a.*log(SC_a));
+SC_pos = SC_a(SC_a > 0); % (0*log(0) = 0 by continuity)
+out.SC_h = -sum(SC_pos .* log(SC_pos)) - log(numEntries);
 
 % ------------------------------------------------------------------------------
 %% Weird 2-D entropy idea -- first discretize
@@ -137,23 +203,23 @@ out.SC_h = -sum(SC_a.*log(SC_a));
 % average, ...)
 numBoxes = 10;
 if N < numBoxes
-    error('Time series too short');
+	error('Time series too short');
 end
 dd_SC = zeros(maxScale, numBoxes);
-cutoffs = round(linspace(0, N, numBoxes+1));
+cutoffs = round(linspace(0, N, numBoxes + 1));
 for i = 1:maxScale
-   for j = 1:numBoxes
-       dd_SC(i,j) = max(SC(i,cutoffs(j)+1:cutoffs(j+1)));
-   end
+	for j = 1:numBoxes
+		dd_SC(i, j) = max(SC(i, cutoffs(j) + 1:cutoffs(j + 1)));
+	end
 end
 
 % Turn into probabilities
-dd_SC = dd_SC./sum(dd_SC(:));
+dd_SC = dd_SC ./ sum(dd_SC(:));
 
 % Compute entropy
 dd_SCO = dd_SC(:);
-out.dd_SC_h = -sum(dd_SCO.*log(dd_SCO));
-
+dd_SCO = dd_SCO(dd_SCO > 0); % (0*log(0) = 0 by continuity)
+out.dd_SC_h = -sum(dd_SCO .* log(dd_SCO));
 
 % ------------------------------------------------------------------------------
 %% Sum across scales
@@ -161,16 +227,18 @@ out.dd_SC_h = -sum(dd_SCO.*log(dd_SCO));
 SSC = sum(SC);
 out.max_ssc = max(SSC);
 out.min_ssc = min(SSC);
-out.maxonmed_ssc = max(SSC)/median(SSC);
-out.pcross_maxssc50 = sum(BF_SignChange(SSC-0.5*max(SSC))) / (N-1);
+out.maxonmed_ssc = max(SSC) / median(SSC);
+out.pcross_maxssc50 = sum(BF_SignChange(SSC - 0.5 * max(SSC))) / (N - 1);
 out.std_ssc = std(SSC);
 
 % ------------------------------------------------------------------------------
 %% Stationarity
 % ------------------------------------------------------------------------------
-% 2-way
-SC_1 = SC(:,1:floor(N/2)); % collapse across scales, first half
-SC_2 = SC(:,floor(N/2)+1:end); % collapse across scales, second half
+% 2-way split of the scale-power surface, collapsed across scales. (A finer 5-way
+% split is not computed: its summary statistics were largely redundant with those
+% of the 2-way split.)
+SC_1 = SC(:, 1:floor(N / 2)); % collapse across scales, first half
+SC_2 = SC(:, floor(N / 2) + 1:end); % collapse across scales, second half
 
 mean2_1 = mean(SC_1(:));
 mean2_2 = mean(SC_2(:));
@@ -179,26 +247,8 @@ std2_1 = std(SC_1(:));
 std2_2 = std(SC_2(:));
 
 % out.stat_2_m_m = mean([mean2_1 mean2_2])/mean(SC(:));
-out.stat_2_m_s = mean([std2_1, std2_2])/mean(SC(:));
-out.stat_2_s_m = std([mean2_1, mean2_2])/std(SC(:));
-out.stat_2_s_s = std([std2_1, std2_2])/std(SC(:));
-
-% 5-way
-% I know this is terribly inefficient compared to using matrix reshape
-SCs = cell(5,1);
-SCs{1} = SC(:,1:floor(N/5));
-SCs{2} = SC(:,floor(N/5)+1:floor(2*N/5));
-SCs{3} = SC(:,floor(2*N/5)+1:floor(3*N/5));
-SCs{4} = SC(:,floor(3*N/5)+1:floor(4*N/5));
-SCs{5} = SC(:,floor(4*N/5)+1:end);
-
-for i = 1:5
-    out.(sprintf('mean5_%u',i)) = mean(SCs{i}(:));
-    out.(sprintf('std5_%u',i)) = std(SCs{i}(:));
-end
-
-out.stat_5_m_s = mean([out.std5_1, out.std5_2, out.std5_3, out.std5_4, out.std5_5])/mean(SC(:));
-out.stat_5_s_m = std([out.mean5_1, out.mean5_2, out.mean5_3, out.mean5_4, out.mean5_5])/std(SC(:));
-out.stat_5_s_s = std([out.std5_1, out.std5_2, out.std5_3, out.std5_4, out.std5_5])/std(SC(:));
+out.stat_2_m_s = mean([std2_1, std2_2]) / mean(SC(:));
+out.stat_2_s_m = std([mean2_1, mean2_2]) / std(SC(:));
+out.stat_2_s_s = std([std2_1, std2_2]) / std(SC(:));
 
 end

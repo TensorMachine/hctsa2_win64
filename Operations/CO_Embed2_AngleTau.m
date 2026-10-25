@@ -1,13 +1,31 @@
 function out = CO_Embed2_AngleTau(y, maxTau)
-% CO_Embed2_AngleTau Angle autocorrelation in a 2-dimensional embedding space
+% CO_Embed2_AngleTau   Angle autocorrelation in a 2-dimensional delay embedding, over delays.
 %
-% Investigates how the autocorrelation of angles between successive points in
-% the two-dimensional time-series embedding change as tau varies from
-% tau = 1, 2, ..., maxTau.
+% Investigates how the autocorrelation of the angles between successive points in
+% the two-dimensional delay embedding (y(t), y(t+tau)) changes as tau varies from
+% 1, 2, ..., maxTau. For each tau the angle of each step is measured from the
+% horizontal, as in CO_Embed2, and its autocorrelation is taken at lags 1, 2 and 3.
+% A step between two coincident points (a repeated pair of values) has no direction
+% (0/0), so its angle is undefined and is removed from the sequence of angles before
+% the autocorrelations are computed.
+% The outputs summarize the three resulting curves as a function of tau; all of them
+% are NaN if an angle autocorrelation is undefined at any tau (e.g., when no step at that
+% tau has a defined angle, or all of its angles are equal).
 %
 % ---INPUTS:
 % y, a column vector time series
-% maxTau, the maximum time lag to consider
+% maxTau, the maximum time delay to consider
+%
+% ---OUTPUTS:
+% ac1_thetaac1, ac1_thetaac2, ac1_thetaac3, the lag-1 autocorrelation (across tau)
+%       of the lag-1, lag-2 and lag-3 angle autocorrelations,
+% mean_thetaac1, mean_thetaac2, mean_thetaac3, their means across tau,
+% max_thetaac1, max_thetaac2, max_thetaac3, their maxima,
+% min_thetaac1, min_thetaac2, min_thetaac3, their minima,
+% meanrat_thetaac12, the ratio mean_thetaac1/mean_thetaac2,
+% diff_thetaac12, the sum across tau of the absolute difference between the lag-2
+%       and lag-1 angle autocorrelations.
+% The output is a single NaN if the series is too short to embed.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -43,7 +61,7 @@ tauRange = (1:1:maxTau);
 numTau = length(tauRange);
 
 % Ensure y is a column vector
-if size(y, 2) > size(y, 1);
+if size(y, 2) > size(y, 1)
 	y = y';
 end
 
@@ -58,7 +76,16 @@ for i = 1:numTau
 	theta = atan(theta); % measured as deviation from the horizontal
 
 	if isempty(theta)
-		error('Time series (N=%u) too short for embedding', length(y));
+		% Data-dependent (too short to embed at this tau), so NaN, not error():
+		warning('Time series (N=%u) too short for embedding at tau = %u', length(y), tau);
+		out = NaN; return
+	end
+
+	% Remove undefined angles (0/0, from steps between coincident points)
+	theta = theta(~isnan(theta));
+	if isempty(theta)
+		stats_store(:, i) = NaN;
+		continue
 	end
 
 	stats_store(1, i) = CO_AutoCorr(theta, 1, 'Fourier');
@@ -67,7 +94,7 @@ for i = 1:numTau
 end
 
 if doPlot
-	figure('color', 'w'); box('on');
+	figure('color', 'w'); box('on'); %#ok<UNRCH>
 	plot(stats_store');
 end
 
@@ -77,15 +104,16 @@ end
 out.ac1_thetaac1 = CO_AutoCorr(stats_store(1, :), 1, 'Fourier');
 out.ac1_thetaac2 = CO_AutoCorr(stats_store(2, :), 1, 'Fourier');
 out.ac1_thetaac3 = CO_AutoCorr(stats_store(3, :), 1, 'Fourier');
+% (an undefined autocorrelation at any tau gives NaN for every statistic of its curve)
 out.mean_thetaac1 = mean(stats_store(1, :));
-out.max_thetaac1 = max(stats_store(1, :));
-out.min_thetaac1 = min(stats_store(1, :));
+out.max_thetaac1 = max(stats_store(1, :), [], 'includenan');
+out.min_thetaac1 = min(stats_store(1, :), [], 'includenan');
 out.mean_thetaac2 = mean(stats_store(2, :));
-out.max_thetaac2 = max(stats_store(2, :));
-out.min_thetaac2 = min(stats_store(2, :));
+out.max_thetaac2 = max(stats_store(2, :), [], 'includenan');
+out.min_thetaac2 = min(stats_store(2, :), [], 'includenan');
 out.mean_thetaac3 = mean(stats_store(3, :));
-out.max_thetaac3 = max(stats_store(3, :));
-out.min_thetaac3 = min(stats_store(3, :));
+out.max_thetaac3 = max(stats_store(3, :), [], 'includenan');
+out.min_thetaac3 = min(stats_store(3, :), [], 'includenan');
 out.meanrat_thetaac12 = out.mean_thetaac1 / out.mean_thetaac2;
 out.diff_thetaac12 = sum(abs(stats_store(2, :) - stats_store(1, :)));
 

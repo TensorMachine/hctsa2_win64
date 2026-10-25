@@ -1,27 +1,52 @@
 function out = DN_FitKernelSmooth(x, varargin)
-% DN_FitKernelSmooth    Statistics of a kernel-smoothed distribution of the data.
+% DN_FitKernelSmooth   Statistics of a kernel-smoothed distribution of the data.
+%
+% Estimates the distribution of the values with a kernel-smoothed density
+% (BF_KSDensity: a Gaussian kernel with Silverman's normal-reference bandwidth
+% using a robust, median-absolute-deviation scale estimate, evaluated on 100 grid
+% points from three bandwidths below the minimum to three above the maximum) and returns statistics summarizing its shape: the number of peaks, the
+% height of the highest peak, the entropy, and two measures of asymmetry about
+% the mean. Optionally, also counts the crossings of the curve through given
+% heights, measures the area under the curve where it is lower than given
+% heights, and the total variation of the curve within given distances of the
+% mean. Heights and distances are in the units of the input, so the optional
+% statistics depend on the scale of the data.
 %
 % ---INPUTS:
 % x, the input data vector
 % <can also produce additional outputs with the following optional settings>
-% [opt] 'numcross': number of times the distribution crosses the given threshold
+% [opt] 'numcross': number of times the distribution crosses each given height
 %           e.g., usage: DN_FitKernelSmooth(x,'numcross',[0.5,0.7]) for
-%                        thresholds of 0.5 and 0.7
-% [opt] 'area': area under where the distribution crosses the given thresholds.
+%                        heights of 0.5 and 0.7
+% [opt] 'area': area under the curve where it is below each given height.
 %               Usage as for 'numcross' above
-% [opt] 'arclength': arclength between where the distribution passes given
-%       thresholds. Usage as above.
+% [opt] 'arclength': total variation of the curve, sum(abs(diff(f)))*dx,
+%               over the region within each given distance of the mean.
+%               Usage as above.
 %
 % ---EXAMPLE USAGE:
 % DN_FitKernelSmooth(x,'numcross',[0.05,0.1],'area',[0.1,0.2,0.4],'arclength',[0.5,1,2])
 % returns all the basic outputs, plus those for numcross, area, and arclength
 % for the thresholds given
 %
-% ---OUTPUTS: a set of statistics summarizing the obtained distribution, including
-% the number of peaks, the distributional entropy, the number of times the curve
-% crosses fifixed probability thresholds, the area under the curve for fifixed
-% probability thresholds, the arc length, and the symmetry of probability
-% density above and below the mean.
+% ---OUTPUTS:
+% npeaks, the number of peaks (local maxima with a second difference below
+%       -0.0002, i.e., clearly peaked)
+% max, the height of the highest peak
+% entropy, the entropy of the distribution, -sum(f*log(f)*dx), in nats
+% asym, the probability mass above the mean divided by that below it (NaN if there
+%       is essentially none below)
+% plsym, the total variation of the curve below the mean divided by that
+%       above the mean (NaN if there is none above)
+% numcross_005, numcross_010, numcross_020, numcross_030, numcross_040,
+% numcross_050, ...: the number of crossings of each threshold given to
+%       'numcross' (named for the threshold to two decimal places, without the
+%       point: 0.05 gives numcross_005)
+% area_005, area_010, area_020, area_030, area_040, area_050, ...: the area
+%       under the curve where it is below each threshold given to 'area'
+% arclength_010, arclength_050, arclength_100, arclength_200, ...: the total
+%       variation of the curve within each distance of the mean given to
+%       'arclength', multiplied by the grid spacing
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -73,7 +98,10 @@ clear inputP;
 m = mean(x);
 
 % First compute the smoothed empirical distribution of values in the time series
-[f, xi] = ksdensity(x);
+[f, xi] = BF_KSDensity(x);
+if any(isnan(f)) % constant data: no scale to smooth over
+	out = NaN; return
+end
 
 % 1. Number of peaks
 df = diff(f);
@@ -90,12 +118,20 @@ out.entropy = -sum(f(f > 0) .* log(f(f > 0)) * (xi(2) - xi(1))); % entropy of th
 % 4. Assymetry
 out1 = sum(f(xi > m) .* (xi(2) - xi(1)));
 out2 = sum(f(xi < m) .* (xi(2) - xi(1)));
-out.asym = out1 / out2;
+if out2 < 1e-10 % (essentially) no mass below the mean: the ratio is not meaningful
+	out.asym = NaN;
+else
+	out.asym = out1 / out2;
+end
 
 % 5. Plsym
 out1 = sum(abs(diff(f(xi < m))) .* (xi(2) - xi(1)));
 out2 = sum(abs(diff(f(xi > m))) .* (xi(2) - xi(1)));
-out.plsym = out1 / out2;
+if out2 < 1e-10 % no variation above the mean
+	out.plsym = NaN;
+else
+	out.plsym = out1 / out2;
+end
 
 % ------------------------------------------------------------------------------
 % 6. Numcross

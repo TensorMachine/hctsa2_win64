@@ -1,15 +1,33 @@
 function out = WL_fBM(y)
-% WL_fBM   Parameters of fractional Gaussian noise/Brownian motion in a time series
+% WL_fBM   Hurst exponent of the integrated time series treated as a fractional Brownian motion.
 %
-% Uses the wfbmesti function from Matlab's Wavelet Toolbox
+% Uses the wfbmesti function from Matlab's Wavelet Toolbox, which assumes the input
+% is a path of fractional Brownian motion (fBm). The series is treated as the
+% increments of that path (fractional Gaussian noise, fGn), so its cumulative sum
+% is what is passed to wfbmesti, and H is the Hurst exponent of the fGn: 0.5 for
+% white noise, above 0.5 for persistent series, below 0.5 for anti-persistent ones.
+% A series that is itself a path (e.g., a random walk), or is strongly
+% autocorrelated, has H above 1 (the estimator then gives about 1.2-1.3), outside
+% the range of fractional Brownian motion.
 %
-%---INPUT:
-% y, the time series to analyze.
+% ---INPUTS:
+% y, the time series to analyze
 %
-%---OUTPUTS: All three outputs of wfbmesti are returned from this function.
+% ---OUTPUTS:
+% H_deriv2, the Hurst exponent from wfbmesti's second-order discrete derivative
+%        estimator
+% H_deriv2Wavelet, the Hurst exponent from the wavelet-based version of the same
+%        estimator (using a fixed sym5 filter)
+%
+% ---NOTES:
+% wfbmesti's third estimator (a wavelet-variance-vs-level regression, fixed to a Haar
+% decomposition regardless of the wavelet used elsewhere in this codebase) is not
+% returned here: WL_modwtvar's decaySlope estimates the same quantity via the
+% MODWT's unbiased, boundary-corrected variance decomposition, a more principled
+% route to the same scaling exponent.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -42,9 +60,10 @@ function out = WL_fBM(y)
 % ------------------------------------------------------------------------------
 
 % Parameter estimation of fractional Brownian motion
-hest = BF_wfbmesti(y);
-out.p1 = hest(1);
-out.p2 = hest(2);
-out.p3 = hest(3);
+% wfbmesti expects an fBm path, not its increments, so the cumulative sum of y is
+% passed (passing the increments directly gives strongly biased estimates of H).
+hest = BF_wfbmesti(cumsum(y));
+out.H_deriv2 = hest(1); % second-order discrete-derivative estimate
+out.H_deriv2Wavelet = hest(2); % second-order discrete derivative, wavelet (sym5) version
 
 end

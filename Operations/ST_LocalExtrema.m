@@ -1,22 +1,57 @@
 function out = ST_LocalExtrema(y, howToWindow, n)
 % ST_LocalExtrema   How local maximums and minimums vary across the time series.
 %
-% Finds maximums and minimums within given segments of the time series and
-% analyses the results.
+% Splits the series into non-overlapping windows, finds the maximum (locMax) and
+% minimum (locMin) in each window, and analyzes how these local extremes vary
+% across windows. The 'extreme' of a window (locExt) is whichever of its maximum
+% and minimum is larger in magnitude, with its sign. A final incomplete window is
+% dropped.
+%
+% Location statistics (means, medians, minima, maxima of the extremes) are
+% divided by the maximum expected of windowLength Gaussian values (Blom's
+% approximation, norminv((w-0.375)/(w+0.25))), so that they do not grow with the
+% window length alone (for iid standard normals the expected maximum grows as
+% ~sqrt(2*log(w))). Ratios, standard deviations, and the sign statistics are not
+% normalized this way.
 %
 % ---INPUTS:
 % y, the input time series
 %
-% howToWindow, whether to use:
-%     (i) 'l', windows of a given length (in which case the third input, n
-%             specifies the length)
-%     (ii) 'n', a specified number of windows to break the time series up into
-%               (in which case the third input, n specifies this number)
-%     (iii) 'tau', sets a window length equal to the correlation length of the
-%                 time series, the first zero-crossing of the autocorrelation
-%                 function.
+% howToWindow, how the window length is set:
+%     (i) 'l', windows of a given length (in samples) n (default)
+%     (ii) 'n', a specified number n of windows to break the time series up
+%          into (window length floor(N/n))
+%     (iii) 'tau', a window length equal to the correlation length of the time
+%          series, the first zero-crossing of the autocorrelation function (not
+%          used by hctsa)
 %
-% n, somehow specifies the window length given the setting of howToWindow above.
+% n, the window length or the number of windows, according to howToWindow
+%       (default: 100 for 'l', 5 for 'n')
+%
+% ---OUTPUTS:
+% meanrat, medianrat: the mean (median) of the local maxima over the mean
+%       (median) of the magnitudes of the local minima
+% minmax, minabsmin: the smallest local maximum, and the smallest magnitude of a
+%       local minimum
+% minmaxonminabsmin: the smallest local maximum over the smallest magnitude of a
+%       local minimum
+% meanmax, medianmax: the mean, median of the local maxima
+% meanabsmin, medianabsmin: the mean, median of the magnitudes of the local minima
+% meanext, medianext: the mean, median of the local extremes (signed)
+% meanabsext, medianabsext: the mean, median of the magnitudes of the local extremes
+% (all the above except the ratios are divided by the expected Gaussian maximum)
+% stdmax, stdmin, stdext: the standard deviation of the local maxima, minima, and
+%       extremes
+% zcext, the proportion of zero-crossings of the sequence of local extremes (sign
+%       changes between consecutive windows, per window)
+% diffmaxabsmin, the mean over windows of abs(locMax - abs(locMin))
+% uord, the mean sign of the local extremes: whether extremes are more up or down
+% maxmaxmed, the maximum local maximum over the median local maximum
+% minminmed, the minimum local minimum over the median local minimum
+% maxabsext, the maximum magnitude of a local extreme over the median magnitude
+%
+% Returns NaN if the window length is NaN, longer than the series, or 1 sample or
+% shorter.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -82,7 +117,7 @@ switch howToWindow
 		error('Unknown method ''%s''', howToWindow);
 end
 
-if (windowLength > N) || (windowLength <= 1)
+if isnan(windowLength) || (windowLength > N) || (windowLength <= 1)
 	% This feature is unsuitable if the window length exceeds ts
 	fprintf(1, 'The window length is longer than the time-series length!\n');
 	out = NaN;
@@ -111,7 +146,7 @@ locExt(exti) = locMin(exti); % local extrema (furthest from mean; either maxs or
 absLocExt = abs(locExt); % the magnitude of the most extreme events in each window
 
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	hold('on');
 	plot(locMax);
 	plot(absLocExt, '--g');
@@ -122,23 +157,50 @@ end
 % ------------------------------------------------------------------------------
 %% Return outputs
 % ------------------------------------------------------------------------------
+% ------------------------------------------------------------------------------
+% Scale of a local extreme, under a Gaussian null
+% ------------------------------------------------------------------------------
+% The magnitude of a within-window extreme grows with the window length: for w
+% iid standard normals E[max] ~ sqrt(2*log(w)). With howToWindow = 'n' the
+% window is windowLength = floor(N/n), so that expectation -- and every location
+% statistic derived from it -- grows with the time-series length rather than
+% with any property of the data.
+%
+% Dividing by the expected maximum of windowLength standard normals expresses
+% these on a scale-free footing: "how extreme are the local extremes, relative
+% to Gaussian expectation for a window this long". That removes this length
+% dependence and leaves the fixed-window 'l' variants unchanged up to a
+% constant, since windowLength does not vary with N there.
+%
+% Blom's approximation for the expected largest order statistic:
+expMax = norminv((windowLength - 0.375) / (windowLength + 0.25));
+
+% Ratios below are deliberately left on the raw values: the expMax factor
+% cancels exactly in a ratio, so normalizing there would change nothing.
 out.meanrat = mean(locMax) / mean(absLocMin);
 out.medianrat = median(locMax) / median(absLocMin);
-out.minmax = min(locMax);
-out.minabsmin = min(absLocMin);
+out.minmax = min(locMax) / expMax;
+out.minabsmin = min(absLocMin) / expMax;
 out.minmaxonminabsmin = min(locMax) / min(absLocMin);
-out.meanmax = mean(locMax);
-out.meanabsmin = mean(absLocMin);
-out.meanext = mean(locExt);
-out.medianmax = median(locMax);
-out.medianabsmin = median(absLocMin);
-out.medianext = median(locExt);
+out.meanmax = mean(locMax) / expMax;
+out.meanabsmin = mean(absLocMin) / expMax;
+out.meanext = mean(locExt) / expMax;
+out.medianmax = median(locMax) / expMax;
+out.medianabsmin = median(absLocMin) / expMax;
+out.medianext = median(locExt) / expMax;
+% The std fields are NOT normalized by expMax: the spread of a maximum *shrinks*
+% as the window grows (SD[max_w] ~ 1/sqrt(2*log(w))), so dividing by expMax
+% would steepen their drift rather than remove it. These remain length-sensitive
+% for the 'n' parameterizations.
 out.stdmax = std(locMax);
 out.stdmin = std(locMin);
 out.stdext = std(locExt);
 out.zcext = ST_SimpleStats(locExt, 'zcross');
-out.meanabsext = mean(absLocExt);
-out.medianabsext = median(absLocExt);
+out.meanabsext = mean(absLocExt) / expMax;
+out.medianabsext = median(absLocExt) / expMax;
+% Not normalized by expMax: this is a *difference* between two extremes of
+% similar magnitude, so it does not carry the expMax scale and dividing by it
+% over-corrects.
 out.diffmaxabsmin = sum(abs(locMax - absLocMin)) / numWindows;
 out.uord = sum(sign(locExt)) / numWindows; % whether extreme events are more up or down
 out.maxmaxmed = max(locMax) / median(locMax);

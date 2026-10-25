@@ -1,24 +1,30 @@
 function out = CO_HistogramAMI(y, tau, meth, numBins)
-% CO_HistogramAMI      The automutual information of the distribution using histograms.
+% CO_HistogramAMI   Automutual information of a time series, from a 2-d histogram.
 %
-% The approach used to bin the data is provided.
+% Estimates the mutual information (in nats) between y(t) and y(t+tau) from the
+% joint histogram of the two, with a Miller-Madow (Panzeri-Treves) correction for
+% the upward bias of the plug-in estimate (about (Mxy - Mx - My + 1)/(2n) nats, for
+% Mxy, Mx, My occupied joint and marginal bins and n samples). The corrected
+% estimate is not clamped at zero, so it can be slightly negative for independent
+% data.
 %
 % ---INPUTS:
-%
 % y, the input time series
+% tau, the time lag, or a vector of lags (1 by default). Can also be 'ac' or 'tau',
+%      to use the first zero-crossing of the autocorrelation function.
+% meth, how the bin edges are chosen (default 'even'):
+%       'even': evenly spaced bins through the range of the time series,
+%       'std1', 'std2': numBins bins across -1 to 1 or -2 to 2 (the series is
+%                       assumed to be z-scored), plus an extra bin beyond each
+%                       edge that the series exceeds, to include outliers,
+%       'quantiles': equiprobable bins chosen using quantiles (fewer bins if
+%                    values are tied at a quantile).
+% numBins, the number of bins (default 10)
 %
-% tau, the time-lag (1 by default)
-%
-% meth, the method of computing automutual information:
-%           (i) 'even': evenly-spaced bins through the range of the time series,
-%           (ii) 'std1', 'std2': bins that extend only up to a multiple of the
-%                                standard deviation from the mean of the time
-%                                series to exclude outliers,
-%           (iii) 'quantiles': equiprobable bins chosen using quantiles.
-%
-% numBins, the number of bins, required by some methods, meth (see above)
-%
-% ---OUTPUT: the automutual information calculated in this way.
+% ---OUTPUTS:
+% For a single lag, a scalar: the automutual information at that lag.
+% For several lags, a structure with fields ami1, ami2, ami3, ami4, ami5, ...: the automutual information at
+%       the first, second, ... lag in tau.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -58,6 +64,9 @@ if nargin < 2 || isempty(tau)
 end
 if ischar(tau) && ismember(tau, {'ac', 'tau'})
 	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	if isnan(tau)
+		out = NaN; return
+	end
 end
 
 if nargin < 3 || isempty(meth)
@@ -77,36 +86,32 @@ end
 
 % same for both -- assume same distribution (true for stationary processes,
 % or small lags)
+% (the edges are explicit; see BF_HistEdges and BF_QuantileEdges, which place
+% edges so that a value exactly on one always falls in the same bin)
 switch meth
 	case 'even'
-		b = linspace(min(y), max(y), numBins + 1);
-		% Add increment buffer to ensure all points are included:
-		inc = 0.1;
-		b(1) = b(1) - inc;
-		b(end) = b(end) + inc;
+		b = BF_HistEdges(y, numBins); % through the range of the time series
 
 	case 'std1' % bins out to +/- 1 std
-		b = linspace(-1, 1, numBins + 1);
-		if min(y) < -1
+		b = BF_HistEdges(y, numBins, [-1, 1]);
+		if min(y) < b(1)
 			b = [min(y) - 0.1, b];
 		end
-		if max(y) > 1
+		if max(y) > b(end)
 			b = [b, max(y) + 0.1];
 		end
 
-	case 'std2' % bins out to +/- 1 std
-		b = linspace(-2, 2, numBins + 1);
-		if min(y) < -2
+	case 'std2' % bins out to +/- 2 std
+		b = BF_HistEdges(y, numBins, [-2, 2]);
+		if min(y) < b(1)
 			b = [min(y) - 0.1, b];
 		end
-		if max(y) > 2
+		if max(y) > b(end)
 			b = [b, max(y) + 0.1];
 		end
 
 	case 'quantiles' % use quantiles with ~equal number in each bin
-		b = quantile(y, linspace(0, 1, numBins + 1));
-		b(1) = b(1) - 0.1;
-		b(end) = b(end) + 0.1;
+		b = BF_QuantileEdges(y, numBins);
 
 	otherwise
 		error('Unknown method ''%s''', meth)
@@ -135,9 +140,29 @@ for i = 1:length(tau)
 
 	r = (pij > 0); % Defining the range in this way, we set log(0) = 0
 	amis(i) = sum(pij(r) .* log(pij(r) ./ pii(r) ./ pjj(r)));
+
+	% Miller-Madow (Panzeri-Treves) bias correction.
+	%
+	% The plug-in estimator above is biased *upwards* by approximately
+	% (Mxy - Mx - My + 1)/(2n) nats, where the M are the numbers of *occupied*
+	% joint and marginal bins and n is the sample size. For 10 bins that is
+	% about 81/(2n): +0.41 nats at n=100 against +0.013 at n=3200. Since the
+	% true AMI of an independent series is zero, the whole uncorrected value is
+	% this bias, decaying as 1/n -- i.e., it tracks time-series length rather
+	% than any property of the data. Subtracting the correction removes the
+	% leading 1/n term.
+	%
+	% The result is deliberately not clamped at zero: for genuinely independent
+	% data the corrected estimate should scatter symmetrically about 0, whereas
+	% clamping would pile such series up on a single value.
+	nSamples = numel(y1);
+	Mxy = sum(r(:)); % occupied joint bins
+	Mx = sum(pi > 0); % occupied y1 marginal bins
+	My = sum(pj > 0); % occupied y2 marginal bins
+	amis(i) = amis(i) - (Mxy - Mx - My + 1) / (2 * nSamples);
 end
 
-if length(tau) == 1
+if isscalar(tau)
 	out = amis;
 else
 	for i = 1:length(tau)

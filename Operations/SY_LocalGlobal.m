@@ -1,29 +1,43 @@
 function out = SY_LocalGlobal(y, subsetHow, n, randomSeed)
-% SY_LocalGlobal  Compares local statistics to global statistics of a time series.
+% SY_LocalGlobal   Compares local statistics to global statistics of a time series.
+%
+% Takes one subset of the time series (r) and compares its statistics to those of
+% the full time series. The mean, standard deviation, and median of the subset are
+% reported directly (the input is assumed z-scored, so the global values are 0, 1,
+% and about 0). For the other statistics the output is the relative error of the
+% subset's value, abs(1 - stat(y(r))/stat(y)), which is NaN if the global value is
+% exactly 0. Fewer than 5 points in the subset gives NaN.
+%
+% This is not the most reliable or systematic operation because only a single
+% sample is taken from the time series and compared to the full time series.
+% A better approach would be to repeat over many local subsets and compare the
+% statistics of these local regions to the full time series, cf.
+% SY_SpreadRandomLocal.
 %
 % ---INPUTS:
-% y, the time series to analyze
+% y, the time series to analyze (assumed z-scored)
 %
-% subsetHow, the local subset of time series to study:
-%             (i) 'l': the first n points in a time series,
+% subsetHow, the local subset of the time series to study:
+%             (i) 'l': the first n points in a time series (default),
 %             (ii) 'p': an initial proportion of the full time series, n
 %             (iii) 'unicg': n evenly-spaced points throughout the time series
 %             (iv) 'randcg': n randomly-chosen points from the time series
 %                               (chosen with replacement)
 %
-% n, the parameter for the method specified above
+% n, the parameter for the method specified above (default: 100 for 'l',
+%       'unicg', and 'randcg'; 0.1 for 'p')
 %
-% randomSeed, an option for whether (and how) to reset the random seed, for the
-% 'randcg' input
+% randomSeed, the seed of the random points for the 'randcg' input (see BF_RandomSeed;
+%       the numbers come from the portable generator BF_Random)
 %
-% ---OUTPUTS: the mean, standard deviation, median, interquartile range,
-% skewness, kurtosis, AC(1), and SampEn(1,0.1).
-%
-% This is not the most reliable or systematic operation because only a single
-% sample is taken from the time series and compared to the full time series.
-% A better approach would be to repeat over many local subsets and compare the
-% statistics of these local regions to the full time series,
-% cf. SY_SpreadRandomLocal
+% ---OUTPUTS:
+% absmean, the absolute value of the mean of the subset
+% std, the standard deviation of the subset
+% median, the median of the subset
+% iqr, skewness, kurtosis: the relative error of the interquartile range,
+%       skewness, and kurtosis of the subset, abs(1 - subset/global)
+% ac1, the relative error of the lag-1 autocorrelation of the subset (computed on
+%       the subset taken as a sequence, so for 'unicg' on the subsampled series)
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -99,11 +113,9 @@ switch subsetHow
 			randomSeed = [];
 		end
 
-		% Reset the random seed if specified (for reproducibility):
-		BF_ResetSeed(randomSeed);
-
-		% Take n random points in time series; there could be repeats:
-		r = randi(N, n, 1);
+		% Take n random points in time series (uniform on 1..N; there could be
+		% repeats), reproducible from the seed:
+		r = 1 + floor(N * BF_Random(n, BF_RandomSeed(randomSeed)));
 
 		% This is not very statistically robust: just a single stochastic
 		% sample with a (possibly) large variance
@@ -124,12 +136,31 @@ end
 out.absmean = abs(mean(y(r))); % /mean(y); % Makes sense without normalization if y is z-scored
 out.std = std(y(r)); % /std(y); % Makes sense without normalization if y is z-scored
 out.median = median(y(r)); % /median(y); % if median is very small then normalization could be very noisy
-out.iqr = abs(1 - iqr(y(r)) / iqr(y));
-out.skewness = abs(1 - skewness(y(r)) / skewness(y)); % how far from true
-out.kurtosis = abs(1 - kurtosis(y(r)) / kurtosis(y)); % how far from true
-out.ac1 = abs(1 - CO_AutoCorr(y(r), 1, 'Fourier') / CO_AutoCorr(y, 1, 'Fourier')); % how far from true
-sampEn_struct_r = EN_SampEn(y(r), 1, 0.1);
-sampEn_struct = EN_SampEn(y, 1, 0.1);
-out.sampen101 = sampEn_struct_r.sampen1 / sampEn_struct.sampen1;
+
+% Ratios below are undefined when the global statistic is exactly zero
+% (e.g., skewness = 0 for any symmetric distribution, a common case --
+% not a rare edge case) -- guard each rather than silently producing Inf/NaN.
+globalIQR = iqr(y);
+if globalIQR == 0, out.iqr = NaN; else, out.iqr = abs(1 - iqr(y(r)) / globalIQR); end
+
+globalSkewness = skewness(y);
+if globalSkewness == 0, out.skewness = NaN; else, out.skewness = abs(1 - skewness(y(r)) / globalSkewness); end % how far from true
+
+globalKurtosis = kurtosis(y);
+if globalKurtosis == 0, out.kurtosis = NaN; else, out.kurtosis = abs(1 - kurtosis(y(r)) / globalKurtosis); end % how far from true
+
+globalAC1 = CO_AutoCorr(y, 1, 'Fourier');
+if globalAC1 == 0, out.ac1 = NaN; else, out.ac1 = abs(1 - CO_AutoCorr(y(r), 1, 'Fourier') / globalAC1); end % how far from true
+
+% Commented out to save compute: out.permen is not a registered operation.
+% PermEn(3,1) in place of SampEn(1,0.1): cheaper and more stable on the
+% short subsets ('l' with small n, or small 'p') this operation can produce.
+% permEn_struct_r = EN_PermEn(y(r), 3, 1);
+% permEn_struct = EN_PermEn(y, 3, 1);
+% if ~isstruct(permEn_struct_r) || ~isstruct(permEn_struct) || permEn_struct.normPermEn == 0
+% 	out.permen = NaN;
+% else
+% 	out.permen = permEn_struct_r.normPermEn / permEn_struct.normPermEn;
+% end
 
 end

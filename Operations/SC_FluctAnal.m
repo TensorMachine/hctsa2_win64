@@ -1,73 +1,95 @@
 function out = SC_FluctAnal(x, q, wtf, tauStep, k, lag, logInc)
-% SC_FluctAnal   Implements fluctuation analysis by a variety of methods.
+% SC_FluctAnal   Scaling exponents from fluctuation analysis, by a choice of methods.
 %
-% Much of our implementation is based on the well-explained discussion of
-% scaling methods in:
-% "Power spectrum and detrended fluctuation analysis: Application to daily
-% temperatures" P. Talkner and R. O. Weber, Phys. Rev. E 62(1) 150 (2000)
+% The series is integrated (cumulative sum) and cut into windows of tau samples,
+% a measure of the size of the fluctuations is taken in each window, and the
+% fluctuation function F(tau) is the q-th order mean of these (q = 2 is the
+% usual root-mean-square). For a self-similar series F(tau) ~ tau^alpha, so the
+% scaling exponent alpha is the slope of log F(tau) against log tau. The methods
+% differ in how fluctuations are measured in a window (wtf, below). Much of the
+% implementation follows the discussion of scaling methods in Talkner and Weber
+% (2000).
 %
-% The main difference between algorithms for estimating scaling exponents amount
-% to differences in how fluctuations, F, are quantified in time-series segments.
-% Many alternatives are implemented in this function.
+% Straight lines are fitted by the Theil-Sen method (the median of the slopes
+% between all pairs of points), a robust estimator with a closed form (see
+% BF_TheilSen).
+%
+% Timescales tau run from 5 samples to half the series length, in tauStep
+% logarithmically spaced steps (logInc true) or in steps of tauStep samples
+% (logInc false, in which case log F is interpolated by a spline onto 50 evenly
+% spaced values of log tau). Peng et al. (1995) used 5 to a quarter of the series
+% length; Little et al. (2007) used 4 to half. Fewer than 8 timescales give NaN.
 %
 % ---INPUTS:
 % x, the input time series
+% q, the order of the fluctuation function (2, the usual choice, gives
+%       root-mean-square fluctuations); default 2
+% wtf, what to fluctuate (default 'rsrange'):
+%       'dfa': subtract a polynomial trend of order k in each window, then take
+%           the q-th order mean over all points (detrended fluctuation analysis)
+%       'endptdiff': the difference between the end points of each window
+%       'range': the range in each window
+%       'std': the standard deviation in each window (cf. Cannon et al. 1997)
+%       'iqr': the interquartile range in each window
+%       'rsrange': the range after subtracting the straight line joining the end
+%           points of the window (cf. Caccia et al. 1997)
+%       'rsrangefit': the range after subtracting a polynomial trend of order k
+%       'nothing': no windowing statistic; the q-th order mean over all points of
+%           the integrated series that fit in whole windows, with no detrending
+% tauStep, the number of timescales (logInc true) or the step in tau, in samples
+%       (logInc false); default 1
+% k, the polynomial order of the detrending, for 'dfa' and 'rsrangefit'; default 1
+% lag, an optional time lag for the integrated profile (Alvarez-Ramirez et al.
+%       2009): if given, the series is subsampled by taking every lag-th point
+%       before integrating; default none
+% logInc, whether the timescales are logarithmically spaced (true, the
+%       recommended choice) or linearly spaced (false); default true
 %
-% q, the parameter in the fluctuation function q = 2 (usual) gives RMS fluctuations.
+% ---OUTPUTS: statistics of a robust linear fit of log F(tau) against log tau, and
+% of fitting two straight lines to the same data, with the split point chosen to
+% minimize the combined error of two least-squares lines (each line spans at least
+% a quarter of the timescales, and at least 8; the lines reported are then fitted
+% robustly):
+% linfitint, alpha, se1, se2, ssr, resac1: the intercept, slope (the scaling
+%       exponent alpha), standard errors of the intercept and the slope, mean
+%       squared residual, and lag-1 autocorrelation of the residuals, of the
+%       single line fitted over all timescales (the standard errors are the usual
+%       least-squares formulas applied to the residuals of the robust fit)
+% r1_linfitint, r1_alpha, r1_se1, r1_se2, r1_ssr, r1_resac1: the same, for the
+%       first (shorter-timescale) line of the two-line fit
+% r2_linfitint, r2_alpha, r2_se1, r2_se2, r2_ssr, r2_resac1: the same, for the
+%       second (longer-timescale) line
+% logtausplit, the value of log(tau) at the split between the two lines
+% prop_r1, the proportion of the timescales covered by the first line
+% splitgain, the proportional reduction in mean squared error from fitting two
+%       least-squares lines rather than one over the whole range: one minus the
+%       ratio of the minimum two-line error to the one-line error (between 0 and 1;
+%       NaN if the one-line fit is exact)
+% meanssr, stdssr, the mean and the standard deviation of the two-line fitting
+%       error across the candidate split points
+% alphadiff, the difference r1_alpha - r2_alpha between the scaling exponents of
+%       the two lines
+% (All are NaN if there are too few timescales; the two-line fields are NaN if
+% the timescales are too few to support two lines.)
 %
-% wtf, (what to fluctuate)
-%       (i) 'endptdiff', calculates the differences in end points in each segment
-%       (ii) 'range' calculates the range in each segment
-%       (iii) 'std' takes the standard deviation in each segment
-%           cf. "Evaluating scaled windowed variance methods for estimating the
-%               Hurst coefficient of time series", M. J. Cannon et al. Physica A
-%               241(3-4) 606 (1997)
-%       (iv) 'iqr' takes the interquartile range in each segment
-%       (v) 'dfa' removes a polynomial trend of order k in each segment,
-%       (vi) 'rsrange' returns the range after removing a straight line fit
-%           cf. "Analyzing exact fractal time series: evaluating dispersional
-%           analysis and rescaled range methods",  D. C. Caccia et al., Physica
-%           A 246(3-4) 609 (1997)
-%       (vii) 'rsrangefit' fits a polynomial of order k and then returns the
-%           range. The parameter q controls the order of fluctuations, for which
-%           we mostly use the standard choice, q = 2, corresponding to root mean
-%           square fluctuations.
-%           An optional input parameter to this operation is a timelag for
-%           computing the cumulative sum (or integrated profile), as suggested
-%           by: "Using detrended fluctuation analysis for lagged correlation
-%           analysis of nonstationary signals" J. Alvarez-Ramirez et al. Phys.
-%           Rev. E 79(5) 057202 (2009)
+% ---REFERENCES:
+% P. Talkner and R. O. Weber, "Power spectrum and detrended fluctuation analysis:
+% Application to daily temperatures", Phys. Rev. E 62(1), 150 (2000).
+% M. J. Cannon et al., "Evaluating scaled windowed variance methods for estimating
+% the Hurst coefficient of time series", Physica A 241(3-4), 606 (1997).
+% D. C. Caccia et al., "Analyzing exact fractal time series: evaluating
+% dispersional analysis and rescaled range methods", Physica A 246(3-4), 609 (1997).
+% J. Alvarez-Ramirez et al., "Using detrended fluctuation analysis for lagged
+% correlation analysis of nonstationary signals", Phys. Rev. E 79(5), 057202 (2009).
+% C.-K. Peng et al., "Statistical properties of DNA sequences", Physica A
+% 221(1-3), 180 (1995).
+% Little et al., "Exploiting Nonlinear Recurrence and Fractal Scaling Properties
+% for Voice Disorder Detection", Biomed. Eng. Online 6, 23 (2007).
 %
-% tauStep, number of tau (locInc true), or increments in tau for linear range
-%               (if logInc = 0), or
-%
-%           The spacing of timescales, tau, is commonly logarithmic through a range from
-%           5 samples to a quarter of the length of the time series, as suggested in
-%           "Statistical properties of DNA sequences", C.-K. Peng et al. Physica A
-%           221(1-3) 180 (1995)
-%
-%           Max A. Little's fractal paper used L = 4 to L = N/2:
-%           "Exploiting Nonlinear Recurrence and Fractal Scaling Properties for
-%           Voice Disorder Detection", Little et al. Biomed. Eng. Online 6 23 (2007)
-%
-% k, polynomial order of detrending (for 'dfa' & 'rsrangefit')
-%
-% lag, optional time-lag, as in Alvarez-Ramirez (see (vii) above)
-%
-% logInc, whether to use logarithmic increments in tau (it should be logarithmic)
-%
-% ---OUTPUTS: include statistics of fitting a linear function to a plot of log(F) as
-% a function of log(tau), and for fitting two straight lines to the same data,
-% choosing the split point at tau = tau_{split} as that which minimizes the
-% combined fitting errors.
-%
-% This function can also be applied to the absolute deviations of the time
-% series from its mean, and also for just the sign of deviations from the mean
-% (i.e., converting the time series into a series of +1, when the time series is
-% above its mean, and -1 when the time series is below its mean).
-%
-% All results are obtained with both linearly, and logarithmically-spaced time
-% scales tau.
+% ---NOTES:
+% In hctsa the function is also applied to the absolute values of the z-scored
+% series and to its sign (+1 above the mean, -1 below), to look at the scaling of
+% the magnitude and of the sign of the fluctuations separately.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -123,7 +145,6 @@ if nargin < 7
 end
 
 % ------------------------------------------------------------------------------
-N = length(x); % length of the time series
 doPlot = false; % plot relevant outputs to figure
 
 % -------------------------------------------------------------------------------
@@ -135,9 +156,10 @@ else
 	% If a lag is specified, do a decimation:
 	y = cumsum(x(1:lag:end));
 end
+N = length(y); % length of the integrated series (shorter than x if a lag is used)
 
 % -------------------------------------------------------------------------------
-% Perform scaling over a range of tau, up to a fifth the time-series length
+% Perform scaling over a range of tau, up to half the time-series length
 % -------------------------------------------------------------------------------
 % Peng (1995) suggests 5:N/4 for DFA
 % Caccia suggested from 10 to (N-1)/2...
@@ -191,7 +213,7 @@ for i = 1:ntau
 			y_dt = iqr(y_buff);
 		case 'dfa'
 			tt = (1:tau)'; % faux time range
-			for j = 1:size(y_buff, 2);
+			for j = 1:size(y_buff, 2)
 				% fit a polynomial of order k in each subsegment
 				p = polyfit(tt, y_buff(:, j), k);
 				% remove the trend, store back in y_buff
@@ -208,7 +230,7 @@ for i = 1:ntau
 			y_dt = range(y_buff);
 		case 'rsrangefit' % polynomial fit (order k) rather than endpoints fit: (~DFA)
 			tt = (1:tau)'; % faux time range
-			for j = 1:size(y_buff, 2);
+			for j = 1:size(y_buff, 2)
 				% fit a polynomial of order k in each subsegment
 				p = polyfit(tt, y_buff(:, j), k);
 				% remove the trend, store back in y_buff
@@ -245,7 +267,7 @@ out = DoRobustLinearFit(out, logtt, logFF, 1:numTimeScales, '');
 
 % PLOT THIS?:
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	plot(logtt, logFF, 'o-k');
 	title(out.alpha)
 end
@@ -263,32 +285,70 @@ end
 % (currently, in the log scale, there are relatively more at slower timescales)
 
 % Determine the errors
+% ------------------------------------------------------------------------------
+% minPoints scales with numTimeScales rather than being a fixed constant: a
+% fixed small minPoints lets the search reach breakpoints right at the edge of
+% the domain, where a segment of only a handful of points can trivially
+% achieve near-zero fit error regardless of whether the series has any real
+% change in scaling behavior. Requiring each segment to span at least a
+% quarter of the timescale range keeps the search away from these degenerate
+% edge solutions. The floor of 8 also guarantees DoRobustLinearFit's own
+% length>=8 requirement is always satisfied whenever a fit is attempted here.
 sserr = nan(numTimeScales, 1); % don't choose the end points
-minPoints = 6;
-for i = minPoints:numTimeScales - minPoints
-	r1 = 1:i;
-	p1 = polyfit(logtt(r1), logFF(r1), 1);
-	r2 = i:numTimeScales;
-	p2 = polyfit(logtt(r2), logFF(r2), 1);
-	% Sum of errors from fitting lines to both segments:
-	sserr(i) = norm(polyval(p1, logtt(r1)) - logFF(r1)) + norm(polyval(p2, logtt(r2)) - logFF(r2));
+minPoints = max(8, round(0.25 * numTimeScales));
+if numTimeScales >= 2 * minPoints
+	% Single straight line over the whole range (least squares), for comparison
+	p0 = polyfit(logtt, logFF, 1);
+	ssr1 = sum((polyval(p0, logtt) - logFF).^2) / numTimeScales;
+	for i = minPoints:numTimeScales - minPoints
+		r1 = 1:i;
+		p1 = polyfit(logtt(r1), logFF(r1), 1);
+		r2 = i:numTimeScales;
+		p2 = polyfit(logtt(r2), logFF(r2), 1);
+		% Mean squared error, pooled across both segments and normalized by
+		% the total number of points sampled (numTimeScales), so that it is
+		% comparable to ssr1 and independent of tauStep.
+		e1 = polyval(p1, logtt(r1)) - logFF(r1);
+		e2 = polyval(p2, logtt(r2)) - logFF(r2);
+		sserr(i) = (sum(e1.^2) + sum(e2.^2)) / numTimeScales;
+	end
 end
 
-% breakPt is the point where it's best to fit a line before and another line after
-breakPt = find(sserr == min(sserr), 1, 'first');
-r1 = 1:breakPt;
-r2 = breakPt:numTimeScales;
+if all(isnan(sserr))
+	% Too few timescales to fit two distinct linear regimes meaningfully
+	r1 = []; r2 = [];
+	out.prop_r1 = NaN;
+	out.logtausplit = NaN;
+	out.splitgain = NaN;
+	out.meanssr = NaN;
+	out.stdssr = NaN;
+else
+	% breakPt is the point where it's best to fit a line before and another line after.
+	% The error curve can be flat, so take the first split whose error is within a
+	% tiny relative tolerance of the minimum, rather than testing for exact equality
+	% (which rounding errors can decide)
+	minErr = min(sserr);
+	breakPt = find(sserr <= minErr * (1 + 1e-9), 1, 'first');
+	r1 = 1:breakPt;
+	r2 = breakPt:numTimeScales;
 
-% Proportion of the domain of timescales corresponding to the first good linear fit
-out.prop_r1 = length(r1) / numTimeScales;
+	% Proportion of the domain of timescales corresponding to the first good linear fit
+	out.prop_r1 = length(r1) / numTimeScales;
 
-out.logtausplit = logtt(breakPt);
-out.ratsplitminerr = min(sserr) / out.ssr;
-out.meanssr = nanmean(sserr);
-out.stdssr = nanstd(sserr);
+	out.logtausplit = logtt(breakPt);
+	% The proportional reduction in squared error from using two lines rather than one
+	% (NaN if the single line is exact to rounding error, when the ratio is meaningless)
+	if ssr1 > 1e-24
+		out.splitgain = max(0, 1 - minErr / ssr1);
+	else
+		out.splitgain = NaN;
+	end
+	out.meanssr = mean(sserr,'omitnan');
+	out.stdssr = std(sserr,0,'omitnan');
+end
 
 if doPlot
-	subplot(3, 1, 1)
+	subplot(3, 1, 1) %#ok<UNRCH>
 	plot(y)
 	subplot(3, 1, 2)
 	plot(logtt(r1), logFF(r1), 'o-b')
@@ -309,15 +369,12 @@ out = DoRobustLinearFit(out, logtt, logFF, r1, 'r1_');
 % R2:
 out = DoRobustLinearFit(out, logtt, logFF, r2, 'r2_');
 
-if isnan(out.r1_alpha) || isnan(out.r2_alpha)
-	out.alpharat = NaN;
-else
-	out.alpharat = out.r1_alpha / out.r2_alpha;
-end
+% Change in scaling exponent between the two regimes:
+out.alphadiff = out.r1_alpha - out.r2_alpha;
 
 % -------------------------------------------------------------------------------
 function out = DoRobustLinearFit(out, logtt, logFF, theRange, fieldName)
-	% Get robust linear fit statistics on scaling range
+	% Robust (Theil-Sen) linear fit statistics on scaling range
 	% Adds fields to the output structure
 
 	if length(theRange) < 8 || all(isnan(logFF(theRange)))
@@ -328,14 +385,19 @@ function out = DoRobustLinearFit(out, logtt, logFF, theRange, fieldName)
 		out.([fieldName, 'ssr']) = NaN;
 		out.([fieldName, 'resac1']) = NaN;
 	else
-		[linfit, stats] = robustfit(logtt(theRange), logFF(theRange));
+		xx = logtt(theRange);
+		p = BF_TheilSen(xx, logFF(theRange));
+		resid = logFF(theRange) - polyval(p, xx);
+		n = length(xx);
+		Sxx = sum((xx - mean(xx)).^2);
+		s2 = sum(resid.^2) / (n - 2);
 
-		out.([fieldName, 'linfitint']) = linfit(1); % linear fit intercept
-		out.([fieldName, 'alpha']) = linfit(2); % linear fit gradient
-		out.([fieldName, 'se1']) = stats.se(1); % standard error in intercept
-		out.([fieldName, 'se2']) = stats.se(2); % standard error in mean
-		out.([fieldName, 'ssr']) = mean(stats.resid.^2); % mean squares residual
-		out.([fieldName, 'resac1']) = CO_AutoCorr(stats.resid, 1, 'Fourier');
+		out.([fieldName, 'linfitint']) = p(2); % linear fit intercept
+		out.([fieldName, 'alpha']) = p(1); % linear fit gradient
+		out.([fieldName, 'se1']) = sqrt(s2*(1/n + mean(xx)^2/Sxx)); % standard error in intercept
+		out.([fieldName, 'se2']) = sqrt(s2/Sxx); % standard error in gradient
+		out.([fieldName, 'ssr']) = mean(resid.^2); % mean squares residual
+		out.([fieldName, 'resac1']) = CO_AutoCorr(resid, 1, 'Fourier');
 	end
 end
 

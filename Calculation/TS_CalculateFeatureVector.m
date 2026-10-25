@@ -1,4 +1,4 @@
-function [featureVector,calcTimes,calcQuality] = TS_CalculateFeatureVector(tsStruct,doParallel,Operations,MasterOperations,codeSpecial,howVocal)
+function [featureVector,calcTimes,calcQuality,masterErrors] = TS_CalculateFeatureVector(tsStruct,doParallel,Operations,MasterOperations,codeSpecial,howVocal,beVerbose)
 % TS_CalculateFeatureVector	Compute a feature vector from an input time series
 %
 %---INPUTS:
@@ -7,7 +7,7 @@ function [featureVector,calcTimes,calcQuality] = TS_CalculateFeatureVector(tsStr
 % doParallel, (binary) whether to compute the features using parallel processing
 % Operations, an hctsa-style table of Operations
 % MasterOperations, an hctsa-style table of MasterOperations
-% codeSpecial, whether to code special values with quality labels (for mySQL database)
+% codeSpecial, whether to code special values with quality labels;
 % 				this makes sure the featureVector is all real numbers, and any
 %				special values (like NaNs, Infs, etc.) are coded with corresponding
 % 				labels in calcQuality.
@@ -16,13 +16,29 @@ function [featureVector,calcTimes,calcQuality] = TS_CalculateFeatureVector(tsStr
 % 				codeSpecial = true: featureVector is all real numbers, and is set to
 % 							     zero where any special-valued outputs occur.
 % howVocal, {'fast', 'minimal', or 'full'}: how to give user feedback on the computation.
+% beVerbose, [default: false] whether to show text output (e.g., fprintf/warning
+% 				messages) generated *inside* individual Operations -- many
+% 				Operations print ad hoc diagnostics (e.g. "data are not positive,
+% 				but Log-Normal is a positive-only distribution") that otherwise
+% 				flood the screen regardless of howVocal. When false (default),
+% 				this output is suppressed and howVocal's usual progress bar/summary
+% 				behaviour is unaffected. When true, an animated progress bar isn't
+% 				used (it doesn't mix well with interleaved messages); instead each
+% 				master operation gets its own line, followed by any output it produced.
 %
 %---OUTPUTS:
 % featureVector, the feature vector obtained by running MasterOperations and
 % 					retrieving all features defined in the Operations structure
 % 					array on the time series data given in tsStruct.
-% calcTimes, corresponding calculation times for each feature in featureVector
+% calcTimes, corresponding calculation times for each feature in featureVector.
+%               Each is the time taken by the feature's *master* operation, so
+%               features sharing a master operation repeat the same time:
+%               sum(calcTimes) overcounts the total (see TS_TotalCalcTime).
 % calcQuality, quality labels of each calculation (e.g., coding for NaNs, Infs, etc.)
+% masterErrors, an n-by-2 cell array with the code string and the error message of
+%               each of the n master operations that threw an error (empty when
+%               none did). Lets a caller whose workers' text output is not
+%               visible (TS_Compute's 'series' parallelism) report what went wrong.
 %
 %---USAGE:
 % Quickly compute a feature vector of a 500-long random time-series using the
@@ -30,7 +46,7 @@ function [featureVector,calcTimes,calcQuality] = TS_CalculateFeatureVector(tsStr
 % >> features = TS_CalculateFeatureVector(randn(500,1));
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -73,10 +89,10 @@ end
 if nargin < 3 || isempty(Operations)
     fprintf(1,'Importing the default hctsa set of time-series features!\n');
     theINPfile = 'INP_ops_hctsa.txt';
-    Operations = SQL_Add('ops',theINPfile,false,false);
+    Operations = TS_ReadInputFile('ops',theINPfile,false);
 elseif ischar(Operations)
     theINPfile = Operations;
-    Operations = SQL_Add('ops',theINPfile,false,false);
+    Operations = TS_ReadInputFile('ops',theINPfile,false);
 end
 if isnumeric(Operations)
 	error('Provide an input file or a structure array of Operations.');
@@ -84,7 +100,7 @@ end
 
 if nargin < 4 || isempty(MasterOperations)
 	% Use the default library:
-	MasterOperations = SQL_Add('mops','INP_mops_hctsa.txt',false,false);
+	MasterOperations = TS_ReadInputFile('mops','INP_mops_hctsa.txt',false);
 	% Need to link operations to masters if not already supplied:
 	[Operations,MasterOperations] = TS_LinkOperationsWithMasters(Operations,MasterOperations);
 end
@@ -97,6 +113,11 @@ end
 % Whether to give information out to screen
 if nargin < 6
 	howVocal = 'minimal';
+end
+
+% Whether to show text output generated inside individual Operations
+if nargin < 7 || isempty(beVerbose)
+	beVerbose = false;
 end
 
 %-------------------------------------------------------------------------------
@@ -175,6 +196,7 @@ end
 featureVector = zeros(numCalc,1); % Output of each operation
 calcQuality = zeros(numCalc,1); % Quality of output from each operation
 calcTimes = nan(numCalc,1); % Calculation time for each operation
+masterErrors = cell(0,2); % {master code string, error message} for each master operation that errored
 
 % --------------------------------------------------------------------------
 %% Pre-Processing
@@ -197,17 +219,35 @@ fullTimer = tic;
 MasterOutput = cell(height(MasterOperations),1); % Ouput structures
 MasterCalcTime = zeros(height(MasterOperations),1); % Calculation times for each master operation
 
+% Map from MasterOperations.ID to its row index, built once, so that looking up
+% a master ID below is O(1) instead of a linear scan (via find) per lookup:
+masterIDToInd = containers.Map(num2cell(MasterOperations.ID),num2cell((1:height(MasterOperations))'));
+
+% Precompile each master operation's code string into a function handle, if not
+% already done by the caller (e.g., TS_Compute does this once, outside its
+% per-time-series loop, so it's only paid for here when calling this function
+% standalone): avoids eval/evalc re-parsing the same code string from scratch
+% on every call.
+if ~ismember('Fn',MasterOperations.Properties.VariableNames)
+    MasterOperations.Fn = cell(height(MasterOperations),1);
+    for i = 1:height(MasterOperations)
+        MasterOperations.Fn{i} = str2func(['@(x,x_z) ',MasterOperations.Code{i}]);
+    end
+end
+
 Master_IDs_calc = unique(Operations.MasterID); % Master_IDs that need to be calculated
-Master_ind_calc = arrayfun(@(x)find(MasterOperations.ID==x,1),Master_IDs_calc); % Indicies of MasterOperations that need to be calculated
+Master_ind_calc = arrayfun(@(x)masterIDToInd(x),Master_IDs_calc); % Indicies of MasterOperations that need to be calculated
 numMopsToCalc = length(Master_IDs_calc); % Number of master operations to calculate
 
 % Index sliced variables to minimize the communication overhead in the parallel processing
-par_MasterOpCodeCalc = MasterOperations.Code(Master_ind_calc); % String array of strings of Code to evaluate
+par_MasterOpCodeCalc = MasterOperations.Code(Master_ind_calc); % Code strings, kept only for display/error messages
+par_MasterOpFnCalc = MasterOperations.Fn(Master_ind_calc); % Precompiled function handles to evaluate
 par_mop_ids = MasterOperations.ID(Master_ind_calc); % mop_id for each master operation
 
 % Store in temporary variables for parfor loop then map back later
 MasterOutput_tmp = cell(numMopsToCalc,1);
 MasterCalcTime_tmp = zeros(numMopsToCalc,1);
+MasterErrorMsg_tmp = repmat({''},numMopsToCalc,1); % '' unless that master operation errored
 
 % ----
 % Evaluate all the master operations
@@ -220,26 +260,62 @@ masterTimer = tic;
 if doParallel
     % PARFOR Loop (parallel)
 	parfor jj = 1:numMopsToCalc
-		[MasterOutput_tmp{jj},MasterCalcTime_tmp(jj)] = ...
-			TS_ComputeMasterLoop(x,x_z,par_MasterOpCodeCalc{jj}, ...
-				par_mop_ids(jj),numMopsToCalc,howVocal,TimeSeries_i_ID,jj);
+		[MasterOutput_tmp{jj},MasterCalcTime_tmp(jj),MasterErrorMsg_tmp{jj}] = ...
+			TS_ComputeMasterLoop(x,x_z,par_MasterOpFnCalc{jj},par_MasterOpCodeCalc{jj}, ...
+				par_mop_ids(jj),numMopsToCalc,howVocal,TimeSeries_i_ID,jj,beVerbose);
 	end
 else
     % Normal FOR Loop (serial)
-    if strcmp(howVocal,'minimal')
+    % (the animated progress bar doesn't mix well with beVerbose's interleaved
+    % messages, so skip it in that case -- TS_ComputeMasterLoop prints its own
+    % per-operation line instead)
+    showProgressBar = strcmp(howVocal,'minimal') && ~beVerbose;
+    if showProgressBar
         BF_ProgressBar('new');
     end
 	for jj = 1:numMopsToCalc
-		[MasterOutput_tmp{jj},MasterCalcTime_tmp(jj)] = ...
-			TS_ComputeMasterLoop(x,x_z,par_MasterOpCodeCalc{jj}, ...
-				par_mop_ids(jj),numMopsToCalc,howVocal,TimeSeries_i_ID,jj);
-
-        if strcmp(howVocal,'minimal')
-            BF_ProgressBar(jj/numMopsToCalc);
+        if showProgressBar
+            % Show *before* the call, not after, so the bar names whichever
+            % operation is currently running (most useful for spotting which
+            % one a slow calculation is stuck on) rather than the one that
+            % just finished. (percentage complete, not a time-based ETA:
+            % master operations are evaluated in file order, with cheap ones
+            % clustered first, so a linear extrapolation from elapsed time is
+            % systematically optimistic until the slow operations near the
+            % end -- see TS_Compute.m for the same reasoning)
+            currentCode = par_MasterOpCodeCalc{jj};
+            if length(currentCode) > 35
+                currentCode = [currentCode(1:34),'~']; % truncate long code strings (some run to 100+ chars)
+            end
+            BF_ProgressBar((jj-1)/numMopsToCalc,[],[],sprintf(' %.0f%% %s',100*(jj-1)/numMopsToCalc,currentCode));
         end
+
+		[MasterOutput_tmp{jj},MasterCalcTime_tmp(jj),MasterErrorMsg_tmp{jj}] = ...
+			TS_ComputeMasterLoop(x,x_z,par_MasterOpFnCalc{jj},par_MasterOpCodeCalc{jj}, ...
+				par_mop_ids(jj),numMopsToCalc,howVocal,TimeSeries_i_ID,jj,beVerbose);
 	end
-    if strcmp(howVocal,'minimal')
+    if showProgressBar
+        BF_ProgressBar(1,[],[],' 100% complete');
         BF_ProgressBar('close');
+    end
+end
+
+erroredInd = find(~cellfun(@isempty,MasterErrorMsg_tmp));
+masterErrors = [par_MasterOpCodeCalc(erroredInd),MasterErrorMsg_tmp(erroredInd)];
+
+% When errors were suppressed above to avoid interrupting the progress bar
+% (howVocal=='minimal' and ~beVerbose -- see TS_ComputeMasterLoop.m), report
+% them all together now instead of silently dropping them: the summary line
+% below already gives an error *count*, but not what actually went wrong.
+if strcmp(howVocal,'minimal') && ~beVerbose
+    erroredInd = find(~cellfun(@isempty,MasterErrorMsg_tmp));
+    if ~isempty(erroredInd)
+        fprintf(1,'\n--- %u master operation error(s): ---\n',length(erroredInd));
+        for k = 1:length(erroredInd)
+            jj = erroredInd(k);
+            fprintf(1,'---Error evaluating %s:\n%s.\n',par_MasterOpCodeCalc{jj},MasterErrorMsg_tmp{jj});
+        end
+        fprintf(1,'\n');
     end
 end
 
@@ -258,7 +334,7 @@ clear('masterTimer')
 % --------------------------------------------------------------------------
 % Set sliced version of matching indicies across the range toCalc
 % Indices of MasterOperations corresponding to each Operation (i.e., each index of toCalc)
-MasterOp_ind = arrayfun(@(x)find(MasterOperations.ID==x,1),Operations.MasterID);
+MasterOp_ind = arrayfun(@(x)masterIDToInd(x),Operations.MasterID);
 
 for jj = 1:numCalc
 	try
@@ -276,6 +352,11 @@ for jj = 1:numCalc
 			fprintf(1,'Error retrieving element %s from %s.\n', ...
 				Operations.CodeString{jj},MasterOperations.Label{MasterOp_ind(jj)});
 		end
+		% Record it as an error rather than leaving the initialized (0, quality 0)
+		% pair, which would otherwise be stored as a good, real-valued zero:
+		featureVector(jj) = 0;
+		calcQuality(jj) = 1;
+		calcTimes(jj) = NaN;
 	end
 end
 
@@ -344,7 +425,7 @@ numSpecial = sum(calcQuality > 1);
 switch howVocal
 case 'full'
     fprintf(1,'********************************************************************\n');
-    fprintf(1,'; ; ; : : : : ; ; ; ;   %s    ; ; ; ; : : : ; ; ;\n',datestr(now));
+    fprintf(1,'; ; ; : : : : ; ; ; ;   %s    ; ; ; ; : : : ; ; ;\n',char(datetime('now','Format','dd-MMM-yyyy HH:mm:ss')));
     fprintf(1,'Calculation complete for %s (ts_id = %u, N = %u)\n', ...
                         tsStruct.Name,tsStruct.ID,tsStruct.Length);
     fprintf(1,'%u real-valued outputs, %u errors, %u special-valued outputs stored.\n',...

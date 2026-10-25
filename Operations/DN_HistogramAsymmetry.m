@@ -1,13 +1,38 @@
 function out = DN_HistogramAsymmetry(y, numBins, doSimple)
-% DN_HistogramAsymmetry  Measures of distributional asymmetry
+% DN_HistogramAsymmetry   Measures of the asymmetry of the histogram of the data.
 %
-% Measures the asymmetry of the histogram distribution of the input data vector.
+% Compares the histograms of the positive and the negative values of a
+% z-scored series. A histogram of numBins equal-width bins is built separately
+% over the range of the positive values and over the range of the negative
+% values, and expressed as proportions of the number of nonzero values. The
+% outputs compare how many values lie on each side, the proportion in the
+% fullest bin on each side, and the location of that bin. A symmetric
+% distribution gives 0 for all the differences and for modeAsymmetry.
+%
+% The input is assumed to be z-scored (a warning is raised otherwise), so that
+% positive and negative values lie above and below the mean.
 %
 % ---INPUTS:
+% y, the input data vector
+% numBins, the number of bins to use in each histogram (default: 10)
+% doSimple, whether to use a simple binning method with linearly spaced bins
+%       (BF_SimpleBinner; true, the default), or equal-width bins spanning the data of each
+%       side with their edges shifted by a tiny fraction of a bin so that values exactly on an
+%       edge always go to the upper bin (BF_HistEdges, then histcounts; false)
 %
-% y, the input data vector.
-% numBins, the number of bins to use in the histogram.
-% doSimple, whether to use a simple binning method (linearly spaced bins).
+% ---OUTPUTS:
+% densityDiff, the proportion of nonzero values that are positive minus the
+%       proportion that are negative
+% modeProbPos, the proportion of nonzero values in the fullest bin of the
+%       positive values
+% modeProbNeg, the proportion of nonzero values in the fullest bin of the
+%       negative values
+% modeDiff, modeProbPos - modeProbNeg
+% posMode, the center of the fullest bin of the positive values (the mean of
+%       the centers if several tie)
+% negMode, the center of the fullest bin of the negative values (the mean of
+%       the centers if several tie)
+% modeAsymmetry, posMode + negMode
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -64,8 +89,8 @@ if doSimple
 	[countsPos, binEdgesPos] = BF_SimpleBinner(yPos, numBins);
 	[countsNeg, binEdgesNeg] = BF_SimpleBinner(yNeg, numBins);
 else
-	[countsPos, binEdgesPos] = histcounts(yPos, numBins);
-	[countsNeg, binEdgesNeg] = histcounts(yNeg, numBins);
+	[countsPos, binEdgesPos] = SUB_histogram(yPos, numBins);
+	[countsNeg, binEdgesNeg] = SUB_histogram(yNeg, numBins);
 end
 
 % Normalize by total counts:
@@ -78,7 +103,11 @@ binCentersPos = mean([binEdgesPos(1:end - 1); binEdgesPos(2:end)]);
 binCentersNeg = mean([binEdgesNeg(1:end - 1); binEdgesNeg(2:end)]);
 
 % Histogram counts and overall density differences:
-out.densityDiff = sum(y > 0) - sum(y < 0); % measure of asymmetry about the mean
+% Asymmetry about the mean, as a PROPORTION of the non-zero values (matching the
+% denominator modeProbPos/modeProbNeg below already use). A raw count difference is
+% extensive -- it grows with the time-series length rather than describing the
+% distribution.
+out.densityDiff = (sum(y > 0) - sum(y < 0)) / NnonZero;
 out.modeProbPos = max(pPos);
 out.modeProbNeg = max(pNeg);
 out.modeDiff = out.modeProbPos - out.modeProbNeg;
@@ -88,4 +117,16 @@ out.posMode = mean(binCentersPos(pPos == out.modeProbPos));
 out.negMode = mean(binCentersNeg(pNeg == out.modeProbNeg));
 out.modeAsymmetry = out.posMode + out.negMode;
 
+end
+
+% ------------------------------------------------------------------------------
+function [counts, binEdges] = SUB_histogram(y, numBins)
+	% Counts in numBins equal-width bins spanning y (explicit edges: BF_HistEdges)
+	if isempty(y) % nothing on this side of the mean: no histogram
+		counts = zeros(1, numBins);
+		binEdges = NaN(1, numBins + 1);
+	else
+		binEdges = BF_HistEdges(y, numBins);
+		counts = histcounts(y, binEdges);
+	end
 end

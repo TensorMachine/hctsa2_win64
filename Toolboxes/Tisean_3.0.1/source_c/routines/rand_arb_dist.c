@@ -84,7 +84,7 @@ double *rand_arb_dist(double *x,unsigned long nx,unsigned long nc,
     for (j=0;j<nb;j++)
       if (box[j] >= hrnd)
 	break;
-    drnd=(double)rnd_long()/(double)ULONG_MAX*epsinv;
+    drnd=(double)rnd_long()/(double)ULLONG_MAX*epsinv; /* hctsa2: see rand.c */
     randarb[i]=min+((double)j*epsinv+drnd)*inter;
   }
 

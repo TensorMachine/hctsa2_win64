@@ -1,8 +1,13 @@
-function filePath = BF_WriteTempFile(dataVector,whatPrecision)
+function filePath = BF_WriteTempFile(dataVector,whatPrecision,delimiter)
 % BF_WriteTempFile   Write a temporary file in the system temporary directory
 %
 %---INPUTS:
-% dataVector, a vector of data to write to file.
+% dataVector, a vector of data to write to file, or a matrix (one row per line).
+% whatPrecision, the number of significant digits to write (default 7).
+% delimiter, the column delimiter for a matrix (default ',', as dlmwrite's
+%       default, so every existing call writes exactly what it always has). TISEAN
+%       programs that read several columns need whitespace: pass ' '. ripser, the
+%       other reader of a matrix (NL_PersistentHomology), accepts either.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -34,12 +39,22 @@ function filePath = BF_WriteTempFile(dataVector,whatPrecision)
 % ------------------------------------------------------------------------------
 
 if nargin < 2
-    % precision (number of significant digits) to write
-    whatPrecision = 7;
+    % Precision (number of significant digits) to write: 17, enough to represent
+    % every double exactly, so the TISEAN program reads the same numbers that MATLAB
+    % holds. (With 7 digits, quantized or near-tied data gave different neighbor
+    % sets from the exact values, e.g. in lyap_r and false_nearest.)
+    whatPrecision = 17;
+end
+if nargin < 3
+    delimiter = ',';
 end
 
-% Filename is the tempname (which will be unique):
-% Short temp filename, forward slashes, no spaces.
+% Short temp filename, forward slashes.
+%
+% (HCTSA2 2.2.1: only the LEAF name is short and space-free. The folder is
+% tempdir as it is, and it can contain a space -- a user-set TEMP such as
+% D:\My Temp, or a user name with a space where 8.3 short names are off. Callers
+% that put this path on a TISEAN command line must quote it: "%s".)
 %
 % The TISEAN executables receive this path on a command line. MATLAB's tempname
 % produces something like
@@ -51,19 +66,90 @@ end
 %
 % A short name in the temp directory avoids it, and forward slashes work on
 % Windows while surviving the shell without escaping.
-name = sprintf('hc%06u',randi(999999));
-filePath = fullfile(tempdir,name);
-guard = 0;
-while exist(filePath,'file') && guard < 20
-    guard = guard + 1;
-    name = sprintf('hc%06u',randi(999999));
-    filePath = fullfile(tempdir,name);
+%
+%---WHY THE NAME COMES FROM A PRIVATE GENERATOR AND IS CLAIMED ATOMICALLY
+% Parallel workers share one temporary directory. The name used to be drawn
+% with randi() from the GLOBAL random stream, and operations reset that stream
+% with BF_ResetSeed, so two workers running the same operations reached this
+% point in the same RNG state and drew the SAME name. TS_Compute's
+% series-parallel mode does exactly that. The check that followed (exist, then
+% write) is not atomic across processes, so both could take the name, and one
+% worker's cleanup then deleted the other's files mid-run.
+%
+% So: the name comes from a generator private to this MATLAB process, seeded
+% from its process id and the time (drawName), which also stops this function
+% from moving the caller's random stream; and the name is claimed with an
+% atomic create-if-absent (claimName). A claim can only fail if the name is
+% taken, and then the next name is tried.
+filePath = '';
+for attempt = 1:20
+    candidate = fullfile(tempdir,sprintf('hc%06u',drawName()));
+    if ispc
+        candidate = strrep(candidate,'\','/');
+    end
+    if claimName(candidate)
+        filePath = candidate;
+        break
+    end
 end
-if ispc
-    filePath = strrep(filePath,'\','/');
+if isempty(filePath)
+    error('hctsa:tempfile:noName', ...
+        'Could not claim an unused temporary file name in %s after 20 attempts.', ...
+        tempdir);
 end
 
-% Write the file:
-dlmwrite(filePath,dataVector,'precision',whatPrecision);
+% Write the file. The name is already claimed (an empty file exists), so if the
+% write fails, remove it here: the caller's cleanup only starts after this returns.
+try
+    dlmwrite(filePath,dataVector,'delimiter',delimiter,'precision',whatPrecision);
+catch err
+    if exist(filePath,'file'), delete(filePath); end
+    rethrow(err);
+end
 
+end
+
+%-------------------------------------------------------------------------------
+function n = drawName()
+% Six digits from a random stream private to this process: the Park-Miller
+% minimal standard generator (multiplier 48271, modulus 2^31-1). Its products
+% stay below 2^53, so it is exact in double arithmetic, and it behaves the same
+% in MATLAB and Octave. Seeded once per process from the process id and the
+% time of day in microseconds, so parallel workers draw different sequences.
+persistent state
+if isempty(state)
+    usOfDay = floor(mod(now,1)*864e8);
+    state = mod(processId()*104729 + usOfDay,2147483646) + 1;   % 1 .. 2^31-2
+end
+state = mod(state*48271,2147483647);
+n = mod(state,1000000);
+end
+
+%-------------------------------------------------------------------------------
+function pid = processId()
+pid = 0;
+try
+    if exist('OCTAVE_VERSION','builtin')
+        pid = getpid();
+    else
+        pid = feature('getpid');
+    end
+catch
+end
+end
+
+%-------------------------------------------------------------------------------
+function ok = claimName(f)
+% Create F if and only if it does not exist yet, as one atomic operation.
+% java.io.File.createNewFile guarantees that across processes. Without a JVM,
+% fall back to the old check-then-write.
+if usejava('jvm')
+    try
+        jf = javaObject('java.io.File',f);
+        ok = logical(jf.createNewFile());
+        return
+    catch
+    end
+end
+ok = ~exist(f,'file');
 end

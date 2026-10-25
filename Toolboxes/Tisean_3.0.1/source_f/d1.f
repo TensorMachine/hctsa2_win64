@@ -23,9 +23,17 @@ c
 c   d1 with finite sample correction following Grassberger
 c   subroutine for c1
 c
+c   hctsa: a center that coincides with its k-th neighbor (to within tol,
+c   1e-12 of the range of the data) is a repeated point: at least the mass
+c   of the points sits on it, and its log distance is minus infinity. The
+c   mean log distance over the centers is then not finite, so the mass is
+c   skipped (as when no neighbors are found). (Flooring the distance at a
+c   tiny value instead would let such centers dominate the mean and the
+c   local slopes.)
+c
 c===========================================================================
       subroutine d1(nmax,mmax,nxx,y,id,m,ncmin,pr,pln,eln,nmin,kmax)
-      parameter(im=100,ii=100000000,nx=100000,tiny=1e-20) 
+      parameter(im=100,ii=100000000,nx=100000) 
       dimension y(nxx,mmax),jh(0:im*im),ju(nx),d(nx),jpntr(nx),
      .   nlist(nx),nwork(nx)
       external rand
@@ -35,6 +43,16 @@ c===========================================================================
       ncomp=nmax-(mt-1)*id
       kpr=int(exp(pr)*(ncomp-2*nmin-1))+1
       k=int(exp(pln)*(ncomp-2*nmin-1))+1
+c     A point has at most ncomp-2*nmin-1 neighbors outside the temporal
+c     exclusion. The mass in the loop of c1 can reach 1 up to rounding
+c     (when nmax-(m-1)*id is a power of 2, for instance), which asked for
+c     one neighbor more than exists, so the search below never ended.
+c     Ask for no more than exist, and for nothing at all if there are none.
+      if(ncomp-2*nmin-1.lt.1) then
+         pln=pr
+         return
+      endif
+      k=min(k,ncomp-2*nmin-1)
       if(k.gt.kmax) then
          ncomp=real(ncomp-2*nmin-1)*real(kmax)/k+2*nmin+1
          k=kmax
@@ -44,38 +62,58 @@ c===========================================================================
       write(istderr(),*) 'Mass ', exp(pln),': k=', k, ', N=', ncomp 
       call rms(nmax,y,sc,sd)
       eps=exp(pln/m)*sd
-      do 10 i=1,nmax-(mt-1)*id
- 10      ju(i)=i+(mt-1)*id
-      do 20 i=1,nmax-(mt-1)*id
-c
-c   hctsa 2.0 fix: the parentheses around (nmax-(mt-1)*id) were missing.
-c   Fortran binds * tighter than -, so the original read
-c
-c      int( rand()*nmax - (mt-1)*id ) + 1
-c
-c   rather than the intended int( rand()*(nmax-(mt-1)*id) ) + 1. For m > 1 that
-c   is negative whenever rand() < (mt-1)*id/nmax, and ju(iperm) then reads and
-c   writes BELOW the array -- into jh, which is declared immediately before it.
-c   The Fisher-Yates shuffle therefore drew some of its swap partners from
-c   whatever jh happened to contain.
-c
-c   In a standalone program jh is statically zero at that point, so the bug is
-c   invisible and merely deterministic-by-accident. Inside a MEX file jh holds
-c   the previous call's histogram, so c1 returned different numbers on every
-c   call after the first. Measured with -M7: run 1 matched the executable, runs
-c   2 to 6 did not; with this fix all six match.
-c
-c   m=1 is unaffected either way, because (mt-1)*id is then zero.
-c
-         iperm=min(int(rand(0.0)*(nmax-(mt-1)*id))+1,nmax-(mt-1)*id)
-         ih=ju(i)
-         ju(i)=ju(iperm)
- 20      ju(iperm)=ih
-      iu=ncmin
+c     hctsa 2.5.0 guard: a constant series has sd = 0, so eps = 0, and mbase
+c     then divides by zero and indexes its box array jh out of bounds (a
+c     segfault with these lattice centers, e.g. -d10 -m1 -M4 -t58 -n215 on
+c     866 equal values; before, the 200-sweep exit stopped it by luck). There
+c     are no distances to measure: give up on this mass, as for too few points.
+c     (Written so that a NaN eps is caught too.)
+      if(.not.(eps.gt.0.)) then
+         pln=pr
+         return
+      endif
+      nvalid=nmax-(mt-1)*id
+c     The centers are the embedded points in a fixed order whose first
+c     iu entries are spread evenly over the series (a lattice rule with the
+c     golden-ratio stride, a permutation of the nvalid points since the
+c     stride is made coprime to nvalid), instead of the first iu entries
+c     of a random permutation: the estimate then does not depend on which
+c     centers a random generator happened to pick.
+      istr=int(real(nvalid)*0.6180339887)
+      if(istr.lt.1) istr=1
+ 12   ia=istr
+      ib=nvalid
+ 13   if(ib.ne.0) then
+         ic=mod(ia,ib)
+         ia=ib
+         ib=ic
+         goto 13
+      endif
+      if(ia.ne.1.and.nvalid.gt.1) then
+         istr=istr+1
+         goto 12
+      endif
+      iacc=0
+      do 10 i=1,nvalid
+         ju(i)=iacc+1+(mt-1)*id
+ 10      iacc=mod(iacc+istr,nvalid)
+c     there are only nvalid embedded points to use as centers
+      iu=min(ncmin,nvalid)
+c     number of centers: each contributes exactly one log distance below
+c     (this used to divide by ncmin-(mt-1)*id, inflating the mean log
+c     radius by ncmin/(ncmin-(mt-1)*id) and biasing every dimension low)
+c     points closer than tol are repeated points (1e-12 of the range)
+      ymin=y(1,1)
+      ymax=y(1,1)
+      do 15 is=1,mmax
+         do 15 i=1,nmax
+            ymin=min(ymin,y(i,is))
+ 15         ymax=max(ymax,y(i,is))
+      tol=1e-12*(ymax-ymin)
+      nused=iu
       eln=0
       nsweep=0
- 1    nsweep=nsweep+1
-      call mbase(ncomp+(mt-1)*id,mmax,nxx,y,id,m,jh,jpntr,eps)
+ 1    call mbase(ncomp+(mt-1)*id,mmax,nxx,y,id,m,jh,jpntr,eps)
       iunp=0
       do 30 nn=1,iu                                           ! find neighbours
          n=ju(nn)
@@ -101,23 +139,25 @@ c
             ju(iunp)=n
          else
             e=which(nf,d,k,nwork)
-            eln=eln+log(max(e,tiny))
+c           a repeated point: no finite mean log distance at this mass
+            if(e.le.tol) then
+               pln=pr
+               return
+            endif
+            eln=eln+log(e)
          endif
  30      continue
       iu=iunp
       eps=eps*sqrt(2.)
-c   hctsa 2.0 guard. Each sweep multiplies eps by sqrt(2), so a search that has
-c   not converged in 200 sweeps has grown the radius by 10^30 and never will:
-c   the requested neighbour count exceeds what the time separation leaves
-c   available. The original loop had no exit for that and spun forever. A
-c   converging search is nowhere near this bound, so no working input changes.
-      if(iunp.ne.0.and.nsweep.ge.200) then
-         write(istderr(),'(a)')
-     .      "d1: neighbour search did not converge; -n too large"
-         stop
+      nsweep=nsweep+1
+c     safety net: the box size has long exceeded the data range, so
+c     no further neighbors can turn up; give up on this mass
+      if(iunp.ne.0.and.nsweep.gt.200) then
+         pln=pr
+         return
       endif
       if(iunp.ne.0) goto 1
-      eln=eln/(ncmin-(mt-1)*id)
+      eln=eln/nused
       end
 
 c digamma function

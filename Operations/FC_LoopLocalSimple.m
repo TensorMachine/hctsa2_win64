@@ -1,24 +1,44 @@
-function out = FC_LoopLocalSimple(y,forecastMeth)
-% FC_LoopLocalSimple    How simple local forecasting depends on window length.
+function out = FC_LoopLocalSimple(y, forecastMeth)
+% FC_LoopLocalSimple   How simple local forecast errors change with the number of past values used.
 %
-% Analyzes the outputs of FC_LocalSimple for a range of local window lengths, l.
-% Loops over the length of the data to use for FC_LocalSimple prediction
+% Runs FC_LocalSimple for a range of training lengths l (the number of past values
+% used to forecast the next value), and summarizes how five statistics of the
+% residuals vary with l: the standard deviation (stde), the stationarity measures
+% sws and swm (variation of the local standard deviation and local mean of the
+% residuals across 5 segments), and the residual autocorrelations at lags 1 and 2
+% (ac1, ac2).
 %
-%---INPUTS:
-%
+% ---INPUTS:
 % y, the input time series
 %
 % forecastMeth, the prediction method:
-%            (i) 'mean', local mean prediction
-%            (ii) 'median', local median prediction
+%            (i) 'mean': local mean prediction, with l = 1, 2, ..., 10 (default),
+%            (ii) 'median': local median prediction, with l = 1, 3, ..., 19.
 %
-%---OUTPUTS:
-% Statistics including whether the mean square error increases or decreases,
-% testing for peaks, variability, autocorrelation, stationarity, and a fit of
-% exponential decay, f(x) = A*exp(Bx) + C, to the variation.
+% ---OUTPUTS:
+% Each of the five statistics (stde, sws, swm, ac1, ac2) is followed across l:
+% stde_chn, sws_chn, swm_chn, ac1_chn, ac2_chn: mean change per step divided by the
+%        range of the curve; negative when the statistic falls on the whole as l grows
+% stde_meansgndiff, sws_meansgndiff, swm_meansgndiff, ac1_meansgndiff,
+%        ac2_meansgndiff: mean sign of the changes between successive l (-1 if it
+%        falls at every step, +1 if it rises at every step)
+% sws_stdn, swm_stdn, ac1_stdn, ac2_stdn: standard deviation of the curve divided by
+%        its range
+% stde_peakpos: the position (index in the list of training lengths) of the extreme
+%        value of the stde curve: its maximum if the curve falls on the whole as l
+%        grows (stde_chn < 0), otherwise its minimum
+% stde_peaksize: the stde value at that position divided by the mean of the stde curve
+% sws_fexp_b: the rate b of an exponential fit f(l) = a*exp(b*l) + c to the sws
+%        curve (negative for a decay with training length). The fit is the global
+%        least-squares optimum over b, with a and c found by linear least squares
+%        (see BF_ExpFit); a and c are not output because they are poorly determined
+%        when the curve is close to a straight line.
+% sws_fexp_r2, sws_fexp_adjr2, sws_fexp_rmse: the R^2 (between 0 and 1), adjusted R^2
+%        and root-mean-square error of that fit
+%        (all four sws_fexp_* fields are NaN if the sws curve is constant)
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -46,117 +66,104 @@ function out = FC_LoopLocalSimple(y,forecastMeth)
 % this program. If not, see <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
 
-% ------------------------------------------------------------------------------
-% Check a curve-fitting toolbox license is available:
-% ------------------------------------------------------------------------------
-
-% ------------------------------------------------------------------------------
-% Also uses xcorr from the signal processing toolbox:
-% ------------------------------------------------------------------------------
-BF_CheckToolbox('signal_toolbox');
-
 doPlot = false; % plot outputs to a figure
 
 if nargin < 2 || isempty(forecastMeth)
-    forecastMeth = 'mean'; % do mean prediction by default
+	forecastMeth = 'mean'; % do mean prediction by default
 end
 
 switch forecastMeth
-    case 'mean'
-        trainLengthRange = (1:10)';
-    case 'median'
-        trainLengthRange = (1:2:19)';
-    otherwise
-        error('Unknown prediction method ''%s''',forecastMeth);
+	case 'mean'
+		trainLengthRange = (1:10)';
+	case 'median'
+		trainLengthRange = (1:2:19)';
+	otherwise
+		error('Unknown prediction method ''%s''', forecastMeth);
 end
 
-stats_st = zeros(length(trainLengthRange),5);
+stats_st = zeros(length(trainLengthRange), 5);
 
 for i = 1:length(trainLengthRange)
-    switch forecastMeth
-        case 'mean'
-            outtmp = FC_LocalSimple(y,'mean',trainLengthRange(i));
-        case 'median'
-            outtmp = FC_LocalSimple(y,'median',trainLengthRange(i));
-            % median needs more tweaking
-    end
-    stats_st(i,1) = outtmp.stderr;
-    stats_st(i,2) = outtmp.sws;
-    stats_st(i,3) = outtmp.swm;
-    stats_st(i,4) = outtmp.ac1;
-    stats_st(i,5) = outtmp.ac2;
+	switch forecastMeth
+		case 'mean'
+			outtmp = FC_LocalSimple(y, 'mean', trainLengthRange(i));
+		case 'median'
+			outtmp = FC_LocalSimple(y, 'median', trainLengthRange(i));
+			% median needs more tweaking
+	end
+	stats_st(i, 1) = outtmp.stde;
+	stats_st(i, 2) = outtmp.sws;
+	stats_st(i, 3) = outtmp.swm;
+	stats_st(i, 4) = outtmp.ac1;
+	stats_st(i, 5) = outtmp.ac2;
 end
 
 if doPlot
-    figure('color','w')
-    plot(stats_st,'k')
+	figure('color', 'w') %#ok<UNRCH>
+	plot(stats_st, 'k')
 end
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 %% Compute statistics from the shapes of the curves
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 
 % (1) root mean square error
 % (i) (expect error to decrease with increasing forecast window?:)
-out.stderr_chn = mean(diff(stats_st(:,1)))/(range(stats_st(:,1)));
-out.stderr_meansgndiff = mean(sign(diff(stats_st(:,1))));
+out.stde_chn = mean(diff(stats_st(:, 1))) / (range(stats_st(:, 1)));
+out.stde_meansgndiff = mean(sign(diff(stats_st(:, 1))));
 
 % (ii) Is there a peak?
-if out.stderr_chn < 1; % on the whole decreasing, as expected
-    wigv = max(stats_st(:,1));
-    wig = find(stats_st(:,1) == wigv,1,'first');
-    if wig ~= 1 && stats_st(wig-1,1) > wigv
-        wig = NaN; % maximum is not a local maximum; previous value exceeds it
-    elseif wig ~= length(trainLengthRange) && stats_st(wig+1,1) > wigv
-        wig = NaN; % maximum is not a local maximum; the next value exceeds it
-    end
+if out.stde_chn < 0 % on the whole decreasing, as expected: look for a maximum
+	wigv = max(stats_st(:, 1));
+	wig = find(stats_st(:, 1) == wigv, 1, 'first');
+	if wig ~= 1 && stats_st(wig - 1, 1) > wigv
+		wig = NaN; % maximum is not a local maximum; previous value exceeds it
+	elseif wig ~= length(trainLengthRange) && stats_st(wig + 1, 1) > wigv
+		wig = NaN; % maximum is not a local maximum; the next value exceeds it
+	end
 else
-    wigv = min(stats_st(:,1));
-    wig = find(stats_st(:,1) == wigv,1,'first');
+	wigv = min(stats_st(:, 1)); % on the whole increasing: look for a minimum
+	wig = find(stats_st(:, 1) == wigv, 1, 'first');
 
-    if wig ~= 1 && stats_st(wig-1,1) < wigv
-        wig = NaN; % maximum is not a local maximum; previous value exceeds it
-    elseif wig ~= length(trainLengthRange) && stats_st(wig+1,1) < wigv
-        wig = NaN; % maximum is not a local maximum; the next value exceeds it
-    end
+	if wig ~= 1 && stats_st(wig - 1, 1) < wigv
+		wig = NaN; % minimum is not a local minimum; previous value is below it
+	elseif wig ~= length(trainLengthRange) && stats_st(wig + 1, 1) < wigv
+		wig = NaN; % minimum is not a local minimum; the next value is below it
+	end
 end
 if ~isnan(wig)
-    out.stderr_peakpos = wig;
-    out.stderr_peaksize = wigv/mean(stats_st(:,1));
+	out.stde_peakpos = wig;
+	out.stde_peaksize = wigv / mean(stats_st(:, 1));
 else % put NaNs in all the outputs
-    out.stderr_peakpos = NaN;
-    out.stderr_peaksize = NaN;
+	out.stde_peakpos = NaN;
+	out.stde_peaksize = NaN;
 end
 
 % (2) Sliding Window Stationarity
-out.sws_chn = mean(diff(stats_st(:,2)))/(range(stats_st(:,2)));
-out.sws_meansgndiff = mean(sign(diff(stats_st(:,2))));
-out.sws_stdn = std(stats_st(:,2))/range(stats_st(:,2));
+out.sws_chn = mean(diff(stats_st(:, 2))) / (range(stats_st(:, 2)));
+out.sws_meansgndiff = mean(sign(diff(stats_st(:, 2))));
+out.sws_stdn = std(stats_st(:, 2)) / range(stats_st(:, 2));
 
-% Fit exponential decay:
-s = BF_fitoptions('Method','NonlinearLeastSquares','StartPoint',[range(stats_st(:,2)), -0.5 min(stats_st(:,2))]);
-f = BF_fittype('a*exp(b*x)+c','options',s);
-[c, gof] = BF_fit(trainLengthRange,stats_st(:,2),f);
-out.sws_fexp_a = c.a;
-out.sws_fexp_b = c.b; % this is important
-out.sws_fexp_c = c.c;
-out.sws_fexp_r2 = gof.rsquare; % this is more important!
-out.sws_fexp_adjr2 = gof.adjrsquare;
-out.sws_fexp_rmse = gof.rmse;
+% Fit exponential decay (global least squares over the rate, see BF_ExpFit):
+fExp = BF_ExpFit(trainLengthRange, stats_st(:, 2), true);
+out.sws_fexp_b = fExp.b; % this is important
+out.sws_fexp_r2 = fExp.r2; % this is more important!
+out.sws_fexp_adjr2 = fExp.adjr2;
+out.sws_fexp_rmse = fExp.rmse;
 
 % (3) sliding window mean
-out.swm_chn = mean(diff(stats_st(:,3)))/(range(stats_st(:,3)));
-out.swm_meansgndiff = mean(sign(diff(stats_st(:,3))));
-out.swm_stdn = std(stats_st(:,3))/range(stats_st(:,3));
+out.swm_chn = mean(diff(stats_st(:, 3))) / (range(stats_st(:, 3)));
+out.swm_meansgndiff = mean(sign(diff(stats_st(:, 3))));
+out.swm_stdn = std(stats_st(:, 3)) / range(stats_st(:, 3));
 
 % (4) AC1
-out.ac1_chn = mean(diff(stats_st(:,4)))/(range(stats_st(:,4)));
-out.ac1_meansgndiff = mean(sign(diff(stats_st(:,4))));
-out.ac1_stdn = std(stats_st(:,4))/range(stats_st(:,4));
+out.ac1_chn = mean(diff(stats_st(:, 4))) / (range(stats_st(:, 4)));
+out.ac1_meansgndiff = mean(sign(diff(stats_st(:, 4))));
+out.ac1_stdn = std(stats_st(:, 4)) / range(stats_st(:, 4));
 
 % (5) AC2
-out.ac2_chn = mean(diff(stats_st(:,5)))/(range(stats_st(:,5)));
-out.ac2_meansgndiff = mean(sign(diff(stats_st(:,5))));
-out.ac2_stdn = std(stats_st(:,5))/range(stats_st(:,5));
+out.ac2_chn = mean(diff(stats_st(:, 5))) / (range(stats_st(:, 5)));
+out.ac2_meansgndiff = mean(sign(diff(stats_st(:, 5))));
+out.ac2_stdn = std(stats_st(:, 5)) / range(stats_st(:, 5));
 
 end

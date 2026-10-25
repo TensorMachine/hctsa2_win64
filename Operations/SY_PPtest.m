@@ -1,29 +1,51 @@
-function out = SY_PPtest(y,lags,model,testStatistic)
-% SY_PPtest   Phillips-Peron unit root test.
+function out = SY_PPtest(y, lags, model, testStatistic)
+% SY_PPtest   Phillips-Perron unit root test.
 %
-% Uses the pptest code from Matlab's Econometrics Toolbox.
+% Uses the pptest function from MATLAB's Econometrics Toolbox. The null hypothesis
+% is that the series is a unit-root process; the alternative is that it is
+% stationary (small p-values reject a unit root). The test is run for each of a
+% set of numbers of autocovariance lags, and the outputs summarize the set of
+% tests. (With a single lag, the results of that one test are returned instead.)
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
 %
-% lags, a vector of lags
+% lags, a vector of lags: the numbers of autocovariance lags included in the
+%       Newey-West estimator of the long-run variance (default: 0:5)
 %
-% model, a specified model:
+% model, a specified model (default: 'ar'):
 %               'ar': autoregressive
 %               'ard': autoregressive with drift, or
 %               'ts': trend stationary,
-%               (see Matlab documentation for information)
+%               (see MATLAB documentation for information)
 %
-% testStatistic, the test statistic:
+% testStatistic, the test statistic (default: 't1'):
 %               't1': the standard t-statistic, or
-%               't2' a lag-adjusted, 'unStudentized' t statistic.
-%               (see Matlab documentation for information)
+%               't2': a lag-adjusted, 'unStudentized' t statistic.
+%               (see MATLAB documentation for information)
 %
-%---OUTPUTS: statistics on the p-values and lags obtained from the set of tests, as
-% well as measures of the regression statistics.
+% ---OUTPUTS:
+% For a vector of lags:
+% minpValue, meanpValue: the minimum and mean p-value across the tests
+% lagmaxp, lagminp: the lag at which the p-value is largest and smallest (the
+%       first such lag in the case of a tie). Computed but not registered as
+%       features: pptest clamps its p-values to the range of its tabulated
+%       distribution, so for most series the p-values at all lags tie at the
+%       clamp and the first lag is returned.
+% meanstat: the mean test statistic across the tests
+% minBIC: the minimum, across the tests, of the Bayesian information criterion of
+%       the test regression, per observation (the regression does not depend on
+%       the lag, which only enters the variance correction of the statistic, so
+%       this is the BIC of that one regression)
+% For a single lag:
+% pvalue, stat: the p-value and test statistic
+% coeff1: the first regression coefficient
+% loglikelihood, AIC, BIC, HQC: the log likelihood and information criteria of the
+%       test regression, per observation
+% rmse: the root-mean-square error of the regression
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -61,70 +83,66 @@ function out = SY_PPtest(y,lags,model,testStatistic)
 % The number of autocovariance lags to include in the Newey-West estimator
 % of the long-run variance, lags.
 if nargin < 2 || isempty(lags)
-    lags = (0:5); % use 5 autoregressive lags.
+	lags = (0:5); % use 5 autoregressive lags.
 end
 
 % The model variant, model. Can be 'ar': autoregressive, 'ard':
 % autoregressive with drift, or 'ts': trend stationary.
 if nargin < 3 || isempty(model)
-    model = 'ar'; % autoregressive
+	model = 'ar'; % autoregressive
 end
 
 % The test statistics, testStatistic. Can be 't1': standard t statistics; or
 % 't2': a lag-adjusted, 'unstudentized' t statistic.
 if nargin < 4 || isempty(testStatistic)
-    testStatistic = 't1'; % standard t statistic
+	testStatistic = 't1'; % standard t statistic
 end
 
 % ------------------------------------------------------------------------------
 %% Run the test
 % ------------------------------------------------------------------------------
-warning('off','econ:pptest:LeftTailStatTooSmall')
+warning('off', 'econ:pptest:LeftTailStatTooSmall')
 [h, pValue, stat, ~, reg] = BF_pptest(y,'lags',lags,'model',model,'test',testStatistic);
-warning('on','econ:pptest:LeftTailStatTooSmall')
+warning('on', 'econ:pptest:LeftTailStatTooSmall')
 
 % ------------------------------------------------------------------------------
 %% Get outputs
 % ------------------------------------------------------------------------------
-nout = length(h);
-
-if nout == 1
-    % Just return the results from this single test
-    out.pvalue = pValue;
-    out.stat = stat;
-    out.coeff1 = reg.coeff(1); % could be multiple, depending on the model
-    out.loglikelihood = reg.LL;
-    out.AIC = reg.AIC;
-    out.BIC = reg.BIC;
-    out.HQC = reg.HQC;
-    out.rmse = reg.RMSE;
+if isscalar(h)
+	% Just return the results from this single test
+	out.pvalue = pValue;
+	out.stat = stat;
+	out.coeff1 = reg.coeff(1); % could be multiple, depending on the model
+	% Log-likelihood and the information criteria are extensive: they are sums
+	% over observations, so they grow in direct proportion to the time-series
+	% length regardless of how well the model fits. Reported per observation, which
+	% is the standard intensive form and the quantity model comparison actually
+	% depends on.
+	numObs = length(y);
+	out.loglikelihood = reg.LL / numObs;
+	out.AIC = reg.AIC / numObs;
+	out.BIC = reg.BIC / numObs;
+	out.HQC = reg.HQC / numObs;
+	out.rmse = reg.RMSE;
 
 else
-    % Return statistics on the set of outputs
-    out.maxpValue = max(pValue);
-    out.minpValue = min(pValue);
-    out.meanpValue = mean(pValue);
-    out.stdpValue = std(pValue);
-    imaxp = find(pValue == max(pValue),1,'first');
-    iminp = find(pValue == min(pValue),1,'first');
-    out.lagmaxp = lags(imaxp);
-    out.lagminp = lags(iminp);
+	% Return statistics on the set of outputs. Only the minimum and mean p-value
+	% and the mean statistic are returned: the maximum and standard deviation of the
+	% p-values and the maximum and minimum statistic are largely redundant with them.
+	out.minpValue = min(pValue);
+	out.meanpValue = mean(pValue);
+	imaxp = find(pValue == max(pValue), 1, 'first');
+	iminp = find(pValue == min(pValue), 1, 'first');
+	out.lagmaxp = lags(imaxp);
+	out.lagminp = lags(iminp);
 
-    out.meanstat = mean(stat);
-    out.maxstat = max(stat);
-    out.minstat = min(stat);
+	out.meanstat = mean(stat);
 
-    % Some regression statistics
-    % These are all highly correlated; hctsa library records just minBIC by default
-    out.meanloglikelihood = mean(vertcat(reg.LL));
-    out.minAIC = min(vertcat(reg.AIC));
-    out.minBIC = min(vertcat(reg.BIC));
-    out.minHQC = min(vertcat(reg.HQC));
-
-    % Somehow these are highly correlated, only minrmse is included in hctsa
-    % library by default
-    out.minrmse = min(vertcat(reg.RMSE));
-    out.maxrmse = max(vertcat(reg.RMSE));
+	% Regression statistics: only minBIC is returned (the other regression
+	% statistics are highly correlated with it). Per observation -- see the note in
+	% the single-test branch above.
+	numObs = length(y);
+	out.minBIC = min(vertcat(reg.BIC)) / numObs;
 end
 
 end

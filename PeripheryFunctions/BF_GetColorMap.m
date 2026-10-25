@@ -37,7 +37,7 @@ function cmapOut = BF_GetColorMap(whichMap,numGrads,cellOut,flipMe)
 % end
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -171,7 +171,7 @@ switch whichMap
                 cmapOut = [247, 251, 255;
                     222, 235, 247;
                     198, 219, 239;
-                    58, 202, 225;
+                    158, 202, 225;
                     107, 174, 214;
                     66, 146, 198;
                     33, 113, 181;

@@ -1,10 +1,10 @@
 function report = HCTSA2_BuildBinaries(stageDir)
-% HCTSA2_BuildBinaries   Compile every MEX component of hctsa 2.0.
+% HCTSA2_BuildBinaries   Compile every MEX component of hctsa2.
 %
 %   HCTSA2_BuildBinaries
 %   report = HCTSA2_BuildBinaries('mex_win64')
 %
-% Run this from the hctsa 2.0 root ON A MACHINE THAT HAS A C/C++ COMPILER.
+% Run this from the hctsa2 root ON A MACHINE THAT HAS A C/C++ COMPILER.
 % It compiles each component independently, never aborting the whole run
 % because one target failed, and reports how many library features each
 % success or failure is worth.
@@ -15,10 +15,15 @@ function report = HCTSA2_BuildBinaries(stageDir)
 % target machine has no compiler.
 %
 %---WHY THIS EXISTS
-% 1,299 of the 7,702 library features (16.9%) need compiled code. The other
-% 83.1% are pure MATLAB and work as soon as the paths are set. Nothing here is
-% required to get a useful installation; each component simply unlocks its own
-% slice.
+% 1,098 of the 6,392 library features (17.2%) need compiled code: 614 need the
+% MEX components built here (440 of them the KSG mutual information that replaced
+% the JIDT jar in 2.4.0), 538 the TISEAN/ripser executables directly and 50 more
+% through 'fnn' embeddings (false_nearest; HCTSA2_BuildTisean); 104 need both KSG
+% and TISEAN. The other 82.8% are pure MATLAB and work as soon as the paths are
+% set. Nothing here is required to get a useful installation; each component
+% simply unlocks its own slice. (Counts for the 3.0.0 feature set, upstream v3.0.0
+% 4581e712; see HCTSA2_CheckInstall for how they were counted. 3.0.0 changes the
+% sources of sampen_mex and MS_complexitybs: rebuild.)
 %
 %---ON WINDOWS
 % MATLAB needs a supported compiler. The free option is MinGW-w64, normally
@@ -32,10 +37,10 @@ if nargin < 1, stageDir = ''; end
 root = pwd;
 if exist(fullfile(root,'Toolboxes'),'dir') ~= 7
     error('HCTSA2_BuildBinaries:wrongDir', ...
-        'Run this from the hctsa 2.0 root (the folder containing Toolboxes/).');
+        'Run this from the hctsa2 root (the folder holding startup.m and Toolboxes/).');
 end
 
-fprintf('\n=============== hctsa 2.0 binary build ===============\n');
+fprintf('\n=============== hctsa2 binary build ===============\n');
 fprintf('MATLAB %s on %s\n',version,computer);
 
 % Compiler check up front -- failing here explains every later failure at once
@@ -71,14 +76,17 @@ fprintf('\n');
 % solve_chol is the ONLY speed-only target in the package. Every other C source
 % with a same-named .m (MS_complexitybs, MS_nearest, MS_shannon, nn_prepare)
 % has a documentation-only stub with no executable code, so the MEX is required.
+%
+% Feature counts are HCTSA2_CheckInstall's, for the 3.0.0 feature set (upstream v3.0.0);
+% keep this table, and the summary below, in step with it when the feature set changes.
 T = {
- 'Max_Little/fastdfa',      fullfile('Toolboxes','Max_Little','fastdfa'),        {'ML_fastdfa_core.c'},                          10, 'gates', ''
- 'Max_Little/rpde',         fullfile('Toolboxes','Max_Little','rpde'),           {'ML_close_ret.c'},                              0, 'gates', 'shares the Max_Little slice'
- 'Max_Little/steps_bumps',  fullfile('Toolboxes','Max_Little','steps_bumps_toolkit'), {'ML_kvsteps_core.cpp'},                    0, 'gates', 'C++; shares the Max_Little slice'
- 'Michael_Small',           fullfile('Toolboxes','Michael_Small'),               {'MS_complexitybs.c','MS_nearest.c','MS_shannon.c'}, 33, 'gates', ''
- 'Physionet/sampen',        fullfile('Toolboxes','Physionet'),                   {'sampen_mex.c'},                               49, 'gates', 'gates EN_SampEn / EN_Randomize'
- 'catch22',                 fullfile('Toolboxes','catch22','wrap_Matlab'),       {},                                            240, 'gates', 'uses its own mexAll'
- 'gpml/solve_chol',         fullfile('Toolboxes','gpml','util'),                 {},                                             72, 'speed', 'Cholesky solve; MATLAB fallback exists, MEX is faster'
+ 'Max_Little/rpde',         fullfile('Toolboxes','Max_Little','rpde'),           {'ML_close_ret.c'},                              8, 'gates', 'EN_rpde'
+ 'Max_Little/steps_bumps',  fullfile('Toolboxes','Max_Little','steps_bumps_toolkit'), {'ML_kvsteps_core.cpp'},                   28, 'gates', 'C++; CP_ML_StepDetect, CP_l1pwc_SweepLambda'
+ 'Michael_Small',           fullfile('Toolboxes','Michael_Small'),               {'MS_complexitybs.c','MS_nearest.c','MS_shannon.c'}, 47, 'gates', ''
+ 'Physionet/sampen',        fullfile('Toolboxes','Physionet'),                   {'sampen_mex.c'},                               91, 'gates', 'gates EN_SampEn / EN_MSE'
+ 'KSG',                     fullfile('Toolboxes','KSG'),                         {'KSG_mi.c'},                                   440, 'gates', 'Kraskov mutual information (2.4.0: replaces the JIDT jar)'
+ 'catch22',                 fullfile('Toolboxes','catch22','wrap_Matlab'),       {},                                              0, 'gates', 'uses its own mexAll; only the catch22/catch24 feature sets use it'
+ 'gpml/solve_chol',         fullfile('Toolboxes','gpml','util'),                 {},                                             30, 'speed', 'Cholesky solve; MATLAB fallback exists, MEX is faster'
 };
 
 report = struct('name',{},'status',{},'features',{},'kind',{},'detail',{});
@@ -89,7 +97,7 @@ for i = 1:size(T,1)
     d = fullfile(root,rel);
     if exist(d,'dir') ~= 7
         fprintf('SKIP   (folder missing)\n');
-        report(end+1) = mk(name,'missing',nfeat,'folder not present'); %#ok<AGROW>
+        report(end+1) = mk(name,'missing',nfeat,kind,'folder not present'); %#ok<AGROW>
         continue
     end
     ok = true; detail = '';
@@ -136,7 +144,7 @@ spdBad  = sum([report(~isGate & ~isOK).features]);
 fprintf('\n---------------------------------------------------\n');
 fprintf('features unlocked   : %5d\n',okF);
 fprintf('features still gated: %5d\n',badF);
-fprintf('pure MATLAB         : %5d (always available)\n',6403);
+fprintf('pure MATLAB         : %5d (always available)\n',5294);
 if spdOK > 0
     fprintf('accelerated         : %5d features now use MEX instead of the\n',spdOK);
     fprintf('                            MATLAB fallback (same results, faster)\n');
@@ -144,8 +152,9 @@ elseif spdBad > 0
     fprintf('not accelerated     : %5d features fall back to MATLAB (still correct)\n',spdBad);
 end
 fprintf('---------------------------------------------------\n');
-fprintf('TISEAN (276 features) is NOT built here -- it is a set of standalone\n');
-fprintf('executables, not MEX. See INSTALL.md section 4.\n');
+fprintf('TISEAN and ripser (538 features, and 50 more through ''fnn'' embeddings) are\n');
+fprintf('NOT built here -- they are standalone executables: run HCTSA2_BuildTisean.\n');
+fprintf('See INSTALL.md section 4.\n');
 
 %-------------------------------------------------------------------------------
 %% Stage the binaries for transport

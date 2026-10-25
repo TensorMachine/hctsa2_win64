@@ -22,7 +22,7 @@ function [TS_DataMat,TimeSeries,Operations,whatDataFile] = TS_LoadData(whatDataF
 %               the data
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -75,6 +75,15 @@ if isstruct(whatDataFile)
         Operations = table();
     end
 
+    % Bad-quality entries (fatal errors, NaN/Inf/complex outputs) are recorded
+    % in TS_Quality; TS_Compute stores them in TS_DataMat as NaN, but older
+    % files use the legacy coding of a literal 0. Normalise both to NaN here so
+    % callers can't mistake them for real computed values:
+    if ~isempty(TS_DataMat) && isfield(whatDataFile,'TS_Quality')
+        TS_DataMat(~isfinite(TS_DataMat)) = NaN;
+        TS_DataMat(whatDataFile.TS_Quality > 0) = NaN;
+    end
+
     % Check if used legacy structure array format for metadata:
     [TimeSeries,Operations] = CheckStructureToTable(TimeSeries,Operations);
 
@@ -112,8 +121,18 @@ if ~exist(whatDataFile,'file')
     error('%s not found',whatDataFile);
 end
 fprintf(1,'Loading data from %s...',whatDataFile);
-load(whatDataFile,'TS_DataMat','Operations','TimeSeries');
+load(whatDataFile,'TS_DataMat','Operations','TimeSeries','TS_Quality');
 fprintf(1,' Done.\n');
+
+% Bad-quality entries (fatal errors, NaN/Inf/complex outputs) are recorded in
+% TS_Quality; TS_Compute stores them in TS_DataMat as NaN, but older files use
+% the legacy coding of a literal 0. Normalise both to NaN here so callers can't
+% mistake them for real computed values (TS_Normalize already does this
+% explicitly, so this is a no-op for already-normalized data):
+if exist('TS_Quality','var')
+    TS_DataMat(~isfinite(TS_DataMat)) = NaN;
+    TS_DataMat(TS_Quality > 0) = NaN;
+end
 
 % Check whether an old version of hctsa using structure arrays
 [TimeSeries,Operations] = CheckStructureToTable(TimeSeries,Operations);

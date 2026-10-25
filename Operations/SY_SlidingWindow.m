@@ -1,47 +1,76 @@
-function out = SY_SlidingWindow(y, windowStat, acrossWinStat, numSeg, incMove)
-% SY_SlidingWindow  Sliding window measures of stationarity.
+function out = SY_SlidingWindow(y, windowStat, acrossWinStat, numSeg, incMove, asymTau)
+% SY_SlidingWindow   How a local statistic changes across windows sliding along the series.
 %
-% This function is based on sliding a window along the time series, measuring
-% some quantity in each window, and outputting some summary of this set of local
-% estimates of that quantity.
-%
-% Another way of saying it: calculate 'windowStat' in each window, and computes
-% 'acrossWinStat' for the set of statistics calculated in each window.
+% Slides a window along the time series, measures a statistic (windowStat) in each
+% window, and outputs a summary (acrossWinStat) of this set of local estimates of
+% that statistic. Each window is 1/numSeg of the series long and moves on by
+% 1/incMove of its own length at each step. A stationary series gives similar
+% values in every window.
 %
 % ---INPUTS:
-%
 % y, the input time series
 %
-% windowStat, the measure to calculate in each window:
-%               (i) 'mean', mean
-%               (ii) 'std', standard deviation
-%               (iii) 'ent', distribution entropy
-%               (iv) 'mom3', skewness
-%               (v) 'mom4', kurtosis
-%               (vi) 'mom5', the fifth moment of the distribution
-%               (vii) 'lillie', the p-value for a Lilliefors Gaussianity test
-%               (viii) 'AC1', the lag-1 autocorrelation
-%               (ix) 'apen', Approximate Entropy, ApEn(1,0.2)
-%               (ix) 'sampen', Sample Entropy, SampEn(2,0.1)
+% windowStat, the measure to calculate in each window (default: 'mean'):
+%       (i) 'mean', the mean
+%       (ii) 'std', the standard deviation
+%       (iii) 'ent', distribution entropy (kernel-smoothed)
+%       (iv) 'mom3', the skewness (standardized third moment)
+%       (v) 'mom4', the kurtosis (standardized fourth moment)
+%       (vi) 'mom5', the standardized fifth moment of the distribution
+%       (vii) 'lillie', the Lilliefors test statistic (a KS-type distance from a
+%           Gaussian CDF), not its p-value, which MATLAB clips to a lookup-table
+%           boundary once the data are clearly non-Gaussian
+%       (viii) 'AC1', the lag-1 autocorrelation
+%       (ix) 'permen', normalized permutation entropy, PermEn(3,1): a single
+%           ordinal/dynamical-complexity entropy measure, used in place of
+%           ApEn/SampEn, which are biased on the short windows this function
+%           typically operates on (numSeg = 10 segments), whereas permutation
+%           entropy's pattern-count estimator degrades more gracefully at small
+%           sample sizes
+%       (x) 'specen', normalized Shannon spectral entropy of the window's power
+%           spectrum (window mean removed before the FFT); captures whether the
+%           *frequency content* drifts across the record, distinct from all the
+%           above time-domain measures
+%       (xi) 'asymAC1', mean(x_t*x_{t+tau}*(x_{t+tau} - x_t)) with x z-scored within the
+%           window (tau = asymTau, 1 by default): a nonlinear, time-asymmetric variant
+%           of the autocorrelation at lag tau, antisymmetric under time reversal and
+%           so zero in expectation for any time-reversible process
+%           (the same statistic as SY_RampingWindows' asymAC1, which trends it across
+%           segments rather than summarizing its spread across windows as done here)
 %
-% acrossWinStat, controls how the obtained sequence of local estimates is
-%                   compared (as a ratio to the full time series):
-%                       (i) 'std': standard deviation
-%                       (ii) 'ent' (kernel-smoothed) distributional entropy
-%                       (iii) 'apen': Approximate Entropy, ApEn(1,0.2)
-%                       (iii) 'sampen': Sample Entropy, SampEn(2,0.1)
+% acrossWinStat, how the obtained sequence of local estimates is summarized
+%       (default: 'std'):
+%       (i) 'std': standard deviation, divided by that of the full time series
+%       (ii) 'ent': (kernel-smoothed) distributional entropy
+%       (iii) 'permen': normalized permutation entropy, PermEn(3,1), of the
+%           sequence of local estimates
 %
-% numSeg, the number of segments to divide the time series up into, thus
-%       controlling the window length
+% numSeg, the number of segments to divide the time series into, thus controlling
+%       the window length, floor(N/numSeg) (default: 5)
 %
-% incMove, the increment to move the window at each iteration, as 1/fraction of the
-%       window length (e.g., incMove = 2, means the window moves half the length of the
-%       window at each increment)
+% incMove, the increment to move the window at each iteration, as 1/fraction of
+%       the window length (e.g., incMove = 2 means the window moves half the length
+%       of the window at each increment; default: 2)
 %
-% NOTE: SY_SlidingWindow(y,'mean','std',X,1) is the same as StatAvX, computed as
-%                       SY_StatAv(y,'seg',X);
-% cf. "Heart rate control in normal and aborted-SIDS infants", S. M. Pincus et al.
-%           Am J. Physiol. Regul. Integr. Comp. Physiol. 264(3) R638 (1993)
+% asymTau, the lag, tau, of the 'asymAC1' window statistic (default: 1; ignored for
+%       other windowStat): an integer number of samples, or 'ac1e' to use the floor
+%       of the first 1/e crossing of the autocorrelation function of the whole
+%       series (at least 1; see BF_GetTau), so that the lag reflects the series'
+%       own correlation time. A window that is not longer than tau + 1 samples
+%       gives NaN.
+%
+% ---OUTPUTS:
+% a scalar: the summary, acrossWinStat, of the local estimates of windowStat. NaN
+% if the windows are too short, or if all window statistics are NaN.
+%
+% ---REFERENCES:
+% S. M. Pincus et al., "Heart rate control in normal and aborted-SIDS infants",
+% Am. J. Physiol. Regul. Integr. Comp. Physiol. 264(3), R638 (1993).
+%
+% ---NOTES:
+% SY_SlidingWindow(y,'mean','std',X,1) is the same as StatAvX, computed as
+% SY_StatAv(y,'seg',X), except that when the length of the series is not a multiple
+% of X the sliding window can contain more than X windows.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -90,6 +119,9 @@ end
 if nargin < 5 || isempty(incMove)
 	incMove = 2;
 end
+if nargin < 6 || isempty(asymTau)
+	asymTau = 1; % lag of 'asymAC1'
+end
 
 % ------------------------------------------------------------------------------
 
@@ -124,34 +156,73 @@ switch windowStat
 		for i = 1:numSteps
 			qs(i) = EN_DistributionEntropy(y(getWindow(i)), 'ks', []);
 		end
-	case 'apen' % Sliding window ApEn
+	case 'permen' % Sliding window normalized Permutation Entropy, PermEn(3,1)
 		for i = 1:numSteps
-			qs(i) = EN_ApEn(y(getWindow(i)), 1, 0.2);
+			permEn_struct = EN_PermEn(y(getWindow(i)), 3, 1);
+			if isstruct(permEn_struct)
+				qs(i) = permEn_struct.normPermEn;
+			else
+				qs(i) = NaN;
+			end
 		end
-	case 'sampen' % Sliding window SampEn
+	case 'specen' % Sliding window normalized Shannon spectral entropy
 		for i = 1:numSteps
-			sampEn_struct = EN_SampEn(y(getWindow(i)), 1, 0.1);
-			qs(i) = sampEn_struct.sampen1;
+			yWin = y(getWindow(i));
+			Fy = fft(yWin - mean(yWin));
+			% One-sided power spectrum without the DC bin (zero after removing the
+			% mean, up to rounding), so that the number of frequencies, floor(n/2),
+			% does not depend on the last bit of the mean:
+			Py = abs(Fy(2:floor(end / 2) + 1)).^2;
+			if length(Py) < 2 || sum(Py) == 0
+				qs(i) = NaN;
+			else
+				Py = Py / sum(Py);
+				Py = Py(Py > 0); % 0*log(0) = 0
+				qs(i) = -sum(Py .* log2(Py)) / log2(floor(length(yWin) / 2)); % normalized to [0,1]
+			end
 		end
 	case 'mom3' % Third moment
 		for i = 1:numSteps
-			qs(i) = DN_Moments(y(getWindow(i)), 3);
+			qs(i) = DN_Moments(y(getWindow(i)), 3, true);
 		end
 	case 'mom4' % Fourth moment
 		for i = 1:numSteps
-			qs(i) = DN_Moments(y(getWindow(i)), 4);
+			qs(i) = DN_Moments(y(getWindow(i)), 4, true);
 		end
 	case 'mom5' % Fifth moment
 		for i = 1:numSteps
-			qs(i) = DN_Moments(y(getWindow(i)), 5);
+			qs(i) = DN_Moments(y(getWindow(i)), 5, true);
 		end
-	case 'lillie' % Lilliefors test
+	case 'lillie' % Lilliefors test statistic (KS-type distance from a Gaussian CDF)
+		% Uses lillietest's raw kstat output directly rather than its p-value:
+		% MATLAB's lillietest interpolates p from a
+		% simulated lookup table and clips to its boundary once the data is clearly
+		% non-Gaussian, which saturates the p-value to an identical constant across
+		% many real (non-Gaussian) windows. kstat is the underlying continuous
+		% statistic the p-value is derived from, so it doesn't have this problem.
+		warning('off', 'stats:lillietest:OutOfRangePLow'); warning('off', 'stats:lillietest:OutOfRangePHigh');
 		for i = 1:numSteps
-			qs(i) = HT_DistributionTest(y(getWindow(i)), 'lillie', 'norm');
+			[~, ~, qs(i)] = lillietest(y(getWindow(i)), 0.05, 'norm');
 		end
+		warning('on', 'stats:lillietest:OutOfRangePLow'); warning('on', 'stats:lillietest:OutOfRangePHigh');
 	case 'AC1' % Lag-1 autocorrelation
 		for i = 1:numSteps
 			qs(i) = CO_AutoCorr(y(getWindow(i)), 1, 'Fourier');
+		end
+	case 'asymAC1' % Asymmetric, nonlinear AC variant: mean(x_t*x_{t+tau}*(x_{t+tau} - x_t)), z-scored per window
+		% (an adaptive lag is set from the whole series, not per window)
+		if ischar(asymTau)
+			asymTau = BF_GetTau(y(:), asymTau); % NaN if it cannot be set
+		end
+		if ~isscalar(asymTau) || ~isnumeric(asymTau) || (~isnan(asymTau) && (asymTau < 1 || asymTau ~= round(asymTau)))
+			error('asymTau must be a positive integer or a BF_GetTau rule (e.g., ''ac1e'')');
+		end
+		qs(:) = NaN;
+		if ~isnan(asymTau) && asymTau < winLength - 1 % need pairs to average over
+			for i = 1:numSteps
+				zw = zscore(y(getWindow(i)));
+				qs(i) = mean(zw(1:end - asymTau) .* zw(1 + asymTau:end) .* (zw(1 + asymTau:end) - zw(1:end - asymTau)));
+			end
 		end
 	otherwise
 		error('Unknown statistic ''%s''', windowStat)
@@ -168,7 +239,7 @@ end
 % Plot
 % ------------------------------------------------------------------------------
 if doPlot
-	figure('color', 'w'); box('on');
+	figure('color', 'w'); box('on'); %#ok<UNRCH>
 	plot(round(winLength / 2):inc:(numSteps - 1) * inc + round(winLength / 2), qs, 'r');
 end
 
@@ -179,15 +250,21 @@ switch acrossWinStat
 	case 'std'
 		% normalized by std of full time series
 		out = std(qs) / std(y);
-	case 'apen'
-		out = EN_ApEn(qs, 1, 0.2); % ApEn of the sliding window measures
-	case 'sampen'
-		sampEn_struct = EN_SampEn(qs, 2, 0.15);
-		out = sampEn_struct.quadSampEn1;
+	case 'permen'
+		permEn_struct = EN_PermEn(qs, 3, 1); % normalized PermEn of the sliding window measures
+		if isstruct(permEn_struct)
+			out = permEn_struct.normPermEn;
+		else
+			out = NaN;
+		end
 	case 'ent'
 		% get a load of statistics from kernel-smoothed distribution (inefficient since only one is used)
 		kssimpouts = DN_FitKernelSmooth(qs);
-		out = kssimpouts.entropy; % distributional entropy
+		if isstruct(kssimpouts)
+			out = kssimpouts.entropy; % distributional entropy
+		else
+			out = NaN; % (the local estimates are all the same)
+		end
 	otherwise
 		error('Unknown statistic: ''%s''.', acrossWinStat)
 end

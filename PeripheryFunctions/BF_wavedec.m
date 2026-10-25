@@ -5,6 +5,12 @@ function [C,L] = BF_wavedec(x,level,wname)
 % L = [len(cA_level), len(cD_level), ..., len(cD_1), len(x)]
 
 x = x(:);
+if isempty(x)
+    error('BF_wavedec:emptyInput','The input signal is empty.');
+end
+if ~isnumeric(level) || ~isscalar(level) || ~isfinite(level) || level < 0 || level ~= fix(level)
+    error('BF_wavedec:badLevel','The level must be a non-negative integer.');
+end
 C = [];
 L = numel(x);
 a = x;

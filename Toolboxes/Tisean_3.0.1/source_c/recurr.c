@@ -148,7 +148,7 @@ void lfind_neighbors(void)
 	      break;
 	  }
 	  if (!toolarge)
-	    if (((double)rnd69069()/ULONG_MAX) <= fraction) {
+	    if (((double)rnd69069()/ULLONG_MAX) <= fraction) { /* hctsa2: see routines/rand.c */
 	      if (!stdo)
 		fprintf(fout,"%ld %ld\n",n+1,element+1);
 	      else

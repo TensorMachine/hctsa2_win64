@@ -1,0 +1,356 @@
+function out = NL_PersistentHomology(y, tau, m, maxDim, maxN)
+% NL_PersistentHomology   Topological data analysis of a time-delay embedding.
+%
+% Time-delay embeds the time series (Takens' theorem) and computes the persistent
+% homology of the resulting point cloud under a Vietoris-Rips filtration, via the ripser
+% tool (Bauer, J. Appl. Comput. Topol. 5, 391 (2021)). A clean periodic/quasi-periodic
+% orbit traces out a loop in embedding space, which shows up as one strongly persistent
+% 1-dimensional (H1) topological feature; a noisy or aperiodic point cloud does not. This
+% is the same underlying idea as Perea & Harer's sliding-window persistence approach to
+% periodicity quantification (Found. Comput. Math. 15, 799 (2015)), applied here directly
+% to a plain time-delay embedding rather than their specific sliding-window/point-cloud
+% construction.
+%
+% Persistent homology itself is standard computational topology (see, e.g., Edelsbrunner &
+% Harer, "Computational Topology: An Introduction", AMS, 2010); ripser computes it
+% efficiently by never explicitly enumerating higher-dimensional simplices, which is what
+% makes this tractable on production-length time series.
+%
+% All persistence values are divided by a Rips filtration threshold (the largest pairwise
+% distance in a 300-point subsample of the cloud), so they are comparable in scale across
+% input series. The filtration stops at this threshold, so an interval still alive there
+% is counted as dying at the threshold, i.e., with persistence (threshold - birth)/threshold,
+% except for the single essential H0 interval (the connected component that never dies),
+% which is dropped. The output is NaN if the
+% embedding fails, has fewer than 20 points, or is degenerate (e.g., a constant series).
+%
+% ---INPUTS:
+% y, scalar time series as a column vector
+% tau, time delay for the embedding: a positive integer, 'ac', 'ac1e' or 'mi' (cf.
+%      BF_Embed and BF_GetTau), or 'periodWelch' (specific to this operation; see
+%      ---NOTES). Default: 'mi'
+% m, embedding dimension, a positive integer. Default: 3
+% maxDim, maximum homology dimension to compute (only dimensions 0 and 1 are used by the
+%         outputs below; higher dimensions are far more expensive). Default: 1
+% maxN, the maximum number of embedded points to feed to ripser; longer embeddings are
+%       reduced to maxN points by an evenly-spaced subsample, or 'full' to disable
+%       (with a warning above 4000 points). Default: 1000
+%
+% ---OUTPUTS:
+% maxPersistenceH1, persistence of the most persistent loop (H1 interval)
+% totalPersistenceH1, total persistence of all loops
+% persistenceEntropyH1, Shannon entropy of the distribution of loop persistences (low
+%                       when one dominant loop, high when many comparable ones; 0 if
+%                       there are no H1 intervals)
+% totalPersistenceH0, total persistence of the H0 intervals (other than the essential
+%                     one), capturing the clustering structure of the point cloud at
+%                     small scales
+%
+% ---REFERENCES:
+% U. Bauer, "Ripser: efficient computation of Vietoris-Rips persistence barcodes",
+% J. Appl. Comput. Topol. 5(3), 391-423 (2021) (ripser). DOI: 10.1007/s41468-021-00071-5
+%
+% J.A. Perea and J. Harer, "Sliding windows and persistence: an application of
+% topological methods to signal analysis", Found. Comput. Math. 15(3), 799-838 (2015)
+% (sliding-window persistence). DOI: 10.1007/s10208-014-9206-z
+% Edelsbrunner & Harer, "Computational Topology: An Introduction", AMS, 2010.
+%
+% ---NOTES:
+% m: needs m >= 2 for a loop to be representable at all, and m >= 3 to avoid
+%    self-intersections distorting the topology of anything but the simplest orbits
+%    (Takens' theorem generically guarantees an m >= 3 embedding of a 1-dimensional
+%    attractor is free of such artifacts).
+%
+%    A companion mop is registered at a deliberately under-embedded m = 2:
+%    self-intersections aren't purely artifacts to be unfolded away -- a curve's own shape
+%    in a *specific* low-dimensional projection can itself carry information a Takens-safe
+%    embedding discards. For example, two-harmonic signals sin(t)+0.6*sin(2t+phi) with
+%    different phi are indistinguishable by any phase-blind spectral feature (|FFT| depends
+%    only on harmonic amplitudes, not phi, by construction) but can differ at m = 2 in the
+%    persistence of the single dominant loop -- an effect tied to the specific 2D
+%    projection rather than the intrinsic topology of the (here, truly 1-dimensional)
+%    attractor.
+%
+%    This m = 2 companion mop uses tau = 'periodWelch', not 'mi'. The m = 2 loop shape
+%    depends strongly on the embedding delay, and 'periodWelch' targets a fixed *fraction
+%    of the dominant period* (not an absolute index count) by normalizing against the
+%    series' own estimated dominant period, so the same relative embedding delay is used
+%    regardless of how finely the series happens to be sampled. (In the code the delay is
+%    max(1, round(period/5)) samples, one fifth of the period, falling back to 'mi' if no
+%    prominent spectral peak is found.) A fifth of a period is chosen because, for a
+%    sinusoid in a two-dimensional delay embedding, the loop is roundest near a quarter
+%    period and collapses onto a line at half a period; a fifth keeps a round loop, is
+%    robust to errors in the Welch period estimate, matches the delay 'mi' picks for
+%    periodic signals (about 0.2 period), and keeps the phase sensitivity this mop is
+%    meant to have.
+%
+% tau: a fixed tau performs much worse here than for most other embedding-based
+%    operations (see the comment in the code on the default).
+%
+% maxN: Vietoris-Rips persistent homology cost grows steeply with point-cloud size, so
+%    longer embeddings are reduced via an evenly-spaced (not random, not a truncation to an
+%    early window) subsample of the embedded point cloud -- this keeps coverage of the
+%    full reconstructed attractor rather than just an early time window, unlike e.g.
+%    NL_RQA's maxN, which crops the raw series instead (RQA's per-pair cost is what forces
+%    that choice there; here the embedding itself is cheap and only the point count handed
+%    to ripser needs capping). With maxN = 'full', a warning is given above 4000 points,
+%    beyond which cost grows steeply and can exceed the runner's subprocess timeout
+%    (HCTSA2: BF_RunTisean's limit is 300 s by default; raise it with
+%    setenv('HCTSA2_TISEAN_TIMEOUT',...)).
+%
+% A count of "significant" H1 intervals above a fixed normalized-persistence threshold is
+% not returned: real (noisy, imperfectly periodic) data essentially never clears a fixed
+% significance bar, so such a field carried almost no information. maxPersistenceH1
+% captures the same underlying signal as a continuous quantity instead.
+
+% ------------------------------------------------------------------------------
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% <http://www.benfulcher.com>
+%
+% If you use this code for your research, please cite the following two papers:
+%
+% (1) B.D. Fulcher and N.S. Jones, "hctsa: A Computational Framework for Automated
+% Time-Series Phenotyping Using Massive Feature Extraction, Cell Systems 5: 527 (2017).
+% DOI: 10.1016/j.cels.2017.10.001
+%
+% (2) B.D. Fulcher, M.A. Little, N.S. Jones, "Highly comparative time-series
+% analysis: the empirical structure of time series and their methods",
+% J. Roy. Soc. Interface 10(83) 20130048 (2013).
+% DOI: 10.1098/rsif.2013.0048
+%
+% This function is free software: you can redistribute it and/or modify it under
+% the terms of the GNU General Public License as published by the Free Software
+% Foundation, either version 3 of the License, or (at your option) any later
+% version.
+%
+% This program is distributed in the hope that it will be useful, but WITHOUT
+% ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+% FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+% details.
+%
+% You should have received a copy of the GNU General Public License along with
+% this program. If not, see <http://www.gnu.org/licenses/>.
+% ------------------------------------------------------------------------------
+
+% ------------------------------------------------------------------------------
+%% Check inputs
+% ------------------------------------------------------------------------------
+if nargin < 2 || isempty(tau)
+    % 'mi' (an adaptive delay; see BF_GetTau), not a fixed tau=1: loop
+    % shape -- and hence H1 persistence relative to point-cloud diameter --
+    % is highly sensitive to this choice. A fixed tau=1 embedding of a
+    % smooth periodic series is nearly collinear locally (adjacent samples
+    % are highly correlated), producing a thin, elongated loop whose
+    % persistence is small relative to the cloud's overall diameter, making
+    % it hard to distinguish from noise.
+    tau = 'mi';
+end
+if nargin < 3 || isempty(m)
+    m = 3;
+end
+if nargin < 4 || isempty(maxDim)
+    maxDim = 1;
+end
+if nargin < 5 || isempty(maxN)
+    % Cost grows steeply with point-cloud size; 1000 is a reasonable
+    % default balance of signal quality vs. per-series cost at hctsa's scale.
+    maxN = 1000;
+end
+
+% ------------------------------------------------------------------------------
+%% Embed the signal
+% ------------------------------------------------------------------------------
+if ischar(tau) && strcmpi(tau, 'periodWelch')
+    % BF_Embed doesn't know this option -- resolve it to a plain number (or
+    % fall back to the string 'mi', which BF_Embed does know how to resolve,
+    % including its own NaN-safety for too-short series) before embedding.
+    tau = SUB_periodNormalizedTau(y);
+end
+X = BF_Embed(y, tau, m, false);
+if isscalar(X) && isnan(X) % embedding failed
+    out = NaN; return
+end
+Nemb = size(X, 1);
+
+if Nemb < 20
+    % Too few embedded points for a meaningful Rips filtration
+    out = NaN; return
+end
+
+if ischar(maxN) && strcmpi(maxN, 'full')
+    slowThreshold = 4000;
+    if Nemb > slowThreshold
+        warning(['%u embedded points exceeds %u with maxN=''full''; ripser cost ' ...
+                 'grows steeply with point-cloud size (see the cost profile in the ' ...
+                 'header comment) and may take minutes, or exceed ' ...
+                 'BF_RunTisean''s timeout (HCTSA2_TISEAN_TIMEOUT) and fail outright'], ...
+                Nemb, slowThreshold);
+    end
+elseif Nemb > maxN
+    % Evenly-spaced subsample over the full embedded point cloud (see header
+    % comment for why this differs from a simple crop-to-first-maxN):
+    idx = round(linspace(1, Nemb, maxN));
+    X = X(idx, :);
+    Nemb = size(X, 1);
+end
+
+% ------------------------------------------------------------------------------
+%% Estimate a Rips filtration threshold (point-cloud diameter) from a cheap
+%% deterministic subsample, so ripser isn't asked to build the filtration
+%% all the way up to a (possibly much larger, outlier-driven) true diameter
+% ------------------------------------------------------------------------------
+nSub = min(300, Nemb);
+subIdx = round(linspace(1, Nemb, nSub));
+Dsub = pdist(X(subIdx, :));
+threshold = max(Dsub);
+if ~(threshold > 0)
+    % Degenerate point cloud (e.g., constant series)
+    out = NaN; return
+end
+
+% ------------------------------------------------------------------------------
+%% Run ripser
+% ------------------------------------------------------------------------------
+filePath = BF_WriteTempFile(X);
+% --- temporary-file safety net ------------------------------------------------
+% Everything from here to the matching catch runs with the temporary file
+% guaranteed to be removed, whichever way control leaves (see
+% HCTSA2_AuditTiseanCleanup). The body is not re-indented, to keep it diffable
+% against upstream.
+try
+ripser_command = sprintf('ripser --format point-cloud --dim %u --threshold %.8g %s', ...
+                            maxDim, threshold, filePath);
+% hctsa2: BF_RunTisean rather than upstream's BF_RipserSystem (a Unix `timeout`
+% wrapper that runs unbounded on Windows). A missing program or a timeout raises
+% there; any other non-zero exit is an error here, as it was upstream.
+[status, res] = BF_RunTisean(ripser_command);
+if status ~= 0
+	error('ripser exited with status %d.\nCommand: %s\nOutput: %s', status, ripser_command, res);
+end
+if numel(res) > 50e6 % ~50 MB of text: upstream's runaway-output guard
+	error('ripser produced %d characters of output; treating it as a runaway call.', numel(res));
+end
+BF_CleanTempFiles(filePath); % the output is in res; nothing else is read from disk
+
+catch tiseanCleanupErr
+    BF_CleanTempFiles(filePath);
+    rethrow(tiseanCleanupErr);
+end
+% --- end temporary-file safety net --------------------------------------------
+
+H1 = SUB_parseDim(res, 1);
+H0 = SUB_parseDim(res, 0);
+
+% ------------------------------------------------------------------------------
+%% Summarize the H1 (loop) persistence diagram
+% ------------------------------------------------------------------------------
+if ~isempty(H1)
+    % (a loop still alive at the threshold dies there)
+    pers1 = (min(H1(:, 2), threshold) - H1(:, 1)) / threshold; % normalize
+else
+    pers1 = [];
+end
+
+if isempty(pers1)
+    out.maxPersistenceH1 = 0;
+    out.totalPersistenceH1 = 0;
+    out.persistenceEntropyH1 = 0;
+else
+    out.maxPersistenceH1 = max(pers1);
+    out.totalPersistenceH1 = sum(pers1);
+    % Dense Rips complexes routinely produce exact-zero-persistence H1 pairs
+    % (simplices born and paired off at the same filtration value); a p==0
+    % term must contribute 0 to the entropy sum by convention, but MATLAB's
+    % 0*log(0) evaluates to NaN (an indeterminate form), silently corrupting
+    % the whole sum. Drop zero-persistence entries before computing p so
+    % this can't happen.
+    pers1pos = pers1(pers1 > 0);
+    p = pers1pos / sum(pers1pos);
+    out.persistenceEntropyH1 = -sum(p .* log(p));
+end
+
+% ------------------------------------------------------------------------------
+%% H0 summary (clustering structure of the point cloud)
+% ------------------------------------------------------------------------------
+if ~isempty(H0)
+    % Drop the single essential class (the component that never dies); any other
+    % component still alive at the threshold dies there
+    iEssential = find(~isfinite(H0(:, 2)), 1, 'first');
+    H0(iEssential, :) = [];
+    pers0 = (min(H0(:, 2), threshold) - H0(:, 1)) / threshold;
+else
+    pers0 = [];
+end
+out.totalPersistenceH0 = sum(pers0); % 0 if empty
+
+% ------------------------------------------------------------------------------
+function tau = SUB_periodNormalizedTau(y)
+    % Targets an embedding delay of one fifth of the series' own estimated
+    % dominant period (see the m-parameter docstring note for why this
+    % specific fraction) rather than an absolute index count, so the
+    % resulting index-tau automatically scales with however finely the
+    % series happens to be sampled.
+    %
+    % The period is the most prominent peak (MinPeakProminence = 2 on a log
+    % scale, ~7.4x) of a Welch spectrum (a periodogram averaged over
+    % overlapping segments). A plain single-FFT argmax tends to lock onto
+    % low-frequency trend/drift on real (broadband) data, and peak-finding
+    % on a single (non-averaged) periodogram finds apparent local peaks
+    % even in white noise, from its bin-to-bin variance; Welch averaging
+    % suppresses that noise-driven variance.
+    minProm = 2.0;
+
+    if numel(y) < 16
+        % pwelch errors outright (rather than degrading gracefully) below
+        % ~8 samples with default windowing; treat any series this short as
+        % too short for a meaningful period estimate regardless.
+        tau = 'mi'; return
+    end
+    yDetrended = y - mean(y);
+    [Pxx, F] = pwelch(yDetrended, [], [], [], 1);
+    Pxx = Pxx(2:end); F = F(2:end); % exclude the DC bin
+    if numel(Pxx) < 3
+        tau = 'mi'; return
+    end
+    logP = log(Pxx + eps(max(Pxx)));
+    [~, locs, ~, proms] = findpeaks(logP, 'MinPeakProminence', minProm);
+    if isempty(locs)
+        % No sufficiently prominent period found -- period-normalization
+        % isn't meaningful without one; fall back to the general-purpose
+        % heuristic.
+        tau = 'mi'; return
+    end
+    [~, best] = max(proms); % most prominent peak, not necessarily tallest
+    period = 1 / F(locs(best));
+    tau = max(1, round(period / 5)); % one fifth of the dominant period
+end
+% ------------------------------------------------------------------------------
+
+% ------------------------------------------------------------------------------
+function ivals = SUB_parseDim(res, d)
+    % Extracts [birth, death] pairs for dimension d from ripser's stdout;
+    % an unbounded ("essential") interval, printed with a blank death field
+    % (' [b, )'), is returned with death = Inf.
+    % ([^\n]* rather than .*, since '.' matches a newline in MATLAB regexp and a lazy .*\n can
+    % then run on through the following dimension's block)
+    pat = sprintf('persistence intervals in dim %d:\\n((?:[^\\n]*\\n)*?)(?=persistence intervals in dim|$)', d);
+    tok = regexp(res, pat, 'tokens', 'once');
+    if isempty(tok)
+        ivals = zeros(0, 2); return
+    end
+    pairs = regexp(tok{1}, '\[([^,]*),([^\)]*)\)', 'tokens');
+    ivals = zeros(numel(pairs), 2);
+    for i = 1:numel(pairs)
+        birthStr = strtrim(pairs{i}{1});
+        deathStr = strtrim(pairs{i}{2});
+        ivals(i, 1) = str2double(birthStr);
+        if isempty(deathStr)
+            ivals(i, 2) = Inf;
+        else
+            ivals(i, 2) = str2double(deathStr);
+        end
+    end
+end
+% ------------------------------------------------------------------------------
+
+end

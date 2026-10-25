@@ -22,9 +22,19 @@ c===========================================================================
 c   c2g.f
 c   Gaussian kernel correlation integral from c2
 c   author T. Schreiber (1998)
+c
+c   Modified for hctsa: (i) all real variables are double precision (the
+c   single precision log-lengths and correlation sums overflowed in the
+c   interpolation prefactor exp(...) for series with steep local slopes,
+c   which gave Inf/NaN output); (ii) the counter me is incremented only
+c   after the check that the correlation sum is positive (previously the
+c   point that ended the list was counted, and an uninitialized or stale
+c   point from the previous embedding dimension entered the integral);
+c   (iii) the points are sorted by an insertion sort in double precision.
 c===========================================================================
+      implicit double precision (a-h,o-z)
       parameter(meps=1000)
-      dimension e(meps), c(meps), lw(meps)
+      dimension e(meps), c(meps)
 c
 c   hctsa 2.0: filename buffers raised from character*72 to character*512.
 c   TISEAN declared every filename character*72 and gfortran truncates a longer
@@ -56,16 +66,27 @@ c
       me=0
  2    read(iunit,'(a)') aline
       if(aline(1:72).eq." ") goto 3
-      me=me+1
       read(aline,*,err=999,end=999) ee, cc
       if(cc.le.0.) goto 3
+      me=me+1
       e(me)=log(ee)
       c(me)=log(cc)
       goto 2
- 3    write(iunit2,'(4h#m= ,i5)') m
-      call indexx(me,e,lw)
-      call index2sort(me,e,lw)
-      call index2sort(me,c,lw)
+ 3    write(iunit2,'("#m= ",i5)') m
+c     sort the points by increasing e (insertion sort, in double precision)
+      do 5 k=2,me
+         et=e(k)
+         ct=c(k)
+         j=k-1
+ 6       if(j.lt.1) goto 7
+         if(e(j).le.et) goto 7
+         e(j+1)=e(j)
+         c(j+1)=c(j)
+         j=j-1
+         goto 6
+ 7       e(j+1)=et
+         c(j+1)=ct
+ 5    continue
       do 10 j=1,me
          h=exp(e(j))
          g=0

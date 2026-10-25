@@ -1,29 +1,73 @@
 function out = MF_ExpSmoothing(x, ntrain, alpha)
-% MF_ExpSmoothing   Exponential smoothing time-series prediction model.
+% MF_ExpSmoothing   Exponential smoothing as a one-step forecaster: the best smoothing parameter and its residuals.
 %
-% Fits an exponential smoothing model to the time series using a training set to
-% fit the optimal smoothing parameter, alpha, and then applies the result to the
-% try to predict the rest of the time series.
-%
-% cf. "The Analysis of Time Series", C. Chatfield, CRC Press LLC (2004)
-%
-% Code is adapted from that provided by Siddharth Arora:
-% Siddharth.Arora@sbs.ox.ac.uk
+% Fits a simple exponential smoothing model to the time series, in which the forecast
+% of X(t) is the level S(t-1), an exponentially weighted average of past values,
+% S(t) = alpha*X(t) + (1-alpha)*S(t-1), with the initial level the mean of the first
+% (up to) 10 samples; alpha is the smoothing parameter. The best alpha is the value in
+% [0.01, 1] that minimizes the root-mean-square one-step prediction error over a
+% training set (the first ntrain samples, all but the first forecast scored): the error
+% is evaluated on the grid 0.01, 0.02, ..., 1 and the best grid point g is refined by 40
+% golden-section steps on [max(0.01, g - 0.01), min(1, g + 0.01)]. A coarse search over
+% five values from 0.1 to 0.9, with a parabola fitted to the three lowest errors, is
+% also reported. The chosen alpha is then used to forecast each sample after the
+% training set from the samples before it, and the outputs report alpha and statistics
+% of the residuals of these held-out forecasts, from the shared residual summary
+% MF_ResidualAnalysis (at its 'full' level).
 %
 % ---INPUTS:
 % x, the input time series
 %
 % ntrain, the number of samples to use for training (can be a proportion of the
-%           time-series length)
+%           time-series length, if between 0 and 1). It is kept between 100 and 1000
+%           samples. Default is min(100, N). If the series is shorter than ntrain, or
+%           fewer than 50 samples remain after the training set, a NaN is returned.
 %
-% alpha, the exponential smoothing parameter
+% alpha, the exponential smoothing parameter, or 'best' (default) to fit it on the
+%           training set.
 %
-% ---OUTPUTS: include the fitted alpha, and statistics on the residuals from the
-% prediction phase.
+% ---OUTPUTS (when alpha is 'best'; the residual statistics are those of the
+% held-out samples, after the first ntrain):
+% alphamin, the fitted smoothing parameter (between 0.01 and 1)
+% slope05_1, the slope at alpha = 0.5 of the parabola fitted to the three lowest errors
+%           of the coarse search (negative if the error falls towards larger alpha)
+% p1_1, the size of the quadratic coefficient of that parabola
+% cup_1, the sign of that coefficient (+1 if the parabola opens upward)
+% meane, mean of the residuals (prediction minus data)
+% meanabs, mean absolute residual
+% stde, standard deviation of the residuals
+% maxonstd, largest absolute residual, in units of the residual standard deviation
+% ac1, ac2, ac3: autocorrelation of the (z-scored) residuals at lags 1, 2 and 3
+% propbth, proportion of the residual autocorrelations at lags 1 to 25 within the
+%           significance band +/- 2.6/sqrt(N)
+% taurat, decorrelation time of the residuals (first zero-crossing of their
+%           autocorrelation function) divided by that of the time series
+% ftbth, first lag at which the residual autocorrelation falls inside the
+%           significance band (26 if it never does)
+% normksstat, Kolmogorov-Smirnov statistic of the residuals against a Gaussian
+% sws, standard deviation across 5 windows of the local standard deviation of the
+%           residuals, relative to their overall standard deviation
+% swm, standard deviation across 5 windows of the local mean of the residuals,
+%           relative to their overall standard deviation
+% popt, the order (1 to 10) of the AR model fitted to the residuals, selected by the
+%           Schwarz Bayesian criterion
+% minsbc, the corresponding Schwarz Bayesian criterion
 %
-% Future alteration could take a number of training sets and average to some
-% optimal alpha, for example, rather than just fitting it in an initial portion
-% of the time series.
+% ---REFERENCES:
+% C. Chatfield, "The Analysis of Time Series", CRC Press LLC (2004).
+% R. G. Brown, "Smoothing, Forecasting and Prediction of Discrete Time Series",
+% Prentice-Hall (1963).
+% J. Kiefer, "Sequential minimax search for a maximum", Proc. Amer. Math. Soc. 4, 502
+% (1953) (golden-section search).
+%
+% ---NOTES:
+% The residuals are those of the one-step forecasts of the held-out samples only
+% (samples ntrain+1 to N), so they are not biased by the fit of alpha to the
+% training set. Each forecast uses the samples before it, including earlier
+% held-out ones. For the registered call (ntrain = 0.5) at N = 1000, 500 samples
+% are held out.
+%
+% Code is adapted from that provided by Siddharth Arora (Siddharth.Arora@sbs.ox.ac.uk).
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -74,16 +118,16 @@ end
 minTrain = 100;
 maxTrain = 1000;
 
-if ntrain > maxTrain; % larger than maximum training set size
+if ntrain > maxTrain % larger than maximum training set size
 	fprintf(1, 'Training set size reduced from %u to maximum of 1000 samples.\n', ntrain);
 	ntrain = 1000;
 end
-if ntrain < minTrain; % smaller than minimum training set size
+if ntrain < minTrain % smaller than minimum training set size
 	fprintf(1, 'Training set size increased from %u to minimum of 100.\n', ntrain);
 	ntrain = 100;
 end
 
-if N < ntrain % time series shorter than the size of the training set
+if N < ntrain + 50 % too few samples held out after the training set
 	fprintf(1, 'Time Series too short for exponential smoothing\n')
 	out = NaN; return
 end
@@ -99,147 +143,56 @@ end
 % Finding optimum parameter A [0,1] using RMSE
 
 if strcmp(alpha, 'best')
-	%% (*) Optimize alpha (*)
-	% optimize alpha over the training set xtrain. This is a choice to only use
-	% the first section of the time series. The length of the training set is
-	% set in the input
-	% optimize alpha based on the defined training set of time series values
-
-	% Training set xtrain
 	xtrain = x(1:ntrain);
+	% Coarse search, reported through the parabola fitted to its three lowest errors:
+	alphar = linspace(0.1, 0.9, 5);
+	rmses = zeros(5, 1);
+	for k = 1:length(alphar)
+		rmses(k) = SUB_rmse(xtrain, alphar(k));
+	end
+	if any(~isfinite(rmses))
+		out = NaN; return
+	end
+	[~, ix] = sort(rmses);
+	rkeep = ix(1:3); % fit on the 3 points closest to the minimum
+	p = polyfit(alphar(rkeep)', rmses(rkeep), 2);
+	% Slope of the parabola at the middle of the scan, a + b for a*alpha^2 + b*alpha + c.
+	% (Its vertex, -b/(2a), is not reported: it is a ratio that is unbounded when the
+	% parabola is nearly flat. Together with p1_1 and cup_1 the slope carries the
+	% same information, vertex = 0.5 - slope/(2a), and stays finite and continuous.)
+	out.slope05_1 = p(1) + p(2);
+	out.p1_1 = abs(p(1)); % concavity
+	out.cup_1 = sign(p(1));
 
-	% The brute force method is much slower:
-	bruteForce = false;
-
-	if bruteForce
-		% set a range of alpha and find minimum
-		alphar = (0.1:0.1:1); % the exponential smoothing parameter
-		nalpha = length(alphar);
-		rmses = zeros(nalpha, 1);
-
-		for k = 1:nalpha;
-			a = alphar(k);
-
-			% Loop for rolling window
-			xf = SUB_fit_exp_smooth(xtrain, a);
-
-			% Issue forecasts
-			fore = xf(3:end);
-			orig = xtrain(3:end);
-			rmses(j) = sqrt(mean((fore - orig).^2)); % compute rmse
-			%             rmses(k) = rmse(fore,orig);
-			%             rmse_n(k,2) = a;
-
-			% plot(orig);hold on;plot(fore,'r');hold off
-			input(num2str(a));
-
-			%     count = count + 1;
-			clear xf;
-			clear fore;
-
-			% ++BF -- halts unnecessary calculation
-			ntimes = 5;
-			if k > ntimes
-				d_rmse_n = diff(rmse_n(k - ntimes:k, 1));
-				if all(d_rmse_n > 0)
-					% increased <ntimes> times in a row
-					% disp('breaking')
-					break
-				end
-			end
-
-			% Find the value of smoothing parameter that minimizes
-			% in-sample 1-step ahead prediction error
-			minrmse = min(rmses);
-			alpha_optimum = alphar(rmses == minrmse);
-
-			% Produce some preliminary outputs
-			out.train_minrmse = minrmse;
-			out.train_alpha = alpha_optimum;
-
-		end
-	else
-		% do a descent
-		% fits a quadratic to available points
-
-		% (1) use alpha = 0.01, 0.1, 0.5, 0.8
-		%         alphar = [0.1, 0.2, 0.5, 0.8, 0.9];
-		alphar = linspace(0.1, 0.9, 5);
-		rmses = zeros(4, 1);
-
-		for k = 1:length(alphar)
-			a = alphar(k);
-
-			xf = SUB_fit_exp_smooth(xtrain, a);
-
-			% Issue forecasts
-			fore = xf(3:end);
-			orig = xtrain(3:end);
-			rmses(k) = sqrt(mean((fore - orig).^2)); % compute rmse
-		end
-
-		% fit quadratic to set alpha
-		[sort_rmses, ix] = sort(rmses);
-		rkeep = ix(1:3); % fit on 3 points closest to minimum
-		p = polyfit(alphar(rkeep)', rmses(rkeep), 2);
-		aar = (0:0.005:1);
-		y = polyval(p, aar);
-		%         plot(aar,y,':k'); hold on;
-		%         plot(alphar,rmses,'or');
-		%         plot(alphar(rkeep),rmses(rkeep),'*m'); hold off
-		alphamin = -p(2) / (2 * p(1));
-		out.alphamin_1 = alphamin;
-		out.p1_1 = abs(p(1)); % concavity
-		out.cup_1 = sign(p(1));
-
-		if p(1) < 0 % concave down -- it's looking at a maximum
-			% weird case
-			if y(1) < y(end);
-				alphamin = 0.01;
-			else
-				alphamin = 1;
-			end
+	% The best alpha: a grid of step 0.01, then golden-section refinement
+	grid = (1:100)' / 100;
+	gridErr = zeros(100, 1);
+	for k = 1:100
+		gridErr(k) = SUB_rmse(xtrain, grid(k));
+	end
+	[bestErr, ix] = min(gridErr);
+	g = grid(ix);
+	lo = max(0.01, g - 0.01); hi = min(1, g + 0.01);
+	ratio = (sqrt(5) - 1) / 2;
+	c = hi - ratio * (hi - lo); d = lo + ratio * (hi - lo);
+	fc = SUB_rmse(xtrain, c); fd = SUB_rmse(xtrain, d);
+	for k = 1:40
+		if fc <= fd
+			hi = d; d = c; fd = fc;
+			c = hi - ratio * (hi - lo);
+			fc = SUB_rmse(xtrain, c);
 		else
-			% Search again around this
-			alphar = linspace(alphamin - 0.1, alphamin + 0.1, 5);
-			if any(alphar <= 0)
-				alphar = linspace(0.01, max(alphamin, 0) + 0.1, 5);
-			elseif any(alphar >= 1)
-				alphar = linspace(min(alphamin, 1) - 0.1, 1, 5);
-			end
-
-			for k = 1:length(alphar)
-				a = alphar(k);
-
-				xf = SUB_fit_exp_smooth(xtrain, a);
-
-				% Issue forecasts
-				fore = xf(3:end);
-				orig = xtrain(3:end);
-				rmses(k) = sqrt(mean((fore - orig).^2)); % compute rmse
-
-			end
-
-			% Fit quadratic to set alpha
-			p = polyfit(alphar', rmses, 2);
-			%             aar = 0:0.005:1;
-			%             y = polyval(p,aar);
-			%             plot(aar,y,':k'); hold on;
-			%             plot(alphar,rmses,'or'); hold off
-
-			if p(1) < 0
-				alphamin = alphar(rmses == min(rmses));
-				% This is quite bad -- the first step didn't find a local
-				% minimum...
-			else % minimum of quadratic fit
-				alphamin = -p(2) / (2 * p(1));
-				if alphamin > 1, alphamin = 1; end
-				if alphamin <= 0, alphamin = 0.01; end
-			end
-
+			lo = c; c = d; fc = fd;
+			d = lo + ratio * (hi - lo);
+			fd = SUB_rmse(xtrain, d);
 		end
 	end
-
+	aRef = (lo + hi) / 2;
+	if SUB_rmse(xtrain, aRef) < bestErr
+		alphamin = aRef;
+	else
+		alphamin = g;
+	end
 	out.alphamin = alphamin;
 	alpha = alphamin;
 end
@@ -259,15 +212,16 @@ end
 % Plot original time series and smoothed data using optimum values
 y = SUB_fit_exp_smooth(x, alpha);
 
-yp = y(3:N); % predicted
-xp = x(3:N); % original
+% Residuals only on the held-out part (after the ntrain samples used to fit alpha):
+yp = y(ntrain+1:N); % predicted
+xp = x(ntrain+1:N); % original
 e = yp - xp; % residuals
 % in_sample_error = sqrt(mean((yp-xp).^2));
 % out.insamplermse = in_sample_error;
 
 % -------------------------------------------------------------------------------
 % Get statistics on residuals using MF_ResidualAnalysis
-residout = MF_ResidualAnalysis(e);
+residout = MF_ResidualAnalysis(e, xp, 'full');
 
 % Convert these to local outputs in quick loop:
 fields = fieldnames(residout);
@@ -276,9 +230,9 @@ for k = 1:length(fields)
 end
 
 if doPlot
-	figure('color', 'w'); box('on')
+	figure('color', 'w'); box('on') %#ok<UNRCH>
 	t = 1:length(yp);
-	plot(t, x(3:N), 'b', t, y(3:N), 'k');
+	plot(t, xp, 'b', t, yp, 'k');
 	legend('Obs', 'Fit');
 	xlabel('Time');
 	ylabel('Amplitude');
@@ -286,22 +240,17 @@ end
 
 % ------------------------------------------------------------------------------
 function xf = SUB_fit_exp_smooth(x, a)
-	% Iterate over rolling window:
-	ntrain = length(x);
-	xf = zeros(ntrain, 1);
-
-	for ii = 2:ntrain - 1
-		s = zeros(ntrain, 1);
-		s(1) = mean(x(1:ii - 1));
-
-		% Loop to smooth data within the window size
-		for jj = 2:ii
-			s(jj) = a * x(jj) + (1 - a) * s(jj - 1);
-		end
-
-		% S(t) = Xf(t) is forecasted value for X(t+1)
-		xf(ii + 1, 1) = s(ii);
-	end
+	% One-step forecasts: xf(t) = S(t-1), with S(0) the mean of the first (up to) 10 samples
+	x = x(:);
+	level0 = mean(x(1:min(10, length(x))));
+	level = filter(a, [1, -(1 - a)], x, (1 - a) * level0);
+	xf = [level0; level(1:end-1)];
+end
+% ------------------------------------------------------------------------------
+function e = SUB_rmse(x, a)
+	% Root-mean-square one-step error, all but the first forecast
+	xf = SUB_fit_exp_smooth(x, a);
+	e = sqrt(mean((xf(2:end) - x(2:end)).^2));
 end
 
 end

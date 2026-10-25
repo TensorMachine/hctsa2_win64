@@ -1,19 +1,41 @@
-function out = MD_rawHRVmeas(x)
-% MD_rawHRVmeas     Poincare plot measures used in HRV analysis.
-%                   HRV: heart rate variability.
+function out = MD_RawHRVMeas(x)
+% MD_RawHRVMeas   Poincare plot measures used in HRV analysis (heart rate variability).
 %
-% Computes the triangular histogram index and Poincare plot measures to a time
-% series assumed to measure sequences of consecutive RR intervals measured in
-% milliseconds. Doesn't make much sense for other time series
-%
-% cf. "Do existing measures of Poincare plot geometry reflect nonlinear
-%      features of heart rate variability?"
-%      M. Brennan, et al., IEEE T. Bio.-Med. Eng. 48(11) 1342 (2001)
+% Computes the triangular histogram index and Poincare plot measures for a time series
+% assumed to measure a sequence of consecutive RR intervals. Doesn't make much sense for
+% other time series. The factor of 1000 in SD1 and SD2 assumes the series is in seconds
+% (to give milliseconds; see NOTES).
 %
 % Note that pNNx is not done here, but in MD_pNN.m
 %
 % This code is heavily derived from Max Little's hrv_classic.m code
 % Max Little: http://www.maxlittle.net/
+%
+% ---INPUTS:
+% x, the input time series (the raw series: RR intervals)
+%
+% ---OUTPUTS:
+% tri10, tri20, trisqrt, the triangular index: the number of samples divided by the
+%       count in the fullest bin of a histogram of equal-width bins spanning the data,
+%       with 10 bins, 20 bins, or ceil(sqrt(N)) bins,
+% SD1, 1000/sqrt(2) times the standard deviation of the successive differences
+%       (variability perpendicular to the line of identity in (x_t, x_{t+1})),
+% SD2, 1000 times sqrt(2*var(x) - 0.5*std(diff(x))^2) (variability along the line of
+%       identity): high for a signal with high variance but low variance of the
+%       differences, low for the opposite,
+% CVI, the cardiac vagal index, log10(16*SD1*SD2).
+%
+% ---REFERENCES:
+% Brennan et al., "Do existing measures of Poincare plot geometry reflect nonlinear
+% features of heart rate variability?", IEEE T. Bio.-Med. Eng. 48(11), 1342 (2001).
+% Toichi et al., "A new method of assessing cardiac autonomic function and its comparison
+% with spectral analysis and coefficient of variation of R-R interval", J. Auton. Nerv.
+% Syst. 62(1-2), 79 (1997) (the cardiac vagal index).
+%
+% ---NOTES:
+% SD1 is the same (up to a rescaling) as DN_Spread(diff(x),'std'). CSI = SD2/SD1, the
+% companion Cardiac Sympathetic Index, is not returned (largely redundant with existing
+% hctsa features).
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2016, Max A. Little, <max.a.little@gmail.com>,
@@ -48,9 +70,10 @@ function out = MD_rawHRVmeas(x)
 N = length(x); % time-series length
 
 % Triangular histogram index
-out.tri10 = N / max(histcounts(x, 10));
-out.tri20 = N / max(histcounts(x, 20));
-out.trisqrt = N / max(histcounts(x, 'BinMethod', 'sqrt'));
+% (equal-width bins spanning the data, with explicit edges: BF_HistEdges)
+out.tri10 = N / max(histcounts(x, BF_HistEdges(x, 10)));
+out.tri20 = N / max(histcounts(x, BF_HistEdges(x, 20)));
+out.trisqrt = N / max(histcounts(x, BF_HistEdges(x, 'sqrt')));
 
 % 'Poincare plot measures': see
 % "Do Existing Measures ... ", Brennan et. al. (2001), IEEE Trans Biomed Eng 48(11)
@@ -69,5 +92,11 @@ out.SD2 = sqrt(2 * var(x) - 0.5 * std(diffx)^2) * 1000;
 
 % NOTE: the SD1 measure is the same (up to a rescaling)
 %       as the implementation in DN_Spread(diff(x),'std');
+
+% CVI: Cardiac Vagal Index, derived from the Poincare plot
+% cf. Toichi et al., "A new method of assessing cardiac autonomic function
+% and its comparison with spectral analysis and coefficient of variation
+% of R-R interval", J. Auton. Nerv. Syst. 62(1-2) 79 (1997)
+out.CVI = log10(out.SD1 * out.SD2 * 16);
 
 end

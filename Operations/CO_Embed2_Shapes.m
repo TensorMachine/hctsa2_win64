@@ -1,21 +1,46 @@
-function out = CO_Embed2_Shapes(y, tau, shape, r)
-% CO_Embed2_Shapes Shape-based statistics in a 2-d embedding space
+function out = CO_Embed2_Shapes(y, tau, shape, r, theilerWin)
+% CO_Embed2_Shapes   Shape-based statistics in a 2-d embedding space.
 %
-% Takes a shape and places it on each point in the two-dimensional time-delay
-% embedding space sequentially. This function counts the points inside this shape
-% as a function of time, and returns statistics on this extracted time series.
+% Takes a shape and places it on each point in the two-dimensional delay embedding
+% (y(t), y(t+tau)) in turn. For each point, it records the fraction of the other
+% points (outside a Theiler window) that are inside the shape, giving a time series
+% of the local density along the trajectory, and returns statistics on this
+% extracted time series.
 %
 % ---INPUTS:
-% y, the input time-series as a (z-scored) column vector
-% tau, the time-delay
-% shape, has to be 'circle' for now...
-% r, the radius of the circle
+% y, the input time series as a (z-scored) column vector
+% tau, the time delay: an integer number of samples, or a string that sets it from the
+%      series: 'tau' (default; the first zero-crossing of the autocorrelation
+%      function), 'ac1e' (the floor of its first 1/e crossing), or
+%      'mi' (the smaller of the first minimum of the Kraskov automutual information
+%      and the 'ac1e' delay); see BF_GetTau. All three are capped
+%      at N/10
+% shape, the shape (only 'circle' for now; default)
+% r, the radius of the circle (default 1)
+% theilerWin, the Theiler window: points closer in time than this are not counted
+%       as neighbors, since they are close in the embedding only because
+%       successive values are correlated ({'ac', k} for k times the first
+%       zero-crossing of the autocorrelation function, or a number of samples;
+%       see BF_TheilerWindow; default: {'ac', 1}; 0 counts every other point)
 %
 % ---OUTPUTS:
-% The constructed time series of the number of nearby points, and
-% include the autocorrelation, maximum, median, mode, a Poisson fit to the
-% distribution, histogram entropy, and stationarity over fifths of the time
-% series.
+% ac1, ac2, ac3, the autocorrelation of the local-density series at lags 1, 2 and 3,
+% tau, the first zero-crossing of its autocorrelation function (interpolated),
+% std, median, mean, iqr, the standard deviation, median, mean and interquartile
+%       range of the local density,
+% iqronrange, the interquartile range divided by the range,
+% mode_val, the proportion of values in the most common bin of a histogram (square
+%       root binning),
+% mode, the center of that bin,
+% hist_ent, sum(p*log(p)) over the histogram bins (minus the Shannon entropy),
+% statav5_m, the standard deviation across fifths of the series of the mean local
+%       density, divided by the standard deviation of the whole series,
+% statav5_s, the same for the standard deviation of the local density.
+% If no point has any neighbor within r, a fixed set of values is returned (std,
+% median, mean, iqr, hist_ent = 0; mode_val = 1; mode = 0; the rest NaN).
+%
+% ---NOTES:
+% `max` is not returned: it is largely redundant with `mean` and `std`.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -63,10 +88,31 @@ end
 if nargin < 4 || isempty(r)
 	r = 1; % default radius of 1
 end
+if nargin < 5 || isempty(theilerWin)
+	theilerWin = {'ac', 1};
+end
+theilerWin = BF_TheilerWindow(y, theilerWin);
+if isnan(theilerWin) % the autocorrelation function never crosses zero
+	out = NaN; return
+end
 
 % Can set time lag equal to first zero crossing of the autocorrelation function with the 'tau' input
-if strcmp(tau, 'tau'),
+if ischar(tau) && ismember(tau, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		out = NaN; return
+	end
+	% Cannot set the time delay greater than 10% the length of the time series
+	if tau > length(y) / 10
+		tau = floor(length(y) / 10);
+	end
+end
+if strcmp(tau, 'tau')
 	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	if isnan(tau)
+		out = NaN; return
+	end
 	% Cannot set the time delay greater than 10% the length of the time series
 	if tau > length(y) / 10
 		tau = floor(length(y) / 10);
@@ -74,7 +120,7 @@ if strcmp(tau, 'tau'),
 end
 
 % Ensure y is a column vector:
-if size(y, 2) > size(y, 1);
+if size(y, 2) > size(y, 1)
 	y = y';
 end
 
@@ -85,7 +131,7 @@ m = [y(1:end - tau), y(1 + tau:end)];
 N = length(m);
 
 if doPlot % plot the recurrence space:
-	plot(m(:, 1), m(:, 2), '.');
+	plot(m(:, 1), m(:, 2), '.'); %#ok<UNRCH>
 end
 
 %% Start the analysis
@@ -110,22 +156,31 @@ switch shape
 			m_c = m - m(i, :); % points wrt current point i
 			m_c_d = sum(m_c.^2, 2); % Euclidean distances from point i
 
-			counts(i) = sum(m_c_d <= r^2); % number of points enclosed in a circle of radius r
+			% Fraction of the points outside i's Theiler window (which includes
+			% i itself) that are enclosed in a circle of radius r:
+			isOther = abs((1:N)' - i) > theilerWin;
+			counts(i) = sum(m_c_d(isOther) <= r^2) / sum(isOther);
 		end
 
 	otherwise
 		error('Unknown shape ''%s''', shape)
 end
-counts = counts - 1; % ignore self-counts
-
 % ------------------------------------------------------------------------------
-% No meaningful output if never got a count with any other point!
+% No point has any (non-Theiler-excluded) neighbor within r
 % ------------------------------------------------------------------------------
-% (radius, r, is probably too small)
+% A zero density everywhere is a valid (if extreme) outcome: the location/spread
+% statistics are zero, and statistics of the shape of the (constant) counts are
+% undefined (NaN)
 if all(counts == 0)
-	fprintf(1, 'No counts detected!\n');
-	out = NaN; return
+	out = struct('ac1', NaN, 'ac2', NaN, 'ac3', NaN, 'tau', NaN, 'std', 0, ...
+				'median', 0, 'mean', 0, 'iqr', 0, 'iqronrange', NaN, ...
+				'mode_val', 1, 'mode', 0, 'hist_ent', 0, 'statav5_m', NaN, 'statav5_s', NaN);
+	return
 end
+
+% (counts are the fraction of the embedding within r of each point, i.e. the
+% pointwise correlation sum, which is intensive and bounded in [0,1]: raw counts
+% would grow in direct proportion to N)
 
 % ------------------------------------------------------------------------------
 % Return basic statistics on the counts
@@ -134,7 +189,6 @@ out.ac1 = CO_AutoCorr(counts, 1, 'Fourier');
 out.ac2 = CO_AutoCorr(counts, 2, 'Fourier');
 out.ac3 = CO_AutoCorr(counts, 3, 'Fourier');
 out.tau = CO_FirstCrossing(counts, 'ac', 0, 'continuous');
-out.max = max(counts);
 out.std = std(counts);
 out.median = median(counts);
 out.mean = mean(counts);
@@ -142,8 +196,10 @@ out.iqr = iqr(counts);
 out.iqronrange = out.iqr / range(counts);
 
 % --- Distribution
-% Using the sqrt binning method:
-[binP, binEdges] = histcounts(counts, 'BinMethod', 'sqrt', 'Normalization', 'probability');
+% Using the sqrt binning rule, with explicit edges (BF_HistEdges; the local densities
+% are fractions k/n, so many lie exactly on a bin edge):
+binEdges = BF_HistEdges(counts, 'sqrt');
+binP = histcounts(counts, binEdges, 'Normalization', 'probability');
 binCentres = mean([binEdges(1:end - 1); binEdges(2:end)]);
 [out.mode_val, mix] = max(binP);
 out.mode = binCentres(mix);
@@ -151,8 +207,7 @@ out.mode = binCentres(mix);
 out.hist_ent = sum(binP(binP > 0) .* log(binP(binP > 0)));
 
 if doPlot
-	plot(binCentres, poisspdf(binCentres, l), 'g'); hold on;
-	plot(binCentres, n, 'k'); hold off
+	bar(binCentres, binP); %#ok<UNRCH>
 end
 
 % --- Stationarity measure for fifths of the time series

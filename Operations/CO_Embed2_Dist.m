@@ -1,17 +1,35 @@
 function out = CO_Embed2_Dist(y, tau)
-% CO_Embed2_Dist    Analyzes distances in a 2-dim embedding space of a time series.
+% CO_Embed2_Dist   Distances between successive points in a 2-dimensional delay embedding.
 %
-% Returns statistics on the sequence of successive Euclidean distances between
-% points in a two-dimensional time-delay embedding space with a given
-% time-delay, tau.
-%
-% Outputs include the autocorrelation of distances, the mean distance, the
-% spread of distances, and statistics from an exponential fit to the
-% distribution of distances.
+% Returns statistics on the sequence of Euclidean distances between successive
+% points in the two-dimensional delay embedding (y(t), y(t+tau)): their
+% autocorrelation, location and spread, and how well an exponential distribution
+% fits them.
 %
 % ---INPUTS:
-% y, a z-scored column vector representing the input time series.
-% tau, the time delay.
+% y, a z-scored column vector representing the input time series
+% tau, the time delay: an integer number of samples, or a string that sets it from the
+%      series: 'tau' (default; the first zero-crossing of the autocorrelation
+%      function), 'ac1e' (the floor of its first 1/e crossing), or
+%      'mi' (the smaller of the first minimum of the Kraskov automutual information
+%      and the 'ac1e' delay); see BF_GetTau. All three are capped
+%      at N/10
+%
+% ---OUTPUTS:
+% d_ac1, d_ac2, d_ac3, the autocorrelation of the sequence of distances at lags 1, 2
+%       and 3,
+% d_mean, d_median, d_std, d_iqr, d_max, d_min, the mean, median, standard
+%       deviation, interquartile range, maximum and minimum of the distances,
+% d_cv, mean(d)/std(d) (the reciprocal of the coefficient of variation),
+% d_expfit_nlogL, the negative log-likelihood per distance of a maximum-likelihood
+%       exponential fit to the distances,
+% d_expfit_meandiff, the mean absolute difference between the histogram of
+%       distances (equal-width bins, their number the larger of the Sturges and
+%       Freedman-Diaconis rules, normalized as a probability density) and the
+%       fitted exponential density at the bin centres.
+%
+% ---NOTES:
+% d_expfit_nlogL equals 1 + log(mean(d)) for a maximum-likelihood exponential fit.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -51,14 +69,28 @@ N = length(y); % time-series length
 if nargin < 2 || isempty(tau)
 	tau = 'tau'; % set to the first minimum of autocorrelation function
 end
-if strcmp(tau, 'tau'),
+if ischar(tau) && ismember(tau, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		out = NaN; return
+	end
+	% Cannot set the time delay greater than 10% the length of the time series
+	if tau > N / 10
+		tau = floor(N / 10);
+	end
+end
+if strcmp(tau, 'tau')
 	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	if isnan(tau)
+		out = NaN; return
+	end
 	if tau > N / 10
 		tau = floor(N / 10);
 	end
 end
 % Make sure the time series is a column vector
-if size(y, 2) > size(y, 1);
+if size(y, 2) > size(y, 1)
 	y = y';
 end
 
@@ -71,7 +103,7 @@ m = [y(1:end - tau), y(1 + tau:end)];
 % Plot the embedding:
 % ------------------------------------------------------------------------------
 if doPlot
-	figure('color', 'w');
+	figure('color', 'w'); %#ok<UNRCH>
 	box('on'); hold('on')
 	plot(m(:, 1), m(:, 2), '.');
 	plot(m(1:min(200, end), 1), m(1:min(200, end), 2), 'k');
@@ -97,18 +129,27 @@ out.d_std = std(d); % Standard deviation of distances
 out.d_iqr = iqr(d); % Interquartile range of distances
 out.d_max = max(d); % Maximum distance
 out.d_min = min(d); % Minimum distance
+% (d_cv is mean over standard deviation: the reciprocal of the coefficient of variation)
 out.d_cv = mean(d) / std(d); % Coefficient of variation of distances
 
 % ------------------------------------------------------------------------------
 % Empirical distance distribution often fits Exponential distribution quite well
 % Fit to all values (often some extreme outliers, but oh well)
 l = expfit(d);
-nlogL = explike(l, d);
+% explike returns the negative log-likelihood summed over all distances, which
+% is extensive (it grows in proportion to numel(d), and hence to the
+% time-series length). Report the mean NLL per distance, which measures
+% goodness-of-fit per observation independently of how many were observed.
+nlogL = explike(l, d) / numel(d);
 out.d_expfit_nlogL = nlogL;
 
 % Sum of abs differences between exp fit and observed:
-% Use a histogram with automatic binning
-[N, binEdges] = histcounts(d, 'BinMethod', 'auto', 'Normalization', 'probability');
+% Use a histogram with automatic binning (BF_HistEdges 'auto', explicit edges)
+if range(d) <= 1e-12 * max(d) % all distances equal (to within rounding): no distribution to compare with the fit
+	out.d_expfit_meandiff = NaN; return
+end
+binEdges = BF_HistEdges(d, 'auto');
+N = histcounts(d, binEdges, 'Normalization', 'pdf');
 binCentres = mean([binEdges(1:end - 1); binEdges(2:end)]);
 expf = exppdf(binCentres, l); % exponential fit in each bin
 out.d_expfit_meandiff = mean(abs(N - expf)); % mean absolute error of fit

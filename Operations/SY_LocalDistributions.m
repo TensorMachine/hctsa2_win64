@@ -1,28 +1,35 @@
-function out = SY_LocalDistributions(y, numSegs, eachOrPar, numPoints)
-% SY_LocalDistributions  Compares the distribution in consecutive time-series segments
+function out = SY_LocalDistributions(y, numSegs, eachOrPar, numBins)
+% SY_LocalDistributions   Compares the distribution in consecutive time-series segments.
 %
-% Returns the sum of differences between each kernel-smoothed distributions
-%
-% ---INPUTS:
-%
-% y, the input time series
-%
-% numSegs, the number of segments to break the time series into
-%
-% eachOrPar, (i) 'par': compares each local distribution to the parent (full time
-%                       series) distribution
-%            (ii) 'each': compare each local distribution to all other local
-%                         distributions
-%
-% numPoints, number of points to compute the distribution across (in each local
-%          segments) [200 by default]
-%
-% The operation behaves in one of two modes: each compares the distribution in
-% each segment to that in every other segment, and par compares each
+% Breaks the time series into numSegs consecutive segments of equal length and
+% measures how different the distributions of values in two segments are as the
+% total variation distance between their histograms: half the sum of the absolute
+% differences between the proportions of values in each bin (0 for identical
+% distributions, 1 for distributions with no bin in common). The bins are common to
+% all segments and equiprobable for the full series (edges at its quantiles), so the
+% measure has no smoothing parameter and does not depend on the scale of the data.
+% The operation behaves in one of two modes: 'each' compares the distribution in
+% each segment to that in every other segment, and 'par' compares each
 % distribution to the so-called 'parent' distribution, that of the full signal.
 %
-% ---OUTPUTS: measures of the sum of absolute deviations between distributions
-% across the different pairwise comparisons.
+% ---INPUTS:
+% y, the input time series
+%
+% numSegs, the number of segments to break the time series into (default: 5)
+%
+% eachOrPar, (i) 'par': compares each local distribution to the parent (full time
+%                       series) distribution (default)
+%            (ii) 'each': compares each local distribution to all other local
+%                         distributions
+%
+% numBins, the number of equiprobable bins (default: 10; fewer if values are tied
+%          at a quantile)
+%
+% ---OUTPUTS:
+% meandiv, stddiv: the mean and standard deviation of the total variation distance
+%       between distributions, across the different comparisons
+%       (segments vs. the parent, or all pairs of segments). With 'each' and
+%       numSegs = 2, a single number (the one comparison) is returned instead.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -65,9 +72,8 @@ end
 if nargin < 3 || isempty(eachOrPar)
 	eachOrPar = 'par'; % compare each subsection to full (parent) distribution
 end
-if nargin < 4 || isempty(numPoints)
-	% number of points to compute the distribution across
-	numPoints = 200; % 200 by default
+if nargin < 4 || isempty(numBins)
+	numBins = 10; % number of equiprobable bins
 end
 
 % ------------------------------------------------------------------------------
@@ -75,18 +81,18 @@ end
 % ------------------------------------------------------------------------------
 N = length(y); % Length of the time series (number of samples)
 lseg = floor(N / numSegs);
-dns = zeros(numPoints, numSegs);
-r = linspace(min(y), max(y), numPoints); % Make range of ksdensity uniform across all subsegments
+binEdges = BF_QuantileEdges(y, numBins); % bins common to all segments, equiprobable for the full series
+dns = zeros(length(binEdges) - 1, numSegs);
 
 % ------------------------------------------------------------------------------
-% Compute the kernel-smoothed distribution in all numSegs segments of the time series
+% Compute the distribution (proportion in each bin) in all numSegs segments of the time series
 % ------------------------------------------------------------------------------
 for i = 1:numSegs
-	dns(:, i) = ksdensity(y((i - 1) * lseg + 1:i * lseg), r, 'function', 'pdf');
+	dns(:, i) = histcounts(y((i - 1) * lseg + 1:i * lseg), binEdges, 'Normalization', 'probability');
 end
 
 if doPlot
-	figure('color', 'w')
+	figure('color', 'w') %#ok<UNRCH>
 	plot(dns, 'k')
 end
 
@@ -96,18 +102,18 @@ end
 switch eachOrPar
 	case {'par', 'parent'}
 		% Compares each subdistribtuion to the parent (full signal) distribution
-		pardn = ksdensity(y, r, 'function', 'pdf');
+		pardn = histcounts(y, binEdges, 'Normalization', 'probability');
 		divs = zeros(numSegs, 1);
 		for i = 1:numSegs
-			divs(i) = sum(abs(dns(:, i) - pardn')); % each is just divergence to parent
+			divs(i) = 0.5 * sum(abs(dns(:, i) - pardn')); % each is just divergence to parent
 		end
 		if doPlot
-			hold on; plot(pardn, 'r', 'LineWidth', 2); hold off
+			hold on; plot(pardn, 'r', 'LineWidth', 2); hold off %#ok<UNRCH>
 		end
 	case 'each'
-		% Compares each subdistribtuion to the parent (full signal) distribution
+		% Compares each subdistribution to every other subdistribution
 		if numSegs == 2 % output is just an integer: only two distributions to compare
-			out = sum(abs(dns(:, 1) - dns(:, 2)));
+			out = 0.5 * sum(abs(dns(:, 1) - dns(:, 2)));
 			return
 		end
 
@@ -117,7 +123,7 @@ switch eachOrPar
 		for i = 1:numSegs
 			for j = 1:numSegs
 				if j > i
-					diffmat(i, j) = sum(abs(dns(:, i) - dns(:, j))); % store sum of absolute differences
+					diffmat(i, j) = 0.5 * sum(abs(dns(:, i) - dns(:, j))); % store total variation distance
 				end
 			end
 		end
@@ -135,11 +141,9 @@ end
 
 % -------------------------------------------------------------------------------
 % Return basic statistics on differences in distributions in different
-% segments of the time series
+% segments of the time series. Only meandiv and stddiv are returned: mediandiv,
+% mindiv, and maxdiv are largely redundant with meandiv.
 out.meandiv = mean(divs);
-out.mediandiv = median(divs);
-out.mindiv = min(divs);
-out.maxdiv = max(divs);
 out.stddiv = std(divs);
 
 end

@@ -1,20 +1,45 @@
-function out = MF_StateSpaceCompOrder(y,maxOrder)
-% MF_StateSpaceCompOrder    Change in goodness of fit across different state space models.
+function out = MF_StateSpaceCompOrder(y, maxOrder)
+% MF_StateSpaceCompOrder   How the fit of a state-space model improves as its order increases.
 %
-% Fits state space models using BF_n4sid(from Matlab's System Identification
-% Toolbox) of orders 1, 2, ..., maxOrder and returns statistics on how the
-% goodness of fit changes across this range.
+% Fits state-space models (N4SID subspace identification, BF_SubspaceID) of orders 1,
+% 2, ..., maxOrder to the whole time series (all fits are within the sample), and
+% returns statistics on how the goodness of fit changes across this range, measured by
+% Akaike's information criterion (AIC) and by the loss function (the mean squared
+% one-step prediction error). An order at which the model cannot be fitted is left out
+% of the summaries (its AIC and loss function are NaN), and the output is NaN only if no
+% order can be fitted.
 %
 % c.f., MF_CompareAR -- does a similar thing for AR models
-% Uses the functions iddata, n4sid, and aic from Matlab's System Identification
-% Toolbox
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-% maxOrder, the maximum model order to consider.
+% maxOrder, the maximum model order to consider (default: 10)
+%
+% ---OUTPUTS:
+% minaic: the lowest AIC across orders 1 to maxOrder
+% aicopt: the order with the lowest AIC
+% minlossfn: the lowest loss function across orders 1 to maxOrder
+% lossfnopt: the order with the lowest loss function
+% meandiffaic: the mean change in AIC when the order increases by one
+% maxdiffaic: the largest increase in AIC when the order increases by one
+% mindiffaic: the largest decrease (most negative change) in AIC when the order
+%       increases by one
+% ndownaic: the number of order increases at which the AIC decreases
+% (If some orders cannot be fitted, these are taken over the orders that can; the
+% change statistics use only adjacent pairs of orders that both fitted.)
+%
+% ---NOTES:
+% The AIC of order k is log(max(V, 1e-10*mean(y.^2))) + 2*(2k)/N, with V the loss and
+% 2k the number of free parameters of an order-k model once the freedom in the choice of
+% state coordinates is removed. The floor on V makes orders whose loss is at the level
+% of rounding error (an exactly predictable series) tie, so that the lowest of them is
+% preferred; lossfnopt is the first order attaining the lowest floored loss.
+% meandiffaic is not registered in hctsa's feature set: the mean of the changes in AIC
+% telescopes to (AIC(maxOrder) - AIC(1))/(maxOrder - 1) when all orders are fitted, so
+% it carries no information beyond the first and last AIC values.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -43,64 +68,56 @@ function out = MF_StateSpaceCompOrder(y,maxOrder)
 % ------------------------------------------------------------------------------
 
 % ------------------------------------------------------------------------------
-%% Check that a System Identification Toolbox license is available:
+%% Check inputs
 % ------------------------------------------------------------------------------
-
-% ------------------------------------------------------------------------------
-% Check inputs:
-% ------------------------------------------------------------------------------
-% Maximum model order, maxOrder (compare models from order 1 up to
-%           this)
 if nargin < 2 || isempty(maxOrder)
-    maxOrder = 10;
+	maxOrder = 10;
 end
-% orders = 1:maxOrder;
+y = y(:);
+N = length(y);
+floorLoss = 1e-10 * mean(y.^2);
 
 % ------------------------------------------------------------------------------
-%% Preliminaries
+%% Fit the models
 % ------------------------------------------------------------------------------
-
-% Convert y to time series object
-y = BF_iddata(y,[],1);
-
-% ------------------------------------------------------------------------------
-%% Fit the state space models, returning basic fit statistics as we go
-% ------------------------------------------------------------------------------
-
-% Initialize statistics -- all within-sample statistics. Could also fit on
-% a portion and then predict on another...
-
-% noisevars = zeros(maxOrder,1); % Noise variance -- for us the same as
-% loss fn
-lossfns = zeros(maxOrder,1); % Loss function
-fpes = zeros(maxOrder,1); % Akaike's final prediction error
-aics = zeros(maxOrder,1); % Akaike's information criterion
-
+lossfns = NaN(maxOrder, 1); % Loss function
+aics = NaN(maxOrder, 1); % Akaike's information criterion
 for k = 1:maxOrder
-    % Fit the state space model for this order, k
-    try
-        m = BF_n4sid(y,k);
-    catch emsg
-        error('Model fitting failed for k = %u',k)
-    end
-
-    lossfns(k) = m.EstimationInfo.LossFcn;
-    fpes(k) = m.EstimationInfo.FPE;
-    aics(k) = BF_aic(m);
+	try
+		m = BF_SubspaceID(y, k);
+	catch
+		continue % this order cannot be fitted
+	end
+	lossfns(k) = m.loss;
+	aics(k) = log(max(m.loss, floorLoss)) + 2 * (2 * k) / N;
 end
 
-% Optimum model orders
+if all(isnan(aics))
+	out = NaN; return % no order could be fitted
+end
+
+% ------------------------------------------------------------------------------
+%% Outputs
+% ------------------------------------------------------------------------------
 out.minaic = min(aics);
 out.aicopt = find(aics == min(aics), 1, 'first');
-% out.minbic = min(bics);
-% out.bicopt = find(bics == min(bics), 1, 'first');
 out.minlossfn = min(lossfns);
-out.lossfnopt = find(lossfns == min(lossfns), 1, 'first');
+flooredLoss = max(lossfns, floorLoss);
+flooredLoss(isnan(lossfns)) = NaN; % (orders that could not be fitted)
+out.lossfnopt = find(flooredLoss == min(flooredLoss), 1, 'first');
 
-% Curve change summary statistics
-out.meandiffaic = mean(diff(aics));
-out.maxdiffaic = max(diff(aics));
-out.mindiffaic = min(diff(aics));
-out.ndownaic = sum(diff(aics) < 0);
+% Changes in AIC from one order to the next (only adjacent orders that were both fitted)
+daics = diff(aics);
+daics = daics(~isnan(daics));
+if isempty(daics)
+	out.meandiffaic = NaN;
+	out.maxdiffaic = NaN;
+	out.mindiffaic = NaN;
+else
+	out.meandiffaic = mean(daics);
+	out.maxdiffaic = max(daics);
+	out.mindiffaic = min(daics);
+end
+out.ndownaic = sum(daics < 0);
 
 end

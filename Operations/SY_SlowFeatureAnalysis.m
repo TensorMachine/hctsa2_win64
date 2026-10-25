@@ -1,0 +1,208 @@
+function out = SY_SlowFeatureAnalysis(y, numWindows)
+% SY_SlowFeatureAnalysis   Slow feature analysis of windowed statistics.
+%
+% Splits the time series into numWindows non-overlapping segments (the same
+% segmentation as SY_RampingWindows, discarding any remainder), computes five
+% per-window statistics (mean, variance, skewness, lag-1 autocorrelation, and
+% lag-1 trev, a normalized third-order cross-moment measuring time-reversal
+% asymmetry, cf. CO_trev, here fixed to tau = 1 since per-window tau estimation
+% would be unreliable at these window lengths), forming a numWindows x 5 matrix,
+% then applies Slow Feature Analysis (SFA) to find the linear combination of these
+% five statistics that varies as *slowly* as possible across the sequence of
+% windows: it minimizes the variance of its own increments, subject to unit
+% variance. This is a fundamentally different criterion to SY_RampingWindows'
+% per-statistic monotonic-trend tests: SFA is multivariate (it can find a slow
+% combination spread across several statistics that no single one shows
+% individually) and detects any slow, low-frequency evolution, not just a
+% monotonic ramp (e.g., a slow rise-then-fall hump across the series, invisible to
+% Kendall's tau or Pearson's r, still registers as 'slow' here). AC1 is symmetric
+% under time reversal, so trev is included specifically to let SFA pick up a slow
+% drift in the *irreversibility* of the dynamics that none of the other four
+% statistics can see.
+%
+% A companion comparison with ordinary PCA addresses a different question: PCA
+% finds the combination of the five statistics with *maximal variance* across
+% windows, which need not be the slowest one (a large-amplitude but choppy
+% statistic can dominate the variance while a small-amplitude but smooth, genuinely
+% slow drift is buried underneath it). pc1VarFrac and slowPCA1corr quantify this:
+% how concentrated the variance is in a single PCA direction, and whether the slow
+% direction found by SFA coincides with that high-variance direction (high
+% overlap) or is a separate, lower-variance mode (low overlap).
+%
+% ---INPUTS:
+% y, the input time series
+%
+% numWindows, the number of non-overlapping segments to divide the time series into
+%       (default: 20; at least 10). Non-overlapping segments are used for the same
+%       reason as in SY_RampingWindows: overlap would induce artificial serial
+%       correlation between adjacent window statistics, which would make the
+%       derivative-based slowness measure spuriously small. 20 was chosen (rather
+%       than SY_RampingWindows' default of 10) because SFA needs enough windows to
+%       estimate the 5x5 covariance matrices (of the statistics, and of their
+%       increments) reliably. Returns NaN if windows would be shorter than 20
+%       samples.
+%
+% ---OUTPUTS:
+% Let z(t) be the numWindows x 5 matrix of [mean, variance, skewness, AC1, trev]
+% computed per window, whitened (centered, then linearly transformed to unit
+% covariance; directions with variance below 1% of the leading one are dropped
+% first). SFA finds the orthogonal directions u_i that minimize var(diff(z*u_i)):
+% the "slowness" eigenvalues eta_i of the covariance of the whitened derivative
+% signal (ascending: eta_1 is the slowest direction). For i.i.d. (white-noise)
+% windows eta is about 2 on average (eta1 and etaEnd deviate from this by chance);
+% substantially smaller values indicate genuinely slow (smooth, low-frequency)
+% structure in some combination of the five per-window statistics.
+%
+% eta1, the smallest (slowest) SFA eigenvalue
+% etaEnd, the largest (fastest/noisiest) SFA eigenvalue
+% etaStd, the standard deviation of all SFA eigenvalues (the spread of the slowness
+%       spectrum)
+% pc1VarFrac, the fraction of total variance (across the five statistics)
+%       explained by the leading PCA component
+% slowPCA1corr, the absolute correlation between the slowest SFA component's
+%       scores and the leading PCA component's scores: near 1 means the slow
+%       direction is simply the dominant (highest-variance) direction PCA would
+%       already find; near 0 means SFA has isolated a genuinely separate,
+%       low-variance slow mode
+% slowCorrMean, slowCorrVar, slowCorrSkew, slowCorrAC1, slowCorrTrev: the absolute
+%       correlation between each raw per-window statistic (mean, variance,
+%       skewness, AC1, trev, computed before whitening) and the slowest SFA
+%       component's scores; these indicate which of the five statistics drives the
+%       slow mode, since the eta and PCA fields summarize its existence but not its
+%       composition
+%
+% ---REFERENCES:
+% L. Wiskott and T. J. Sejnowski, "Slow feature analysis: unsupervised learning of
+% invariances", Neural Computation 14(4), 715-770 (2002).
+% K. S. Owens, M. Tamaki and B. D. Fulcher, "Parameter inference from a non-stationary
+% unknown process using statistical feature-based slow feature analysis",
+% arXiv:2609.01651 (2026). This operation is a compact, single-feature variant of their
+% feature-based SFA (f-SFA), which applies SFA to sliding-window catch22/catch24
+% features; f-SFA is implemented in the Python package fsfa:
+% https://github.com/KieranOwens/fsfa
+
+% ------------------------------------------------------------------------------
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% <http://www.benfulcher.com>
+%
+% If you use this code for your research, please cite the following two papers:
+%
+% (1) B.D. Fulcher and N.S. Jones, "hctsa: A Computational Framework for Automated
+% Time-Series Phenotyping Using Massive Feature Extraction, Cell Systems 5: 527 (2017).
+% DOI: 10.1016/j.cels.2017.10.001
+%
+% (2) B.D. Fulcher, M.A. Little, N.S. Jones, "Highly comparative time-series
+% analysis: the empirical structure of time series and their methods",
+% J. Roy. Soc. Interface 10(83) 20130048 (2013).
+% DOI: 10.1098/rsif.2013.0048
+%
+% This function is free software: you can redistribute it and/or modify it under
+% the terms of the GNU General Public License as published by the Free Software
+% Foundation, either version 3 of the License, or (at your option) any later
+% version.
+%
+% This program is distributed in the hope that it will be useful, but WITHOUT
+% ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+% FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+% details.
+%
+% You should have received a copy of the GNU General Public License along with
+% this program. If not, see <http://www.gnu.org/licenses/>.
+% ------------------------------------------------------------------------------
+
+% ------------------------------------------------------------------------------
+%% Check inputs
+% ------------------------------------------------------------------------------
+N = length(y);
+
+if nargin < 2 || isempty(numWindows)
+    numWindows = 20;
+end
+
+minNumWindows = 10; % need enough windows to estimate the 5x5 covariance matrices reliably
+minWindowLength = 20; % heuristic minimum for meaningful skewness/AC1/trev estimates
+
+if numWindows < minNumWindows
+    error('numWindows = %u is too few for a reliable slow feature analysis (need >= %u)', numWindows, minNumWindows);
+end
+
+winLength = floor(N / numWindows);
+if winLength < minWindowLength
+    warning('Time series (N = %u) too short for %u windows of a meaningful length', N, numWindows);
+    out = NaN; return
+end
+
+% ------------------------------------------------------------------------------
+%% Segment the time series (non-overlapping, discarding any remainder)
+% ------------------------------------------------------------------------------
+z = reshape(y(1:winLength * numWindows), winLength, numWindows); % winLength x numWindows
+
+% ------------------------------------------------------------------------------
+%% Per-window statistics: mean, variance, skewness, AC1, trev
+% (mean/variance/skewness/AC1 as in SY_RampingWindows; trev is a lag-1
+% time-reversal asymmetry statistic, cf. CO_trev, with tau fixed to 1
+% rather than estimated per window)
+% ------------------------------------------------------------------------------
+winMean = mean(z)';
+winVar = var(z)';
+winSkew = skewness(z)';
+winAC1 = zeros(numWindows, 1);
+winTrev = zeros(numWindows, 1);
+for i = 1:numWindows
+    winAC1(i) = CO_AutoCorr(z(:, i), 1, 'Fourier');
+    dz = diff(z(:, i));
+    winTrev(i) = mean(dz.^3) / (mean(dz.^2))^(3 / 2);
+end
+X = [winMean, winVar, winSkew, winAC1, winTrev]; % numWindows x 5
+
+% ------------------------------------------------------------------------------
+%% PCA (variance-maximizing directions) and SFA (slowness-minimizing directions)
+% ------------------------------------------------------------------------------
+Xc = X - mean(X, 1);
+Cx = cov(Xc); % 5 x 5
+
+[Vp, Dp] = eig(Cx);
+[pcaEigs, ord] = sort(diag(Dp), 'descend');
+Vp = Vp(:, ord);
+pcScores = Xc * Vp; % numWindows x 5, PC1 = pcScores(:,1)
+
+% Whitening (PCA whitening: the scores on the retained principal axes, each scaled
+% to unit variance; any rotation of the whitened space gives the same slowness
+% eigenvalues and slow components below). Directions with near-zero variance relative to the leading one
+% (e.g. a per-window statistic that barely varies across windows) are dropped
+% rather than whitened: full whitening would divide by their near-zero std and
+% amplify what is essentially estimation noise into a spuriously enormous
+% "fast" eigenvalue. pcaEigs(1) (the leading, largest eigenvalue) is never
+% itself dropped by this relative threshold.
+relFloor = 1e-2;
+keep = pcaEigs > relFloor * pcaEigs(1);
+if sum(keep) < 2
+    out = NaN; return
+end
+Vk = Vp(:, keep);
+Zw = Xc * Vk * diag(1 ./ sqrt(pcaEigs(keep))); % numWindows x sum(keep), approx unit covariance
+
+dZ = diff(Zw); % (numWindows-1) x sum(keep), the whitened derivative signal
+Cd = cov(dZ);
+[Us, Ds] = eig(Cd);
+[etas, ord2] = sort(diag(Ds), 'ascend'); % slowness eigenvalues, ascending = slowest first
+Us = Us(:, ord2);
+slowScores = Zw * Us; % numWindows x sum(keep), slowest component = slowScores(:,1)
+
+% ------------------------------------------------------------------------------
+%% Output statistics
+% ------------------------------------------------------------------------------
+out.eta1 = etas(1);
+out.etaEnd = etas(end);
+out.etaStd = std(etas);
+
+out.pc1VarFrac = pcaEigs(1) / sum(pcaEigs);
+out.slowPCA1corr = abs(corr(slowScores(:, 1), pcScores(:, 1)));
+
+out.slowCorrMean = abs(corr(winMean, slowScores(:, 1)));
+out.slowCorrVar = abs(corr(winVar, slowScores(:, 1)));
+out.slowCorrSkew = abs(corr(winSkew, slowScores(:, 1)));
+out.slowCorrAC1 = abs(corr(winAC1, slowScores(:, 1)));
+out.slowCorrTrev = abs(corr(winTrev, slowScores(:, 1)));
+
+end

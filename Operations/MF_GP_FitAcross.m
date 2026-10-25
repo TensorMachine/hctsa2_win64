@@ -1,21 +1,53 @@
 function out = MF_GP_FitAcross(y, covFunc, npoints)
-% MF_GP_FitAcross   Gaussian Process time-series modeling for local prediction.
+% MF_GP_FitAcross   How well a Gaussian process through a few evenly spaced points reproduces the series.
 %
-% Trains a Gaussian Process model on equally-spaced points throughout the time
-% series and uses the model to predict its intermediate values.
+% Trains a Gaussian Process (GP) model, with zero mean and a Gaussian likelihood, on
+% points spaced equally throughout the time series, and uses the model to predict all
+% the time series values (the intermediate values, and the training points). Times are
+% the sample indices. The hyperparameters of the covariance function are learned by
+% maximizing the marginal likelihood to convergence (MF_GP_LearnHyperp; the noise standard
+% deviation is bounded below by 1% of that of the data and the length scale between the spacing of
+% the points and their span), and the outputs summarize
+% the prediction error, the predictive mean and standard deviation, the per-point
+% negative log marginal likelihood, and the fitted hyperparameters. If the series is longer than 2000
+% samples, predictions are made at 2000 evenly spaced times. A NaN is returned if the
+% fit fails, or if the training values are constant to within round-off. If the training points show no correlation structure (the fitted model does not beat
+% its white-noise special case in a likelihood-ratio test), the length scale (logh1, h_lonN) is not
+% identified, and is reported as the spacing of the training points, the bound the data allow; the
+% other outputs approach those of white noise.
 %
 % Uses GP fitting code from the gpml toolbox, which is available here:
 % http://gaussianprocess.org/gpml/code.
 %
 % ---INPUTS:
 % y, the input time series
-% covFunc, the covariance function (structured in the standard way for the gpml toolbox)
+%
+% covFunc, the covariance function (structured in the standard way for the gpml
+%       toolbox); the default is a sum of a squared-exponential and a noise term,
+%       {'covSum',{'covSEiso','covNoise'}}
+%
 % npoints, the number of points through the time series to fit the GP model to
+%       (default 20)
 %
-% ---OUTPUTS: summarize the error and fitted hyperparameters.
+% ---OUTPUTS:
+% stde, the root-mean-square error of the predictive mean, compared with the series
+% meanabs_std, the mean absolute error of the predictive mean, in units of the
+%       predictive standard deviation at each time
+% stdmu, the standard deviation of the predictive mean over the series
+% meanS, stdS, the mean and standard deviation of the predictive standard deviation
+%       over the series
+% nlml, the negative log marginal likelihood of the whole series (or of the 2000
+%       resampled points) under the fitted GP, divided by the number of points, so
+%       that it does not grow with the length of the series
+% logh1, logh2, logh3, ...: the log hyperparameters of the covariance function, in
+%       gpml's order (for the squared-exponential plus noise covariance, the length
+%       scale, the signal amplitude, and the noise standard deviation)
+% h_lonN, the fitted length scale divided by the series length (only for the
+%       squared-exponential plus noise covariance)
 %
-% In future could do a better job of the sampling of points -- perhaps to take
-% into account the autocorrelation of the time series.
+% ---NOTES:
+% In future, the sampling of points could take into account the autocorrelation of
+% the time series.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -46,12 +78,10 @@ function out = MF_GP_FitAcross(y, covFunc, npoints)
 % this program. If not, see <http://www.gnu.org/licenses/>.
 % ------------------------------------------------------------------------------
 
-doplot = 0; % set to 1 to visualize behavior
-
 % ------------------------------------------------------------------------------
 %% Check inputs
 % ------------------------------------------------------------------------------
-if size(y, 2) > size(y, 1);
+if size(y, 2) > size(y, 1)
 	y = y'; % make sure a column vector
 end
 
@@ -71,6 +101,13 @@ N = length(y); % time-series length
 tt = floor(linspace(1, N, npoints))'; % time range (training)
 yt = y(tt);
 
+% The training values are constant to within round-off: there is nothing for a Gaussian
+% process to describe, and the fit has no scale to work with (as in MF_GP_Hyperparameters)
+if std(yt) <= 10 * N * eps * sqrt(mean(yt.^2))
+	out = NaN;
+	return
+end
+
 % ------------------------------------------------------------------------------
 %% Optimize the GP parameters for the chosen covariance function
 % ------------------------------------------------------------------------------
@@ -85,19 +122,33 @@ nhps = eval(s);
 hyp = struct; % structure for storing hyperparameter information in latest version of GMPL toolbox
 meanFunc = {'meanZero'}; hyp.mean = []; % Mean function (mean zero process):
 likFunc = @likGauss; hyp.lik = log(0.1); % Likelihood (Gaussian):
-infAlg = @infLaplace; % Inference algorithm (Laplace approximation)
+% Exact Gaussian inference. (Not @infLaplace: with a Gaussian likelihood the
+% Laplace approximation is exact but is computed by Newton iteration, and
+% gpml's infLaplace warm-starts that iteration from a PERSISTENT copy of the
+% previous call's solution, so each fit would depend on whatever series was
+% fitted before it.)
+infAlg = @infGaussLik;
 nfevals = -50; % number of function evaluations (with negative)
 
 try
-	hyp = MF_GP_LearnHyperp(tt, yt, covFunc, meanFunc, likFunc, infAlg, nfevals, hyp);
+	[hyp, hasStructure, shapePos, shapeBound, latent] = MF_GP_LearnHyperp(tt, yt, covFunc, meanFunc, likFunc, infAlg, nfevals, hyp, true);
 catch emsg
 	error('Error learning hyperparameters for time series')
 end
-loghyper = hyp.cov;
-if isnan(loghyper)
+if ~isstruct(hyp) % MF_GP_LearnHyperp returns NaN (not a struct) when the data isn't suited to GP fitting
 	out = NaN;
 	return
 end
+loghyper = hyp.cov;
+if any(isnan(loghyper))
+	out = NaN;
+	return
+end
+% (the noise is reported as the total standard deviation of the observation noise, the covNoise
+%  term and the likelihood noise together; predictions use the latent-function model, see MF_GP_LearnHyperp)
+loghyper(latent.noisePos) = latent.hyp.lik;
+covFuncIn = covFunc;
+hyp = latent.hyp; covFunc = latent.covFunc;
 
 % ------------------------------------------------------------------------------
 %% Evaluate over the whole space now
@@ -116,47 +167,38 @@ catch emsg
 	error('Error running Gaussian Process regression on time series: %s', emsg.message);
 end
 
-%% For Plotting
-if doplot
-	xstar = linspace(min(t), max(t), 1000)';
-	[mu, S2] = gpr(loghyper, covFunc, t, y, ts);
-	S2p = S2 - exp(2 * loghyper(3)); % remove noise from predictions
-	S2p = S2;
-	figure('color', 'w');
-	f = [mu + 2 * sqrt(S2p); flipdim(mu - 2 * sqrt(S2p), 1)];
-	fill([ts; flipdim(ts, 1)], f, [6, 7, 7] / 8, 'EdgeColor', [7, 7, 6] / 8);
-	% grayscale error bars
-	hold on;
-	plot(ts, mu, 'k-', 'LineWidth', 2); % mean function
-	plot(ts, y(ts), '.-k'); % original data
-end
-
 % ------------------------------------------------------------------------------
 %% Output statistics
 % ------------------------------------------------------------------------------
 S = sqrt(S2); % standard deviation function, S
-% rms error from mean function, mu
-out.rmserr = mean(sqrt((y(ts) - mu).^2));
-out.meanstderr = mean(abs(y(ts) - mu) ./ S);
+% Root-mean-square error of the mean function, mu.
+out.stde = sqrt(mean((y(ts) - mu).^2));
+out.meanabs_std = mean(abs(y(ts) - mu) ./ S);
 out.stdmu = std(mu);
 out.meanS = mean(S);
 out.stdS = std(S);
 
-% Marginal Likelihood
+% Negative log marginal likelihood per point (gpml's nlZ divided by the number of
+% points, so that it does not grow with the number of points, up to 2000)
 try
-	% out.mlikelihood = - gpr(loghyper, covFunc, ts, y(ts));
-	out.mlikelihood = gp(hyp, infAlg, meanFunc, covFunc, likFunc, ts, y(ts));
+	% out.nlml = - gpr(loghyper, covFunc, ts, y(ts));
+	out.nlml = gp(hyp, infAlg, meanFunc, covFunc, likFunc, ts, y(ts)) / length(ts);
 catch
-	out.mlikelihood = NaN;
+	out.nlml = NaN;
 end
 
 % Loghyperparameters
+if ~hasStructure
+	loghyper(shapePos) = shapeBound; % length scales are not identified without correlation structure: report the bound
+end
 for i = 1:nhps
 	out.(['logh', num2str(i)]) = loghyper(i); % dynamic field referencing
 	% eval(sprintf('out.logh%u = loghyper(%u);',i,i));
 end
 
-if strcmp(covFunc{1}, 'covSum') && strcmp(covFunc{2}{1}, 'covSEiso') && strcmp(covFunc{2}{2}, 'covNoise')
+if strcmp(covFuncIn{1}, 'covSum') && numel(covFuncIn{2}) == 2 && ischar(covFuncIn{2}{1}) && ischar(covFuncIn{2}{2}) ...
+		&& strcmp(covFuncIn{2}{1}, 'covSEiso') && strcmp(covFuncIn{2}{2}, 'covNoise')
+	% (components with parameters, like {'covMaterniso',3}, are cells, not strings)
 	% Give extra output based on length parameter on length of time series
 	out.h_lonN = exp(loghyper(1)) / N;
 end

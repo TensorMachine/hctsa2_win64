@@ -1,15 +1,45 @@
 function out = MF_AR_arcov(y, p)
-% MF_AR_arcov    Fits an AR model of a given order, p.
+% MF_AR_arcov   An AR model of a given order fitted to the time series.
 %
-% Uses arcov code from Matlab's Signal Processing Toolbox.
+% Fits an autoregressive (AR) model of order p, x(t) + a(2)*x(t-1) + ... +
+% a(p+1)*x(t-p) = e(t), by least-squares fitting of the one-step prediction (the
+% covariance method, arcov from MATLAB's Signal Processing Toolbox). The outputs are
+% the fitted polynomial coefficients, the variance of the white noise that drives
+% the model, and statistics of the residuals (the one-step prediction minus
+% the data), from the shared residual summary MF_ResidualAnalysis ('core' level).
 %
 % ---INPUTS:
 % y, the input time series
-% p, the AR model order
+% p, the AR model order (default 2)
 %
-% ---OUTPUTS: include the parameters of the fitted model, the variance estimate
-% of a white noise input to the AR model, the root-mean-square (RMS) error of a
-% reconstructed time series, and the autocorrelation of residuals.
+% ---OUTPUTS:
+% noisevar, the variance of the white noise input to the fitted AR model
+% a2, a3, a4, a5, a6 (up to a(p+1)): the fitted AR polynomial coefficients; a(k+1)
+%       is the negative of the usual AR coefficient on the lag-k value. (a1 is
+%       always 1 and is also returned.)
+% meane, mean of the residuals (prediction minus data)
+% meanabs, mean absolute residual
+% stde, standard deviation of the residuals
+% maxonstd, largest absolute residual, in units of the residual standard deviation
+% ac1, ac2, ac3: autocorrelation of the (z-scored) residuals at lags 1, 2 and 3
+% propbth, proportion of the residual autocorrelations at lags 1 to 25 within the
+%       significance band +/- 2.6/sqrt(N)
+% taurat, decorrelation time of the residuals (first zero-crossing of their
+%       autocorrelation function) divided by that of the time series
+% sws, standard deviation across 5 windows of the local standard deviation of the
+%       residuals, relative to their overall standard deviation
+% swm, standard deviation across 5 windows of the local mean of the residuals,
+%       relative to their overall standard deviation
+%
+% ---NOTES:
+% NaN is returned for a (nearly) exactly predictable series: when the fitted noise
+% variance is below 1e-12 of the variance of the series, the design is singular and
+% the fitted coefficients and residuals are not meaningful (e.g., an exact sinusoid
+% with p > 2).
+%
+% The residuals are the one-step prediction errors of the N - p samples that have p
+% past values (the samples the model was fitted to); the first p samples, whose
+% prediction would need values before the start of the series, are excluded.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -53,7 +83,16 @@ end
 % -------------------------------------------------------------------------------
 [a, e] = arcov(y, p);
 
-out.e = e; % variance
+% An exactly predictable series (e.g., a sinusoid fitted with p > 2) has a singular
+% design and a noise variance at the level of rounding error: the coefficients are
+% not determined and the residuals are rounding noise, so there is nothing to report
+if e < 1e-12 * var(y) || ~(var(y) > 0)
+	out = NaN; return
+end
+
+% Variance of the white noise driving the fitted AR process. Named noisevar to match
+% MF_armax and MF_StateSpace_n4sid, which report the same quantity:
+out.noisevar = e;
 
 % Output fitted parameters up to order, p (+1)
 for i = 1:p + 1
@@ -64,11 +103,17 @@ end
 %% Residual analysis
 % ------------------------------------------------------------------------------
 y_est = filter([0, -a(2:end)], 1, y);
-err = y - y_est; % residuals
+err = y_est - y; % residuals (prediction minus data, the MF_ResidualAnalysis convention)
+% Keep only the samples with a full set of p past values (the first p predictions would
+% need values from before the start of the series):
+err = err(p+1:end);
 
-out.res_mu = mean(err); % mean error
-out.res_std = std(err); % std of error
-out.res_AC1 = CO_AutoCorr(err, 1, 'Fourier'); % autocorrelation of residuals at lag 1
-out.res_AC2 = CO_AutoCorr(err, 2, 'Fourier'); % autocorrelation of residuals at lag 2
+% Report the residuals through the shared contract, at the cheap 'core' level (this
+% operation is meant to stay cheap).
+residOut = MF_ResidualAnalysis(err, y, 'core');
+fields = fieldnames(residOut);
+for k = 1:length(fields)
+	out.(fields{k}) = residOut.(fields{k});
+end
 
 end

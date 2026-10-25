@@ -132,14 +132,21 @@ void scan_options(int n,char **argv)
 void scramble(void)
 {
   long i,j,k,m;
-  unsigned long rnd,rndf,hlength,allscr=0;
+  /* hctsa2: the generator state is unsigned long long, not unsigned long.
+     The original chose its generator with sizeof(long), so a Windows build
+     (LLP64: 32-bit long) ran the 69069 generator with another seed and gave
+     different correlation sums from Linux/macOS whenever pairs are sampled.
+     unsigned long long is 64-bit everywhere, so every platform now takes the
+     64-bit branch. On LP64 platforms nothing changes, bit for bit. */
+  unsigned long long rnd,rndf;
+  unsigned long hlength,allscr=0;
   long *scfound,*scnhelp,scnfound;
   long scbox[SCBOX],lswap,element,scbox1=SCBOX-1;
   double *rz,*schelp,sceps=(double)SCBOX-0.001,swap;
   
   hlength=length-(EMBED-1)*DELAY;
 
-  if (sizeof(long) == 8) {
+  if (sizeof(rnd) == 8) {
     rndf=13*13*13*13;
     rndf=rndf*rndf*rndf*13;
     rnd=0x849178L;
@@ -157,7 +164,7 @@ void scramble(void)
   check_alloc(schelp=(double*)malloc(sizeof(double)*hlength));
 
   for (i=0;i<hlength;i++)
-    rz[i]=(double)(rnd=rnd*rndf+1)/ULONG_MAX;
+    rz[i]=(double)(rnd=rnd*rndf+1)/(double)ULLONG_MAX;
   
   for (i=0;i<SCBOX;i++)
     scbox[i]= -1;
@@ -436,7 +443,12 @@ int main(int argc,char **argv)
     }
     else {
       x=(long)(series[0][sn]*epsinv)&imax;
-      y=(long)(series[0][sn+DELAY]*epsinv)&imax;
+      /* hctsa2 3.0.0 guard: with an embedding of 1 (-M1,1), sn reaches the last
+         points of the series and sn+DELAY lies beyond it: an out-of-bounds read
+         (found by fuzzing a bounds-checked build; stock TISEAN reads it too). The
+         2-D boxes are not searched then (only boxc1 is, in make_c2_1), so the
+         value of y does not matter; for a larger embedding sn+DELAY < length. */
+      y=((unsigned long)(sn+DELAY) < length)?((long)(series[0][sn+DELAY]*epsinv)&imax):0;
     }
     list[sn]=box[x][y];
     box[x][y]=sn;
@@ -467,7 +479,8 @@ int main(int argc,char **argv)
 	  }
 	  else {
 	    x=(long)(series[0][sn]*epsinv)&imax;
-	    y=(long)(series[0][sn+DELAY]*epsinv)&imax;
+	    /* (hctsa2 3.0.0 guard: as above) */
+	    y=((unsigned long)(sn+DELAY) < length)?((long)(series[0][sn+DELAY]*epsinv)&imax):0;
 	  }
 	  list[sn]=box[x][y];
 	  box[x][y]=sn;
@@ -503,7 +516,10 @@ int main(int argc,char **argv)
       if (verbosity&VER_USR1)
 	fprintf(stderr,"Opened %s for writing\n",outstat);
       fprintf(fstat,"Center points treated so far= %ld\n",n);
-      fprintf(fstat,"Maximal epsilon in the moment= %e\n",epsm[imin]);
+      /* (hctsa2 3.0.0 guard: imin is HOWOFTEN once every length scale is full,
+         one past the end of epsm; the last scale is reported then) */
+      fprintf(fstat,"Maximal epsilon in the moment= %e\n",
+	      epsm[(imin <= howoften1) ? imin : howoften1]);
       fclose(fstat);
       fout=fopen(outc1,"w");
       if (verbosity&VER_USR1)
@@ -515,7 +531,7 @@ int main(int argc,char **argv)
 	for (j=0;j<HOWOFTEN;j++) {
 	  eps /= epsfactor;
 	  if (norm[j] > 0.0)
-	    fprintf(fout,"%e %e\n",eps,found[i][j]/norm[j]);
+	    fprintf(fout,"%.17g %.17g\n",eps,found[i][j]/norm[j]);
 	}
 	fprintf(fout,"\n\n");
       }
@@ -529,7 +545,7 @@ int main(int argc,char **argv)
       for (j=0;j<HOWOFTEN;j++) {
 	eps /= epsfactor;
 	if (found[0][j] > 0.0)
-	  fprintf(fout,"%e %e\n",eps,-log(found[0][j]/norm[j]));
+	  fprintf(fout,"%.17g %.17g\n",eps,-log(found[0][j]/norm[j]));
       }
       fprintf(fout,"\n\n");
       for (i=1;i<DIM*EMBED;i++) {
@@ -538,7 +554,7 @@ int main(int argc,char **argv)
 	for (j=0;j<HOWOFTEN;j++) {
 	  eps /= epsfactor;
 	  if ((found[i-1][j] > 0.0) && (found[i][j] > 0.0))
-	    fprintf(fout,"%e %e\n",eps,log(found[i-1][j]/found[i][j]));
+	    fprintf(fout,"%.17g %.17g\n",eps,log(found[i-1][j]/found[i][j]));
 	}
 	fprintf(fout,"\n\n");
       }
@@ -553,7 +569,7 @@ int main(int argc,char **argv)
 	for (j=1;j<HOWOFTEN;j++) {
 	  eps /= epsfactor;
 	  if ((found[i][j] > 0.0) && (found[i][j-1] > 0.0))
-	    fprintf(fout,"%e %e\n",eps,log(found[i][j-1]/found[i][j]
+	    fprintf(fout,"%.17g %.17g\n",eps,log(found[i][j-1]/found[i][j]
 					   /norm[j-1]*norm[j])/lnfac);
 	}
 	fprintf(fout,"\n\n");

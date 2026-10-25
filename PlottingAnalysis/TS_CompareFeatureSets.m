@@ -20,7 +20,7 @@ function TS_CompareFeatureSets(whatData,cfnParams,whatFeatureSets)
 % TS_CompareFeatureSets('norm');
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -57,11 +57,10 @@ end
 %-------------------------------------------------------------------------------
 % Load in data:
 %-------------------------------------------------------------------------------
-[TS_DataMat,TimeSeries,Operations,dataFile] = TS_LoadData(whatData);
+[TS_DataMat,TimeSeries,Operations] = TS_LoadData(whatData);
 
 % Assign group labels (removing unlabeled data):
 [TS_DataMat,TimeSeries] = FilterLabeledTimeSeries(TS_DataMat,TimeSeries);
-[groupLabels,classLabels,groupLabelsInteger,numGroups] = TS_ExtractGroupLabels(TimeSeries);
 TellMeAboutLabeling(TimeSeries);
 
 % Set classification parameters if needed:
@@ -75,6 +74,12 @@ dataStruct = makeDataStruct();
 %-------------------------------------------------------------------------------
 % Define the feature sets as sets of IDs
 %-------------------------------------------------------------------------------
+% The 'catch22' set uses catch22's own implementation (operations 'catch22_*', from
+% TS_Init(...,'catch22')); skip it when this dataset does not contain them:
+if ismember('catch22',whatFeatureSets) && ~any(strncmp(Operations.CodeString,'catch22_',8))
+    warning('No catch22 operations in this dataset (compute them with TS_Init(...,''catch22'')); skipping the catch22 feature set.');
+    whatFeatureSets = setdiff(whatFeatureSets,{'catch22'},'stable');
+end
 numFeatureSets = length(whatFeatureSets);
 featureIDs = cell(numFeatureSets,1);
 theColors = cell(numFeatureSets,1);
@@ -95,11 +100,11 @@ for i = 1:numFeatureSets
             featureIDs{i} = Operations.ID;
             featureSetNames{i} = sprintf('hctsa (%u)',height(Operations));
             theColors{i} = [233,129,126]/255;
-        case {'catch22','sarab16','linearAutoCorrs','quantiles','linearAutoCorrsAndQuantiles'}
+        case {'catch22','linearAutoCorrs','quantiles','linearAutoCorrsAndQuantiles'}
             featureIDs{i} = TS_GiveMeFeatureSet(whatFeatureSets{i},Operations);
             featureSetNames{i} = sprintf('%s (%u)',whatFeatureSets{i},length(featureIDs{i}));
             switch whatFeatureSets{i}
-            case {'catch22','sarab16'}
+            case 'catch22'
                 theColors{i} = [151,205,104]/255;
             case 'linearAutoCorrs'
                 theColors{i} = [80,80,204]/255;

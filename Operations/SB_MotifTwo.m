@@ -1,21 +1,58 @@
-function out = SB_MotifTwo(y, binarizeHow)
-% SB_MotifTwo   Local motifs in a binary symbolization of the time series
+function out = SB_MotifTwo(y, binarizeHow, tau)
+% SB_MotifTwo   Local motifs in a binary symbolization of the time series.
 %
-% Coarse-graining is performed by a given binarization method.
+% Coarse-graining is performed by a given binarization method, giving a string of
+% two symbols, u and d. The probabilities of all words of 1, 2, 3 and 4 symbols
+% (counted at every position, overlapping) are returned, with the Shannon entropy
+% of the word distribution at each length.
 %
 % ---INPUTS:
 % y, the input time series
-% binarizeHow, the binary transformation method:
-%       (i) 'diff': incremental time-series increases are encoded as 1, and
-%                   decreases as 0,
-%       (ii) 'mean': time-series values above its mean are given 1, and those
-%                    below the mean are 0,
-%       (iii) 'median': time-series values above the median are given 1, and
-%       those below the median 0.
+% binarizeHow, the binary transformation method (default: 'diff'):
+%    (i) 'diff': incremental time-series increases are encoded as 1 (u), and
+%        decreases or no change as 0 (d)
+%    (ii) 'mean': time-series values above its mean are given 1 (u), and those at
+%        or below the mean are 0 (d)
+%    (iii) 'median': time-series values above the median are given 1 (u), and
+%        those at or below the median 0 (d)
+% tau, the time delay at which to symbolize consecutive words (default: 1, i.e.,
+%    consecutive samples). The series is first downsampled by tau (using
+%    resample). Can also be a string that sets it from the series: 'ac' (the first
+%    zero-crossing of the autocorrelation function, matching the lag used by
+%    SB_TransitionMatrix), 'ac1e' (the floor of its first 1/e crossing), or 'mi' (the
+%    smaller of the first minimum of the Kraskov automutual information and the
+%    'ac1e' delay; see BF_GetTau). All three are capped at floor(N/50) for a series
+%    of length N. Useful since 'diff'/'mean'/'median' words at
+%    consecutive samples of a smooth, oversampled signal can be dominated by trivial
+%    local structure.
 %
 % ---OUTPUTS:
-% Probabilities of words in the binary alphabet of lengths 1, 2, 3, and 4, and
-% their entropies.
+% A structure with fields (u and d are the symbols 1 and 0; for 'diff', u is a step
+% up and d a step down or flat):
+% u, d, the proportions of the two symbols (they sum to 1; hctsa's default feature
+%    set uses just u)
+% Probabilities of the words of length 2:
+% uu, ud, du, dd
+% Probabilities of the words of length 3:
+% uuu, uud, udu, udd, duu, dud, ddu, ddd
+% Probabilities of the words of length 4:
+% uuuu, uuud, uudu, uudd, uduu, udud, uddu, uddd, duuu, duud, dudu, dudd,
+%     dduu, ddud, dddu, dddd
+% Entropies of the word distributions, in nats, with a Miller-Madow correction for
+% the finite number of words (see f_entropy below):
+% h, entropy of single symbols
+% hh, entropy of words of length 2
+% hhh, entropy of words of length 3
+% hhhh, entropy of words of length 4
+% NaN (instead of a structure) is returned if tau cannot be determined or the
+% symbolized sequence is shorter than 5.
+%
+% ---NOTES:
+% In f_entropy, the Miller-Madow degrees of freedom are the textbook (occupied bins
+% - 1) for the 'diff' and 'mean' binarizations. For 'median' they are reduced by
+% wordLength*(alphabetSize - 1), because the median split fixes the marginal
+% frequencies of the symbols (see the comments in f_entropy). SB_MotifThree, whose
+% quantile-based coarse-graining fixes the marginals, keeps the reduced form.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -50,9 +87,43 @@ if nargin < 2 || isempty(binarizeHow)
 	% Use changes in the time series as the basis for the transformation
 	binarizeHow = 'diff';
 end
+if nargin < 3 || isempty(tau)
+	tau = 1;
+end
+if ischar(tau) && ismember(tau, {'ac1e', 'mi'})
+	% Adaptive delay: see BF_GetTau
+	tau = BF_GetTau(y, tau);
+	if isnan(tau)
+		out = NaN; return
+	end
+	% Cap the data-driven delay at 2% of the series length (as for 'ac'), so that the
+	% downsampled series stays long enough to count words/transitions
+	if tau > length(y) / 50
+		tau = floor(length(y) / 50);
+	end
+end
+if strcmp(tau, 'ac') % determine tau from first zero of autocorrelation
+	tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+	% Cap the data-driven delay at 2% of the series length so that the
+	% downsampled series stays long enough to count words/transitions
+	if tau > length(y) / 50
+		tau = floor(length(y) / 50);
+	end
+end
+if isnan(tau)
+	out = NaN; return
+end
+if tau > 1 % symbolize words at this lag by downsampling first
+	y = resample(y, 1, tau);
+end
 
 % Generate a binarized version of the input time series:
 yBin = BF_Binarize(y, binarizeHow);
+
+% A median split fixes the marginal frequencies of the two symbols (half the points
+% on either side), which reduces the degrees of freedom of the entropy correction
+% (see f_entropy). 'diff' and 'mean' do not fix them:
+fixedMarginals = strcmp(binarizeHow, 'median');
 
 % Define the length of the new, symbolized sequence: N
 N = length(yBin);
@@ -76,7 +147,7 @@ r0 = (yBin == 0);
 out.u = mean(r1); % proportion 1 (corresponds to a movement up for 'diff')
 out.d = mean(r0); % proportion 0 (corresponds to a movement down for 'diff')
 pp = [out.d, out.u];
-out.h = f_entropy(pp);
+out.h = f_entropy(pp, N, 1, 2, fixedMarginals); % Miller-Madow
 
 % -------------------------------------------------------------------------------
 %% Binary sequences of length 2:
@@ -101,7 +172,7 @@ out.ud = mean(r10); % up, down
 out.uu = mean(r11); % up, up
 
 pp = [out.dd, out.du, out.ud, out.uu];
-out.hh = f_entropy(pp);
+out.hh = f_entropy(pp, N - 1, 2, 2, fixedMarginals); % Miller-Madow
 
 % ------------------------------------------------------------------------------
 %% 3
@@ -140,7 +211,7 @@ out.uud = mean(r110);
 out.uuu = mean(r111);
 
 ppp = [out.ddd, out.ddu, out.dud, out.duu, out.udd, out.udu, out.uud, out.uuu];
-out.hhh = f_entropy(ppp);
+out.hhh = f_entropy(ppp, N - 2, 3, 2, fixedMarginals); % Miller-Madow
 
 % ------------------------------------------------------------------------------
 %% 4
@@ -208,12 +279,31 @@ out.uuuu = mean(r1111);
 
 pppp = [out.dddd, out.dddu, out.ddud, out.dduu, out.dudd, out.dudu, out.duud, out.duuu, out.uddd, ...
 		out.uddu, out.udud, out.uduu, out.uudd, out.uudu, out.uuud, out.uuuu];
-out.hhhh = f_entropy(pppp);
+out.hhhh = f_entropy(pppp, N - 3, 4, 2, fixedMarginals); % Miller-Madow
 
 % -------------------------------------------------------------------------------
-function h = f_entropy(x)
-	% entropy of a set of counts, log(0)=0
-	h = -sum(x(x > 0) .* log(x(x > 0)));
+function h = f_entropy(p, numSamples, wordLength, alphabetSize, fixedMarginals)
+	% Miller-Madow-corrected entropy of a probability array, in nats (log(0)=0).
+	%
+	% The degrees of freedom are the textbook (occupied bins - 1). When the
+	% coarse-graining fixes the marginal frequencies of the symbols
+	% (fixedMarginals, for a median split), df is reduced by
+	% wordLength*(alphabetSize-1), since each of the wordLength positions then has
+	% a (near-)fixed marginal. For words of length 1 that leaves df = 0, which is
+	% correct -- a median split puts exactly half the points either side, so the
+	% plug-in entropy is exactly log 2 with no sampling variation to bias-correct
+	% (the textbook correction would instead add a term that depends only on N).
+	r = (p > 0);
+	h = -sum(p(r) .* log(p(r)));
+	if nargin > 3 && numSamples > 0
+		df = sum(r(:)) - 1;
+		if fixedMarginals
+			df = df - wordLength * (alphabetSize - 1);
+		end
+		if df > 0
+			h = h + df / (2 * numSamples);
+		end
+	end
 end
 
 end

@@ -16,7 +16,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             testCase.fatalAssertTrue(pass, 'HCTSA failed to startup successfully.')
         end
 
-        function clearSharedCaches(testCase)
+        function clearSharedCaches(~)
             % CO_AutoCorr.m and CO_FirstMin.m cache their results across
             % calls (persistent variables) to avoid redundant recomputation
             % across operations. Clear them here so tests are hermetic and
@@ -25,7 +25,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % just the recomputation but also any warning() side effect the
             % computation would have raised, which a couple of tests below
             % check for directly).
-            clear CO_AutoCorr CO_FirstMin BF_CheckToolbox CO_glscf
+            clear CO_AutoCorr CO_FirstMin BF_CheckToolbox CO_GLSCF BF_GetTau
         end
     end
 
@@ -187,6 +187,161 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
         end
 
         %-------------------------------------------------------------
+        % BF_GetTau (adaptive time delays)
+        %-------------------------------------------------------------
+        function test_BF_GetTau_ac1e_AR1(testCase)
+            % For an AR(1) process, rho(k) = phi^k, so the 1/e crossing is at
+            % -1/log(phi) = 9.49 for phi = 0.9: the floored delay should be ~9.
+            rng(21);
+            y = filter(1, [1, -0.9], randn(5000,1));
+            tau = BF_GetTau(y,'ac1e');
+            testCase.verifyGreaterThanOrEqual(tau, 7);
+            testCase.verifyLessThanOrEqual(tau, 11);
+        end
+
+        function test_BF_GetTau_ac1e_IsFloorOfCrossing(testCase)
+            % The delay is the largest lag with ACF >= 1/e, so the ACF at tau is
+            % at least 1/e and at tau + 1 is below it.
+            rng(22);
+            y = filter(ones(8,1)/8, 1, randn(2000,1));
+            tau = BF_GetTau(y,'ac1e');
+            acf = CO_AutoCorr(y, [tau, tau + 1], 'Fourier');
+            testCase.verifyGreaterThanOrEqual(acf(1), 1/exp(1));
+            testCase.verifyLessThan(acf(2), 1/exp(1));
+        end
+
+        function test_BF_GetTau_ScalesWithSamplingRate(testCase)
+            % Sampling a smooth process at half the rate should roughly halve
+            % the delay (exactly, up to estimation noise and flooring).
+            rng(23);
+            y = filter(1, [1, -0.97], randn(20000,1));
+            tauFull = BF_GetTau(y,'ac1e');
+            tauHalf = BF_GetTau(y(1:2:end),'ac1e');
+            testCase.verifyLessThanOrEqual(abs(tauHalf - tauFull/2), 2);
+        end
+
+        function test_BF_GetTau_MapsKeepUnitDelay(testCase)
+            % A chaotic map decorrelates within a step (ACF(1) ~ 0), so both
+            % adaptive rules keep tau = 1, retaining the one-step recurrence,
+            % even though its (nonlinear) automutual information decays slowly.
+            N = 2000;
+            x = zeros(N,1);
+            x(1) = 0.3;
+            for t = 2:N
+                x(t) = 3.8*x(t-1)*(1 - x(t-1));
+            end
+            y = zscore(x);
+            testCase.verifyEqual(BF_GetTau(y,'ac1e'), 1);
+            testCase.verifyEqual(BF_GetTau(y,'mi'), 1);
+        end
+
+        function test_BF_GetTau_MIIsAtMostAC1e(testCase)
+            % 'mi' is the smaller of the first Kraskov AMI minimum and 'ac1e'.
+            T = 40; % period of a noisy oscillation
+            rng(24);
+            y = filter(1, [1, -2*0.97*cos(2*pi/T), 0.97^2], randn(3000,1));
+            tauMI = BF_GetTau(y,'mi');
+            tauAC = BF_GetTau(y,'ac1e');
+            testCase.verifyGreaterThanOrEqual(tauMI, 1);
+            testCase.verifyLessThanOrEqual(tauMI, tauAC);
+        end
+
+        function test_BF_GetTau_ConstantSeriesIsNaN(testCase)
+            y = ones(100,1);
+            testCase.verifyTrue(isnan(BF_GetTau(y,'ac1e')));
+            testCase.verifyTrue(isnan(BF_GetTau(y,'mi')));
+        end
+
+        function test_BF_GetTau_MIRobustToTinyPerturbation(testCase)
+            % 'mi' uses tie-aware ranks with a fixed jitter, so a perturbation far
+            % below the quantization step of a quantized series leaves the ranks,
+            % and hence the delay, unchanged.
+            T = 30;
+            rng(27);
+            y = filter(1, [1, -2*0.95*cos(2*pi/T), 0.95^2], randn(2000,1));
+            y = zscore(round(4*zscore(y)));
+            yPert = y + 1e-8*BF_Random(numel(y), 1, 'normal');
+            tau = BF_GetTau(y,'mi');
+            testCase.verifyGreaterThan(tau, 1);
+            testCase.verifyEqual(BF_GetTau(yPert,'mi'), tau);
+        end
+
+        %-------------------------------------------------------------
+        % CP_WaveletVarChg
+        %-------------------------------------------------------------
+        function test_CP_WaveletVarChg_StationaryNoiseMostlyZero(testCase)
+            % The number of change points is calibrated to be 0 for about 95% of
+            % stationary series.
+            numChanges = zeros(10,1);
+            for k = 1:10
+                rng(100 + k);
+                numChanges(k) = CP_WaveletVarChg(zscore(randn(1000,1)),'db3',2,10,0.01);
+            end
+            testCase.verifyLessThanOrEqual(sum(numChanges > 0), 2);
+        end
+
+        function test_CP_WaveletVarChg_DetectsVarianceChange(testCase)
+            % A threefold change in standard deviation half way through
+            rng(31);
+            y = randn(2000,1);
+            y(1001:end) = 3*y(1001:end);
+            testCase.verifyGreaterThanOrEqual(CP_WaveletVarChg(zscore(y),'db3',2,10,0.01), 1);
+        end
+
+        %-------------------------------------------------------------
+        % NL_EmbedCluster
+        %-------------------------------------------------------------
+        function test_NL_EmbedCluster_SeparationStatistics(testCase)
+            % sep_pp is about 2/pi for a Gaussian cloud and near 1 for two
+            % well-separated states; the other statistics also increase, and
+            % valley and nongauss are near 0 for Gaussian noise.
+            rng(32);
+            yNoise = zscore(randn(2000,1));
+            state = mod(cumsum(rand(2000,1) < 0.01), 2);
+            ySwitch = zscore(6*state + randn(2000,1));
+            outNoise = NL_EmbedCluster(yNoise, 1, 2, 'full');
+            outSwitch = NL_EmbedCluster(ySwitch, 1, 2, 'full');
+            testCase.verifyEqual(fieldnames(outNoise), {'sep_pp'; 'sep_mahal'; 'valley'; 'nongauss'});
+            testCase.verifyGreaterThan(outNoise.sep_pp, 0.55);
+            testCase.verifyLessThan(outNoise.sep_pp, 0.75);
+            testCase.verifyGreaterThan(outSwitch.sep_pp, 0.9);
+            testCase.verifyGreaterThan(outSwitch.sep_mahal, outNoise.sep_mahal);
+            testCase.verifyLessThan(outNoise.valley, 0.1);
+            testCase.verifyGreaterThan(outSwitch.valley, 0.9);
+            testCase.verifyLessThan(abs(outNoise.nongauss), 0.1);
+            testCase.verifyGreaterThan(outSwitch.nongauss, outNoise.nongauss + 0.3);
+        end
+
+        function test_BF_PreProcess_DecimateAC1e(testCase)
+            % Keeps every tau-th sample, with tau from BF_GetTau(y,'ac1e').
+            rng(25);
+            y = filter(1, [1, -0.9], randn(1000,1));
+            tau = BF_GetTau(y,'ac1e');
+            yDec = BF_PreProcess(y,'decimate_ac1e');
+            testCase.verifyEqual(yDec, y(1:tau:end));
+        end
+
+        function test_BF_Embed_AC1eDelay(testCase)
+            rng(26);
+            y = filter(1, [1, -0.9], randn(1000,1));
+            params = BF_Embed(y,'ac1e',3,true);
+            testCase.verifyEqual(params, [BF_GetTau(y,'ac1e'), 3]);
+        end
+
+        function test_EN_ApEn_DelayDefaultUnchanged(testCase)
+            % The default delay must reproduce ApEn on consecutive samples
+            % (tau = 1), and an adaptive delay must give a finite value.
+            rng(27);
+            y = zscore(filter(1, [1, -0.9], randn(500,1)));
+            testCase.verifyEqual(EN_ApEn(y,2,0.2), EN_ApEn(y,2,0.2,1));
+            apenDelay = EN_ApEn(y,2,0.2,'ac1e');
+            testCase.verifyTrue(isfinite(apenDelay));
+            % A larger delay sees less redundancy between pattern elements of a
+            % smooth series, so ApEn increases:
+            testCase.verifyGreaterThan(apenDelay, EN_ApEn(y,2,0.2,1));
+        end
+
+        %-------------------------------------------------------------
         % CO_AutoCorrShape
         %-------------------------------------------------------------
         function test_CO_AutoCorrShape_PosDrownBasicChecks(testCase)
@@ -248,8 +403,15 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % every level (redoing the full decomposition from scratch each
             % time); it now decomposes once at maxlevel and extracts each
             % level's detail via wrcoef from that single decomposition.
-            % Cross-check against an independent per-level reimplementation
-            % (the original approach) to confirm identical output.
+            % Cross-check against a per-level decomposition (the original
+            % approach) to confirm identical output.
+            % HCTSA2: the reference below is built from BF_wavedec/BF_wrcoef,
+            % the toolbox-free replacements WL_DetailCoeffs itself uses, in
+            % place of the Wavelet Toolbox's wavedec/wrcoef, so the suite runs
+            % without that toolbox. It therefore checks the decompose-once
+            % refactor only, not the wavelet numerics: see
+            % test_BF_wavelets_PerfectReconstruction and
+            % test_BF_appcoef_MatchesShallowerDecomposition for those.
             rng(8);
             N = 2000;
             y = randn(N,1);
@@ -260,8 +422,8 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             medians = zeros(maxlevel,1);
             maxs = zeros(maxlevel,1);
             for k = 1:maxlevel
-                [c,l] = wavedec(y,k,wname);
-                det = wrcoef('d',c,l,wname,k);
+                [c,l] = BF_wavedec(y,k,wname);
+                det = BF_wrcoef('d',c,l,wname,k);
                 means(k) = mean(abs(det));
                 medians(k) = median(abs(det));
                 maxs(k) = max(abs(det));
@@ -283,6 +445,66 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             testCase.verifyEqual(out.max1on2_max, maxs_s(1)/maxs_s(2), 'AbsTol', 1e-10);
             r = corrcoef(maxs,medians);
             testCase.verifyEqual(out.corrcoef_max_medians, r(1,2), 'AbsTol', 1e-10);
+        end
+
+        %-------------------------------------------------------------
+        % BF_wavedec / BF_wrcoef / BF_appcoef
+        %-------------------------------------------------------------
+        function test_BF_wavelets_PerfectReconstruction(testCase)
+            % Property test of HCTSA2's toolbox-free wavelet replacements: the
+            % detail branches at every level plus the approximation at the
+            % deepest level must add up to the input signal. A fixed-answer
+            % test of the filter values themselves is not possible without the
+            % Wavelet Toolbox, but any error in the boundary extension, the
+            % downsampling phase or the reconstruction lengths breaks this.
+            rng(21);
+            for wname = {'haar','sym2','db3','sym4','sym5'}
+                for N = [20 37 64 100 129 257 1001]
+                    y = randn(N,1) + 0.05*(1:N)';
+                    J = BF_wmaxlev(N,wname{1});
+                    [C,L] = BF_wavedec(y,J,wname{1});
+                    recon = BF_wrcoef('a',C,L,wname{1},J);
+                    for k = 1:J
+                        recon = recon + BF_wrcoef('d',C,L,wname{1},k);
+                    end
+                    testCase.verifyEqual(recon(:), y, 'AbsTol', 1e-8, ...
+                        sprintf('Branches do not add up to the signal (%s, N = %d).',wname{1},N));
+                end
+            end
+        end
+
+        function test_BF_appcoef_MatchesShallowerDecomposition(testCase)
+            % The level-n approximation read from a level-J decomposition
+            % (n <= J) must equal the approximation block of decomposing to
+            % level n directly (n = 0 is the signal itself), and
+            % BF_wrcoef('a',...) at that level must then add to the details of
+            % levels 1..n to give back the signal.
+            rng(22);
+            for wname = {'haar','sym2','db3','sym4','sym5'}
+                for N = [20 37 64 100 129 257 1001]
+                    y = randn(N,1) + 0.05*(1:N)';
+                    J = BF_wmaxlev(N,wname{1});
+                    [C,L] = BF_wavedec(y,J,wname{1});
+                    for n = 0:J
+                        a = BF_appcoef(C,L,wname{1},n);
+                        if n == 0
+                            expected = y(:)';
+                        else
+                            [Cn,Ln] = BF_wavedec(y,n,wname{1});
+                            expected = Cn(1:Ln(1));
+                        end
+                        testCase.verifyEqual(a, expected, 'AbsTol', 1e-8, ...
+                            sprintf('appcoef differs from a level-%d decomposition (%s, N = %d).',n,wname{1},N));
+
+                        recon = BF_wrcoef('a',C,L,wname{1},n);
+                        for k = 1:n
+                            recon = recon + BF_wrcoef('d',C,L,wname{1},k);
+                        end
+                        testCase.verifyEqual(recon(:), y, 'AbsTol', 1e-8, ...
+                            sprintf('Level-%d branches do not add up to the signal (%s, N = %d).',n,wname{1},N));
+                    end
+                end
+            end
         end
 
         %-------------------------------------------------------------
@@ -399,13 +621,28 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
                 countsExpected(i) = sum(m_c_d <= r^2);
             end
             countsExpected = countsExpected - 1;
+            % CO_Embed2_Shapes normalizes counts to a density (counts / (Nm-1))
+            % before computing summary statistics -- match that here:
+            countsExpected = countsExpected / (Nm - 1);
 
-            out = CO_Embed2_Shapes(y,tau,'circle',r);
+            out = CO_Embed2_Shapes(y,tau,'circle',r,0); % (no Theiler window)
 
             testCase.verifyEqual(out.mean, mean(countsExpected), 'AbsTol', 1e-10);
-            testCase.verifyEqual(out.max, max(countsExpected), 'AbsTol', 1e-10);
             testCase.verifyEqual(out.median, median(countsExpected), 'AbsTol', 1e-10);
             testCase.verifyEqual(out.std, std(countsExpected), 'AbsTol', 1e-10);
+
+            % With a Theiler window of W samples: count only points more than
+            % W apart in time, as a fraction of those points
+            W = 5;
+            countsW = zeros(Nm,1);
+            for i = 1:Nm
+                m_c_d = sum((m - ones(Nm,1)*m(i,:)).^2,2);
+                isOther = abs((1:Nm)' - i) > W;
+                countsW(i) = sum(m_c_d(isOther) <= r^2) / sum(isOther);
+            end
+            outW = CO_Embed2_Shapes(y,tau,'circle',r,W);
+            testCase.verifyEqual(outW.mean, mean(countsW), 'AbsTol', 1e-10);
+            testCase.verifyEqual(outW.std, std(countsW), 'AbsTol', 1e-10);
         end
 
         %-------------------------------------------------------------
@@ -574,10 +811,9 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
         % BF_CheckToolbox caching
         %-------------------------------------------------------------
         function test_BF_CheckToolbox_CachingDoesNotChangeResult(testCase)
-            % BF_CheckToolbox caches the installed-addons list and
+            % BF_CheckToolbox caches its per-toolbox ver(...) install check and
             % license('test',...) results (both read-only queries that can't
-            % change during a single MATLAB session), since profiling showed
-            % installedAddons alone costs ~0.3s per call and this function is
+            % change during a single MATLAB session), since this function is
             % called by ~42 operations. Confirm interleaved/repeated calls
             % (which exercise the cache) give results consistent with fresh
             % queries to the underlying Matlab functions, for both the
@@ -585,10 +821,12 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % particular toolbox is absent (environment-independent).
             toolboxes = {'curve_fitting_toolbox','statistics_toolbox','curve_fitting_toolbox'};
             names = {'Curve Fitting Toolbox','Statistics and Machine Learning Toolbox','Curve Fitting Toolbox'};
+            folders = {'curvefit','stats','curvefit'};
 
             for k = 1:numel(toolboxes)
                 [outFlag,theName] = BF_CheckToolbox(toolboxes{k},true,true);
-                expectedInstalled = any(ismember(matlab.addons.installedAddons().Name, names{k}));
+                v = ver(folders{k});
+                expectedInstalled = any(strcmp({v.Name}, names{k}));
                 testCase.verifyEqual(theName, names{k});
                 testCase.verifyEqual(outFlag, ~expectedInstalled, ...
                     sprintf('Mismatch for toolbox %s at call %d',toolboxes{k},k));
@@ -632,13 +870,13 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
         end
 
         %-------------------------------------------------------------
-        % CO_glscf caching
+        % CO_GLSCF caching
         %-------------------------------------------------------------
-        function test_CO_glscf_CacheDoesNotCrossContaminate(testCase)
-            % CO_glscf caches abs(y) (keyed on an exact, NaN-safe match of
+        function test_CO_GLSCF_CacheDoesNotCrossContaminate(testCase)
+            % CO_GLSCF caches abs(y) (keyed on an exact, NaN-safe match of
             % y), since it's called ~31 times directly (as separate master
             % operations with different alpha/beta/tau on the same series)
-            % plus repeatedly from CO_fzcglscf's internal loop. Confirm
+            % plus repeatedly from CO_FZCGLSCF's internal loop. Confirm
             % interleaved calls with different series/parameters don't get
             % confused with each other's cached values, against an
             % independent reference computation.
@@ -649,9 +887,9 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
 
             referenceGlscf = @(y) refGlscf(y,alpha,beta,tau);
 
-            out1a = CO_glscf(y1,alpha,beta,tau);
-            out2 = CO_glscf(y2,alpha,beta,tau);
-            out1b = CO_glscf(y1,alpha,beta,tau); % should hit the cache
+            out1a = CO_GLSCF(y1,alpha,beta,tau);
+            out2 = CO_GLSCF(y2,alpha,beta,tau);
+            out1b = CO_GLSCF(y1,alpha,beta,tau); % should hit the cache
 
             testCase.verifyEqual(out1a, referenceGlscf(y1), 'AbsTol', 1e-10);
             testCase.verifyEqual(out2, referenceGlscf(y2), 'AbsTol', 1e-10);
@@ -676,12 +914,12 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
         end
 
         %-------------------------------------------------------------
-        % SD_surrogates (now native, no TSTOOL dependency)
+        % SD_Surrogates (now native, no TSTOOL dependency)
         %-------------------------------------------------------------
-        function test_SD_surrogates_DetectsNonlinearity(testCase)
-            % SD_surrogates used to depend on TSTOOL's signal/tc3/trev;
+        function test_SD_Surrogates_DetectsNonlinearity(testCase)
+            % SD_Surrogates used to depend on TSTOOL's signal/tc3/trev;
             % it now generates surrogates via SD_MakeSurrogates and
-            % evaluates CO_tc3/CO_trev on each (both already TSTOOL-free
+            % evaluates CO_TC3/CO_trev on each (both already TSTOOL-free
             % reimplementations of the same expressions). Confirm the
             % replacement still does its actual job: a linear (Gaussian
             % noise) series should look unremarkable against its
@@ -690,7 +928,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % destroys -- should look highly significant.
             rng(31);
             yLinear = randn(500,1);
-            outLinear = SD_surrogates(yLinear,1,50,1,'tc3','default');
+            outLinear = SD_Surrogates(yLinear,1,50,1,'tc3','default');
             testCase.verifyGreaterThan(outLinear.ztestp, 0.05, ...
                 'Gaussian noise should not look significantly different from its surrogates.');
 
@@ -700,7 +938,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             for i = 2:N
                 yChaotic(i) = 3.9*yChaotic(i-1)*(1-yChaotic(i-1));
             end
-            outChaotic = SD_surrogates(yChaotic,1,50,1,'tc3','default');
+            outChaotic = SD_Surrogates(yChaotic,1,50,1,'tc3','default');
             testCase.verifyLessThan(outChaotic.ztestp, 1e-6, ...
                 'The logistic map''s nonlinear structure should look highly significant against its surrogates.');
         end
@@ -729,22 +967,17 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
         end
 
         %-------------------------------------------------------------
-        % NL_TakensEstimator (now via TISEAN d2/c2t, no TSTOOL dependency)
+        % NL_TakensEstimator (length scale enclosing a fraction of the pairs)
         %-------------------------------------------------------------
         function test_NL_TakensEstimator_DiscriminatesDimension(testCase)
-            % NL_TakensEstimator used to depend on TSTOOL's
-            % signal/takens_estimator; it now uses TISEAN's d2 and c2t
-            % (already relied on by NL_TISEAN_d2.m) instead. Confirm the
-            % replacement still does its actual job: high-dimensional
-            % (structureless) noise embedded at m should give a dimension
-            % estimate close to m, while a logistic map (a classic 1-D
-            % chaotic system, known correlation dimension ~1) should give an
+            % Structureless noise embedded at m should give a dimension estimate close
+            % to m, while a logistic map (correlation dimension ~1) should give an
             % estimate close to 1, clearly distinguishing it from noise.
             rng(41);
             yNoise = randn(2000,1);
-            outNoise = NL_TakensEstimator(yNoise,-1,0.05,1,{1,3});
-            testCase.verifyGreaterThan(outNoise, 2, ...
-                'Structureless noise embedded at m=3 should have a dimension estimate well above 1.');
+            outNoise = NL_TakensEstimator(yNoise,-1,0.01,1,{1,3});
+            testCase.verifyEqual(outNoise, 3, 'AbsTol', 0.3, ...
+                'Structureless noise embedded at m=3 should have a dimension estimate near 3.');
 
             N = 2000;
             yChaotic = zeros(N,1);
@@ -752,11 +985,170 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             for i = 2:N
                 yChaotic(i) = 3.9*yChaotic(i-1)*(1-yChaotic(i-1));
             end
-            outChaotic = NL_TakensEstimator(yChaotic,-1,0.05,1,{1,3});
+            outChaotic = NL_TakensEstimator(yChaotic,-1,0.01,1,{1,3});
             testCase.verifyLessThan(outChaotic, 1.5, ...
                 'The logistic map''s known correlation dimension (~1) should give a low estimate.');
             testCase.verifyLessThan(outChaotic, outNoise, ...
                 'The logistic map should have a clearly lower dimension estimate than structureless noise.');
+        end
+
+        function test_NL_TakensEstimator_DegenerateCases(testCase)
+            % Quantized values and coinciding delay vectors give estimates; too few
+            % pairs, fewer than three distinct distances, or a constant series give NaN.
+            t = (1:400)';
+            x = sin(0.3*t) + 0.5*cos(1.7*t).^3 + 0.2*sin(0.011*t.^1.5) + 0.4*sin(0.77*t.^1.1);
+            x = (x - mean(x))/std(x);
+            v = NL_TakensEstimator(x,-1,0.01,{'ac',1},{3,3});
+            testCase.verifyEqual(v, 2.86282933331, 'AbsTol', 1e-9);
+            % quantized to steps of 0.25: too discrete at the length scale
+            q = round(x/0.25)*0.25; q = (q - mean(q))/std(q);
+            testCase.verifyTrue(isnan(NL_TakensEstimator(q,-1,0.01,{'ac',1},{3,3})));
+            z = max(x - 0.5, 0); z = (z - mean(z))/std(z);
+            testCase.verifyEqual(NL_TakensEstimator(z,-1,0.01,{'ac',1},{2,3}), 1.10192541585, 'AbsTol', 1e-9);
+            testCase.verifyTrue(isnan(NL_TakensEstimator(x(1:60),-1,0.01,{'ac',1},{3,3})));
+            testCase.verifyTrue(isnan(NL_TakensEstimator(sign(x),-1,0.01,{'ac',1},{1,2})));
+            testCase.verifyTrue(isnan(NL_TakensEstimator(ones(100,1),-1,0.01,2,{1,2})));
+        end
+
+        function test_NL_TakensEstimator_ShiftScaleReflection(testCase)
+            % The tolerances are relative to the data: y, 3.7*y - 12 and -y give the same
+            % output (the same values as pyhctsa's takens_estimator).
+            lg = zeros(1500, 1); lg(1) = 0.3;
+            ch = zeros(1500, 1); ch(1) = 0.3141;
+            for k = 2:1500
+                lg(k) = 3.84*lg(k-1)*(1 - lg(k-1)); % a transient converging to a period-3 orbit
+                ch(k) = 3.9*ch(k-1)*(1 - ch(k-1));
+            end
+            int12 = round(4095*ch); % a chaotic series quantized to 12 bits
+            F = {@(v) v, @(v) 3.7*v - 12, @(v) -v};
+            for f = 1:3
+                testCase.verifyEqual(NL_TakensEstimator(zscore(F{f}(int12)),-1,0.01,{'ac',1},{1,3}), ...
+                    1.002896002752, 'AbsTol', 1e-9);
+                testCase.verifyEqual(NL_TakensEstimator(zscore(F{f}(int12)),-1,0.01,{'ac',1},{1,2}), ...
+                    1.019092095706, 'AbsTol', 1e-9);
+                % the period-3 orbit: too few distinct distances below the length scale
+                testCase.verifyTrue(isnan(NL_TakensEstimator(zscore(F{f}(lg)),-1,0.01,{'ac',1},{1,3})));
+            end
+        end
+
+        function test_NL_TakensEstimator_AboveEmbeddingDimension(testCase)
+            % A random walk (with chaotic increments) whose 'ac' delay and Theiler window are
+            % about a third of the series: the estimate at m = 3 would be 9.4, so NaN.
+            x = zeros(2000, 1); x(1) = 0.3141;
+            for k = 2:2000
+                x(k) = 4*x(k-1)*(1 - x(k-1));
+            end
+            y = zscore(cumsum(x - 0.5));
+            testCase.verifyTrue(isnan(NL_TakensEstimator(y,-1,0.01,{'ac',1},{'ac',3})));
+            testCase.verifyEqual(NL_TakensEstimator(y,-1,0.01,{'ac',1},{1,3}), 1.93575005343, 'AbsTol', 1e-9);
+        end
+
+        function test_NL_GPCorrSum_RoundOffRatios(testCase)
+            % An exactly periodic series: residuals at round-off give NaN, not a ratio of
+            % rounding noise.
+            tab = sin(2*pi*(0:6)'/7 + 0.3);
+            y = zscore(tab(mod(0:999, 7) + 1));
+            out = NL_GPCorrSum(y,-1,0.5,{'ac',1},20,{'ac',{'fnn',0.05}},1);
+            testCase.verifyTrue(isnan(out.robfit_sigrat) && isnan(out.robfitresac1));
+        end
+
+        function test_NL_d2_TakensNeedsPairs(testCase)
+            % White noise, N = 1000: at m = 8-10 the length scale 0.5 holds fewer than 10
+            % pairs, whose estimates (14-33) are not dimension estimates; the takens05
+            % statistics stop at m = 7 (56 pairs, estimate 8.3).
+            rng(0);
+            out = NL_d2(zscore(randn(1000, 1)), 1, 10, {'ac', 1});
+            testCase.verifyLessThan(out.takens05_max, 10);
+            testCase.verifyGreaterThan(out.takens05_max, 4);
+        end
+
+        %-------------------------------------------------------------
+        % NL_PersistentHomology (ripser-based TDA on a delay embedding)
+        %-------------------------------------------------------------
+        function test_NL_PersistentHomology_DiscriminatesPeriodicity(testCase)
+            % A clean periodic orbit traces a loop in delay-embedding space,
+            % which should show up as one strongly persistent H1 topological
+            % feature; noise and chaotic (non-orbit-forming) dynamics
+            % shouldn't. With the default tau='mi' embedding, a clean sine
+            % wave gives maxPersistenceH1 ~0.8, versus ~0.01-0.06 for white
+            % noise / noisy sine / a chaotic logistic map -- an order of
+            % magnitude apart. (The period is not a whole number of samples:
+            % a sine with an integer period takes only a few distinct values,
+            % whose automutual information is flat across lags, so the 'mi'
+            % delay is arbitrary there.)
+            rng(41);
+            N = 500;
+            t = (1:N)';
+
+            outSine = NL_PersistentHomology(sin(2*pi*t/20.3));
+            outNoise = NL_PersistentHomology(randn(N,1));
+            testCase.verifyGreaterThan(outSine.maxPersistenceH1, 5*outNoise.maxPersistenceH1, ...
+                'The periodic orbit''s loop persistence should be far larger than noise''s.');
+            testCase.verifyGreaterThan(outSine.maxPersistenceH1, 0.25, ...
+                'A clean periodic orbit should register one strongly persistent H1 loop.');
+
+            yChaotic = zeros(N,1);
+            yChaotic(1) = 0.4;
+            for i = 2:N
+                yChaotic(i) = 3.9*yChaotic(i-1)*(1-yChaotic(i-1));
+            end
+            outChaotic = NL_PersistentHomology(yChaotic);
+            testCase.verifyLessThan(outChaotic.maxPersistenceH1, 0.25, ...
+                'The logistic map does not trace a loop in delay-embedding space.');
+        end
+
+        function test_NL_PersistentHomology_DegenerateInputsReturnNaN(testCase)
+            % Data-inapplicable cases (constant series, too short to embed)
+            % should return NaN, not error -- consistent with the rest of
+            % the codebase's NaN-vs-error convention.
+            testCase.verifyTrue(isscalar(NL_PersistentHomology(ones(500,1))) && ...
+                isnan(NL_PersistentHomology(ones(500,1))), ...
+                'A constant series cannot be meaningfully embedded/analyzed.');
+            testCase.verifyTrue(isscalar(NL_PersistentHomology(randn(5,1))) && ...
+                isnan(NL_PersistentHomology(randn(5,1))), ...
+                'A too-short series cannot be meaningfully embedded/analyzed.');
+        end
+
+        function test_NL_PersistentHomology_periodWelchTooShortFallsBackNotErrors(testCase)
+            % Regression test: pwelch() errors outright (rather than
+            % degrading gracefully) on series below ~8 samples with default
+            % windowing. SUB_periodNormalizedTau must guard against this and
+            % fall back to 'mi' (itself NaN-safe via BF_Embed) rather than
+            % letting the error propagate.
+            testCase.verifyTrue(isscalar(NL_PersistentHomology(randn(5,1), 'periodWelch', 2)) && ...
+                isnan(NL_PersistentHomology(randn(5,1), 'periodWelch', 2)), ...
+                'A too-short series under tau=''periodWelch'' should fall back to NaN, not error.');
+        end
+
+        function test_NL_PersistentHomology_m2CatchesPhaseShapeSpectrumMisses(testCase)
+            % Motivating case for the deliberately under-embedded m=2 mop
+            % (NL_PersistentHomology_periodWelch_2): two-harmonic signals
+            % that differ only in the phase of the second harmonic are
+            % indistinguishable to any phase-blind spectral feature (|FFT|
+            % depends only on harmonic amplitude, not phase), but their
+            % delay-embedded shape differs -- at the Takens-safe default
+            % m=3 the gap nearly vanishes, since the effect is tied to the
+            % specific 2D projection rather than the (here, truly
+            % 1-dimensional) attractor's intrinsic topology.
+            %
+            % tau='periodWelch' (not 'mi', despite 'mi' showing a larger raw
+            % gap here) -- a tau sweep over this same construction showed
+            % 'mi' getting the right answer for largely lucky reasons (see
+            % the m-parameter docstring note in NL_PersistentHomology.m for
+            % the full story); periodWelch is the mechanism actually
+            % registered. Verified directly: mean ratio 1.28 (std 0.04,
+            % min 1.22 across 15 reps) -- smaller than 'mi''s but reliably
+            % and consistently above 1.
+            rng(7);
+            N = 1000;
+            t = (1:N)';
+            noiseLevel = 0.05;
+
+            outA = NL_PersistentHomology(sin(t) + 0.6*sin(2*t + 0) + noiseLevel*randn(N,1), 'periodWelch', 2);
+            outB = NL_PersistentHomology(sin(t) + 0.6*sin(2*t + 1.4) + noiseLevel*randn(N,1), 'periodWelch', 2);
+
+            testCase.verifyGreaterThan(outB.maxPersistenceH1, 1.15*outA.maxPersistenceH1, ...
+                'phi=1.4 should show a markedly larger dominant H1 loop than phi=0 at m=2.');
         end
 
         %-------------------------------------------------------------
@@ -765,7 +1157,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
         function test_NL_GPCorrSum_DiscriminatesDimension(testCase)
             % NL_GPCorrSum used to depend on TSTOOL's
             % signal/corrsum; it now uses TISEAN's d2 (already relied on
-            % by NL_TISEAN_d2.m and NL_TakensEstimator.m) instead,
+            % by NL_d2.m and NL_TakensEstimator.m) instead,
             % fitting its own robust line to d2's raw (r, C(r))
             % correlation-sum output. Confirm the replacement still does
             % its actual job: a logistic map (known correlation dimension
@@ -847,8 +1239,57 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
                 'The Lorenz flow''s divergence curve should take far longer to saturate than noise''s.');
         end
 
-        function test_NL_BoxCorrDim_DiscriminatesStructure(testCase)
-            % NL_BoxCorrDim used to depend on TSTOOL's signal/corrdim;
+        function test_NL_LargestLyap_FinelySampledFlowIsDefined(testCase)
+            % A finely sampled flow has a long ACF zero crossing, so a horizon
+            % of 20 zero-crossing times does not fit in N/2 samples and the
+            % {'ac',20} setting gives NaN. The default horizon (30 'ac1e'
+            % times, capped to fit) stays defined, with a positive exponent.
+            sigma = 10; rho = 28; beta = 8/3;
+            lorenzODE = @(t,v) [sigma*(v(2)-v(1)); v(1)*(rho-v(3))-v(2); v(1)*v(2)-beta*v(3)];
+            [~, sol] = ode45(lorenzODE, 0:0.005:60, [1,1,1]);
+            y = zscore(sol(end-999:end, 1)); % N = 1000 at ~150 samples per period
+            outZC = NL_LargestLyap(y, -1, {'ac',20}, {'ac',1}, 3, {1,4});
+            out = NL_LargestLyap(y, -1, [], [], 3, {1,4});
+            testCase.verifyTrue(~isstruct(outZC) && isnan(outZC), ...
+                'A 20 zero-crossing horizon cannot fit in this series, so NaN.');
+            testCase.verifyTrue(isstruct(out), 'The default ''ac1e'' horizon should be capped to fit.');
+            testCase.verifyGreaterThan(out.vse_gradient, 0);
+            testCase.verifyEqual(out.vse_gradient_pertau, ...
+                out.vse_gradient * CO_FirstCrossing(y, 'ac', 1/exp(1), 'continuous'), 'RelTol', 1e-12);
+        end
+
+        function test_NL_LargestLyap_LogisticMapExponent(testCase)
+            % For a chaotic map the ACF decays within a step ('ac1e' = 1), and
+            % the slope should be near the known exponent, ln 2 for r = 4.
+            N = 2000; x = zeros(N,1); x(1) = 0.3;
+            for t = 2:N, x(t) = 4*x(t-1)*(1 - x(t-1)); end
+            out = NL_LargestLyap(zscore(x), -1, [], [], 3, {1,2});
+            testCase.verifyGreaterThan(out.vse_gradient, 0.5);
+            testCase.verifyLessThan(out.vse_gradient, 0.9);
+        end
+
+        function test_NL_DVV_DelayDefaultUnchanged(testCase)
+            % tau = 1 (default or explicit) must reproduce the original
+            % consecutive-sample DVV exactly; an adaptive delay gives finite
+            % output for a smooth series.
+            rng(72);
+            y = zscore(filter(1, [1, -0.95], randn(1000,1)));
+            out0 = NL_DVV(y, 3, 100, 2, 50, 10, 'default');
+            out1 = NL_DVV(y, 3, 100, 2, 50, 10, 'default', 1);
+            testCase.verifyTrue(isequaln(out0, out1), 'An explicit tau = 1 must match the default.');
+            outA = NL_DVV(y, 3, 100, 2, 50, 10, 'default', 'ac1e');
+            testCase.verifyTrue(isstruct(outA) && all(isfinite(struct2array(outA))));
+        end
+
+        function test_BF_TheilerWindow_ac1eUnits(testCase)
+            rng(73);
+            y = filter(1, [1, -0.9], randn(1000,1));
+            testCase.verifyEqual(BF_TheilerWindow(y, {'ac1e', 2}), ceil(2 * BF_GetTau(y, 'ac1e')));
+            testCase.verifyEqual(BF_TheilerWindow(y, {'ac', 1}), CO_FirstCrossing(y, 'ac', 0, 'discrete'));
+        end
+
+        function test_NL_BoxCountEntropyRate_DiscriminatesStructure(testCase)
+            % NL_BoxCountEntropyRate used to depend on TSTOOL's signal/corrdim;
             % it now uses TISEAN's boxcount (Renyi entropy of order Q=2.0
             % via box partitioning), taking its per-embedding-dimension
             % entropy increment as the analogue of corrdim's local-dimension
@@ -868,7 +1309,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % during development showed the same qualitative shape.)
             rng(81);
             yNoise = randn(2000,1);
-            outNoise = NL_BoxCorrDim(yNoise,50,{1,5});
+            outNoise = NL_BoxCountEntropyRate(yNoise,50,{1,5});
 
             N = 2000;
             yChaotic = zeros(N,1);
@@ -876,21 +1317,21 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             for i = 2:N
                 yChaotic(i) = 3.9*yChaotic(i-1)*(1-yChaotic(i-1));
             end
-            outChaotic = NL_BoxCorrDim(yChaotic,50,{1,5});
+            outChaotic = NL_BoxCountEntropyRate(yChaotic,50,{1,5});
 
             testCase.verifyGreaterThan(outChaotic.mediand5, outNoise.mediand5, ...
                 ['The logistic map''s deterministic, tightly-clustered embedding should keep boxes ' ...
                  'populated to smaller length scales than noise, giving a higher median entropy increment.']);
         end
 
-        function test_NL_localdensity_MatchesBruteForceLoop(testCase)
-            % NL_localdensity used to depend on TSTOOL's 'localdensity',
+        function test_NL_LocalDensity_MatchesBruteForceLoop(testCase)
+            % NL_LocalDensity used to depend on TSTOOL's 'localdensity',
             % which the original author noted was "very poorly documented"
             % -- its exact algorithm was never confirmed. It's now a native
-            % k-nearest-neighbor local density estimate (density(i) ~
-            % 1/r_NNR(i)^m, r_NNR(i) = distance to the NNR-th nearest
-            % neighbor outside a Theiler window of "past" samples), using a
-            % KD-tree for speed. Since there's no original TSTOOL ground
+            % k-nearest-neighbor local density estimate (log density from
+            % r_NNR(i) = distance to the NNR-th nearest neighbor outside a
+            % Theiler window of "past" samples, in units of the series SD
+            % with zero distances smoothed), using a KD-tree for speed. Since there's no original TSTOOL ground
             % truth to validate against here (unlike the other TSTOOL-
             % derived operations in this file), the right check is that the
             % new native implementation is itself correct: confirm its
@@ -900,26 +1341,30 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             rng(91);
             y = randn(300,1);
             NNR = 4; past = 5;
-            out = NL_localdensity(y, NNR, past, {1,3});
+            out = NL_LocalDensity(y, NNR, past, {1,3});
 
             Y = BF_Embed(y, 1, 3, false);
             N_embed = size(Y,1);
             m = size(Y,2);
-            locdenBrute = zeros(N_embed,1);
+            dk = zeros(N_embed,1);
             for i = 1:N_embed
                 d = sqrt(sum((Y - Y(i,:)).^2, 2));
                 d(abs((1:N_embed)' - i) <= past) = Inf;
                 sd = sort(d);
-                locdenBrute(i) = 1 / (sd(NNR)^m);
+                dk(i) = sd(NNR);
             end
+            % Same log k-NN density transform as NL_LocalDensity
+            d = sqrt(dk.^2 + (0.01 * median(dk(dk > 0)))^2);
+            Neff = N_embed - 2 * past - 1;
+            locdenBrute = log(NNR / Neff) - ((m / 2) * log(pi) - gammaln(m / 2 + 1)) - m * log(d / std(y));
 
             testCase.verifyEqual(out.meanden, mean(locdenBrute), 'RelTol', 1e-9);
             testCase.verifyEqual(out.stdden, std(locdenBrute), 'RelTol', 1e-9);
             testCase.verifyEqual(out.medianden, median(locdenBrute), 'RelTol', 1e-9);
         end
 
-        function test_NL_dimensions_DiscriminatesDimension(testCase)
-            % NL_dimensions used to depend on TSTOOL's
+        function test_NL_Dimensions_DiscriminatesDimension(testCase)
+            % NL_Dimensions used to depend on TSTOOL's
             % signal/dimensions; it now uses TISEAN's boxcount (Q=0.0, the
             % box-counting dimension D0) and d2 (the correlation dimension
             % D2, matching TSTOOL's own pair-counting construction, unlike
@@ -937,7 +1382,7 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % resolved embedding dimension) than a logistic map.
             rng(101);
             yNoise = randn(2000,1);
-            outNoise = NL_dimensions(yNoise,50,{1,5});
+            outNoise = NL_Dimensions(yNoise,50,{1,5});
 
             N = 2000;
             yChaotic = zeros(N,1);
@@ -945,45 +1390,35 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             for i = 2:N
                 yChaotic(i) = 3.9*yChaotic(i-1)*(1-yChaotic(i-1));
             end
-            outChaotic = NL_dimensions(yChaotic,50,{1,5});
+            outChaotic = NL_Dimensions(yChaotic,50,{1,5});
 
             testCase.verifyGreaterThan(outNoise.scr_co_mopt_scaling_exp, outChaotic.scr_co_mopt_scaling_exp, ...
                 'Structureless noise should have a higher correlation-dimension scaling exponent than a logistic map.');
         end
 
         function test_NL_ReturnTime_DiscriminatesPeriodicity(testCase)
-            % NL_ReturnTime used to depend on TSTOOL's 'return_time';
-            % TISEAN has no direct equivalent (its own recurrence tool,
-            % 'recurr', defines neighborhoods by a fixed epsilon radius,
-            % not a nearest-neighbor count), so this is now computed
-            % natively: for each reference point, the neighborhood radius
-            % is its NNR-th-nearest-neighbor distance (Theiler-window
-            % excluded), and the series is scanned forward for the first
-            % return within that radius (see the operation's header
-            % comment). Direct inspection during development showed the 3
-            % most common nonzero return times for a period-17 sinusoid
-            % were exactly 17, 34, and 51 -- confirming the implementation
-            % genuinely detects periodicity, not just that it runs. For a
-            % permanent regression test, use a more robust summary
-            % statistic: a periodic signal's return times should cluster
-            % tightly around multiples of the period (low std), while
-            % structureless noise's return times should be widely
-            % scattered (high std), since there's no preferred recurrence
-            % timescale.
+            % NL_ReturnTime computes TSTOOL's 'return_time' histogram
+            % natively: the lags at which each reference point's nearest
+            % neighbors occur, relative to the count expected by chance.
+            % For structureless noise the profile is flat at ~1; for a
+            % periodic signal it peaks sharply at multiples of the period,
+            % so its spread across lags is far larger.
             rng(111);
             yNoise = randn(2000,1);
-            outNoise = NL_ReturnTime(yNoise, 5, 1, 40, -1, {1,8});
+            outNoise = NL_ReturnTime(yNoise, 0.02, 100, {'ac',1}, 500, {1,8});
 
             t = (1:2000)';
             yPeriodic = sin(2*pi*t/17);
-            outPeriodic = NL_ReturnTime(yPeriodic, 5, 1, 40, -1, {1,8});
+            outPeriodic = NL_ReturnTime(yPeriodic, 0.02, 100, {'ac',1}, 500, {1,8});
 
-            testCase.verifyLessThan(outPeriodic.std, 0.5 * outNoise.std, ...
-                'A periodic signal''s return times should cluster far more tightly than noise''s.');
+            testCase.verifyEqual(outNoise.fracmeanrt, 0.5, 'AbsTol', 0.025, ...
+                'Noise should return to its neighborhoods at chance level at all lags.');
+            testCase.verifyGreaterThan(outPeriodic.std, 5 * outNoise.std, ...
+                'A periodic signal should return to its neighborhoods far more at some lags than others.');
         end
 
-        function test_NL_delaytime_DiscriminatesStructure(testCase)
-            % NL_delaytime used to depend on TSTOOL's 'delaytime'; that
+        function test_NL_DelayTime_DiscriminatesStructure(testCase)
+            % NL_DelayTime used to depend on TSTOOL's 'delaytime'; that
             % code turned out to be pure MATLAB itself (vendored in this
             % repo under Toolboxes/OpenTSTOOL), so its exact algorithm is
             % reproduced natively here rather than approximated -- with two
@@ -1000,11 +1435,11 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             % error quickly rises to the scale of the data's full variance.
             rng(121);
             yNoise = randn(2000,1);
-            outNoise = NL_delaytime(yNoise, 0.1, 1, 'default');
+            outNoise = NL_DelayTime(yNoise, 0.1, 1, 'default');
 
             t = (1:2000)';
             yPeriodic = sin(2*pi*t/17);
-            outPeriodic = NL_delaytime(yPeriodic, 0.1, 1, 'default');
+            outPeriodic = NL_DelayTime(yPeriodic, 0.1, 1, 'default');
 
             testCase.verifyGreaterThan(outNoise.meantau, 10 * outPeriodic.meantau, ...
                 'Structureless noise''s reconstruction error should be far higher than a periodic signal''s.');
@@ -1136,6 +1571,229 @@ classdef OperationsUnitTests < matlab.unittest.TestCase
             testCase.verifyTrue(threw, 'DN_Mean should error for an unrecognized meanType.');
         end
 
+        function test_EN_DispEn_MatchesPublishedWorkedExample(testCase)
+            % Ground truth: the worked example in the dispersion-entropy
+            % literature (Azami & Escudero; reproduced in Fig. 1 of
+            % arXiv:1902.10825), computed with a linear mapping, d = 1,
+            % m = 2, c = 3 on a fixed 10-point series.
+            x = [3.6; 4.2; 1.2; 3.1; 4.2; 2.1; 3.3; 4.6; 6.8; 8.4];
+            out = EN_DispEn(x, 2, 3, 1, 'linear');
+
+            % (a) The published fluctuation-based value, stated in the text as
+            % -(4/9*ln(4/9) + 3/9*ln(3/9) + 2/9*ln(2/9)) = 1.0609:
+            expectedF = -(4/9*log(4/9) + 3/9*log(3/9) + 2/9*log(2/9));
+            testCase.verifyEqual(out.fDispEn, expectedF, 'AbsTol', 1e-10, ...
+                'FDispEn should reproduce the published worked example (1.0609).');
+
+            % (b) The dispersion-pattern distribution shown in the same
+            % figure: {11},{12},{21} at 2/9; {22},{23},{33} at 1/9; and
+            % {13},{31},{32} absent. Checking the entropy this implies pins
+            % down the classification as well as the entropy formula:
+            p = [2 2 0 2 1 1 0 0 1]/9;
+            expectedD = -sum(p(p>0).*log(p(p>0)));
+            testCase.verifyEqual(out.dispEn, expectedD, 'AbsTol', 1e-10, ...
+                'DispEn should match the published pattern distribution.');
+
+            % Normalizations are by log(c^m) and log((2c-1)^(m-1)):
+            testCase.verifyEqual(out.normDispEn, expectedD/log(3^2), 'AbsTol', 1e-10);
+            testCase.verifyEqual(out.normFDispEn, expectedF/log(5^1), 'AbsTol', 1e-10);
+        end
+
+        function test_EN_DispEn_SeesAmplitudeWherePermEnCannot(testCase)
+            % The motivation for adding this operation: permutation entropy
+            % records only rank order, so a strictly monotone transform of a
+            % series leaves it exactly unchanged; dispersion entropy assigns
+            % amplitude classes and so does respond.
+            rng(2);
+            y = zscore(cumsum(randn(5000,1)));
+            yWarped = zscore(sign(y).*abs(y).^3); % monotone => identical ordinal patterns
+
+            pe1 = EN_PermEn(y,3,1); pe2 = EN_PermEn(yWarped,3,1);
+            testCase.verifyEqual(pe2.normPermEn, pe1.normPermEn, 'AbsTol', 1e-12, ...
+                'A monotone transform must leave permutation entropy unchanged.');
+
+            de1 = EN_DispEn(y,2,6,1); de2 = EN_DispEn(yWarped,2,6,1);
+            testCase.verifyGreaterThan(abs(de2.normDispEn - de1.normDispEn), 0.01, ...
+                'Dispersion entropy should respond to an amplitude warp.');
+        end
+
+        function test_EN_DispEn_BoundsAndDegenerateInput(testCase)
+            rng(1);
+            % Approaches the maximum for iid uniform data:
+            outU = EN_DispEn(rand(20000,1), 2, 6, 1);
+            testCase.verifyGreaterThan(outU.normDispEn, 0.95);
+            testCase.verifyLessThanOrEqual(outU.normDispEn, 1 + 1e-12);
+
+            % A period-2 square wave visits exactly two patterns whatever c
+            % is, so its entropy is log(2) up to the imbalance forced by an
+            % odd number of embedding vectors: 4000 points give 3999 vectors,
+            % split 2000/1999 between the two patterns.
+            outSq = EN_DispEn(repmat([1;-1],2000,1), 2, 6, 1);
+            pSq = [2000 1999]/3999;
+            testCase.verifyEqual(outSq.dispEn, -sum(pSq.*log(pSq)), 'AbsTol', 1e-12);
+            testCase.verifyEqual(outSq.dispEn, log(2), 'AbsTol', 1e-6);
+
+            % A constant series (exactly, or up to rounding) is a single
+            % pattern: zero entropy
+            outC = EN_DispEn(ones(500,1));
+            testCase.verifyEqual([outC.dispEn, outC.normDispEn, outC.fDispEn, outC.normFDispEn], ...
+                zeros(1,4), 'A constant series has zero dispersion entropy.');
+            outC = EN_DispEn(0.3 + [0; 1e-17; 0; 5.5e-17; 0; 0]);
+            testCase.verifyEqual(outC.dispEn, 0);
+
+            % Data-dependent failures return NaN rather than erroring:
+            testCase.verifyTrue(isnan(EN_DispEn(randn(5,1))), ...
+                'A too-short series should give NaN, not an error.');
+
+            % The NCDF mapping uses the series' own mean and SD, so the
+            % result is invariant to any affine rescaling of the input:
+            y = randn(2000,1);
+            testCase.verifyEqual(EN_DispEn(3*y + 7, 2, 6, 1).normDispEn, ...
+                EN_DispEn(y, 2, 6, 1).normDispEn, 'AbsTol', 1e-12);
+        end
+
+        %-------------------------------------------------------------
+        % SP_Rhythmicity
+        %-------------------------------------------------------------
+        function test_SP_Rhythmicity_SustainedVsBurstySamePower(testCase)
+            % The whole point of the rhythmicity index: against a common
+            % noise floor, a sustained oscillation and a train of brief
+            % bursts at the SAME frequency and matched power are told apart
+            % -- the sustained one has far higher phase persistence, so a
+            % taller, more prominent peak in the rhythmicity spectrum, at
+            % the right frequency. (A noise floor is needed: LAVI of a *pure*
+            % sinusoid saturates near 1 at every frequency, because the
+            % off-band wavelet output is still a phase-coherent copy of the
+            % tone -- see Karvat et al.)
+            rng(7);
+            N = 3000;
+            t = (1:N)';
+            f0 = 0.05; % cycles/sample, inside the default [0.02,0.4] grid
+
+            carrier = sin(2*pi*f0*t);
+            period = 1/f0;
+            env = double(mod(floor(t/(3*period)), 3) == 0); % ~3-cycle-on, 6-off
+            bursts = env .* sin(2*pi*f0*t);
+            bursts = bursts / std(bursts) * std(carrier); % power-match to carrier
+
+            noise = randn(N,1);
+            outS = SP_Rhythmicity(carrier + noise);
+            outB = SP_Rhythmicity(bursts + noise);
+
+            testCase.verifyGreaterThan(outS.lavi_max, 0.85, ...
+                'A sustained oscillation above noise should have high peak phase persistence.');
+            testCase.verifyGreaterThan(outS.lavi_max, outB.lavi_max + 0.2, ...
+                'Sustained oscillation should be markedly more rhythmic than power-matched bursts.');
+            testCase.verifyGreaterThan(outS.lavi_maxOnMedian, outB.lavi_maxOnMedian, ...
+                'The sustained band should stand out further above the rhythmicity baseline.');
+            testCase.verifyEqual(outS.lavi_freqAtMax, 2*pi*f0, 'RelTol', 0.2, ...
+                'The most rhythmic frequency should be the oscillation frequency.');
+
+            % Relative to the spectral null (what the power spectrum alone
+            % implies), the sustained oscillation is more rhythmic and the
+            % bursts are less so, at the dominant frequency:
+            testCase.verifyGreaterThan(outS.ex_atPeakPower, 0.03, ...
+                'A sustained oscillation should be more rhythmic than its spectrum implies.');
+            testCase.verifyLessThan(outB.ex_atPeakPower, 0, ...
+                'Bursts should be less rhythmic than their spectrum implies.');
+
+            % Smoothed band count: one dominant rhythmic band for the
+            % sustained oscillation, and no more bands than the (jaggier)
+            % bursty case would spuriously produce.
+            testCase.verifyGreaterThanOrEqual(outS.lavi_numPeaks, 1, ...
+                'The sustained oscillation should register at least one rhythmic band.');
+            testCase.verifyLessThanOrEqual(outS.lavi_numPeaks, 3, ...
+                'Smoothing should keep the sustained-oscillation band count small.');
+        end
+
+        function test_SP_Rhythmicity_WhiteNoiseHasLowFlatRhythmicity(testCase)
+            % White noise has no sustained rhythm at any frequency: LAVI
+            % should sit low and roughly flat, with a small maxOnMedian.
+            rng(11);
+            out = SP_Rhythmicity(randn(4000,1));
+            testCase.verifyLessThan(out.lavi_median, 0.4, ...
+                'White noise should have low baseline rhythmicity.');
+            testCase.verifyLessThan(out.lavi_maxOnMedian, 2, ...
+                'White noise should show no strongly prominent rhythmic band.');
+            testCase.verifyLessThanOrEqual(out.lavi_numPeaks, 2, ...
+                'Smoothing should leave white noise with essentially no rhythmic bands.');
+        end
+
+        function test_SP_Rhythmicity_WhiteNoiseFloorMatchesTheory(testCase)
+            % With an m-cycle wavelet and a lag of tau cycles, the wavelet
+            % output of white noise has lag correlation exp(-pi^2 tau^2/m^2)
+            % (0.411 for m = 5, tau = 1.5), so its LAVI converges to
+            % [E(rho^2) - (1-rho^2) K(rho^2)]/rho = 0.330 at every frequency.
+            rng(5);
+            rho = exp(-pi^2*1.5^2/5^2);
+            [K, E] = ellipke(rho^2);
+            floorTheory = (E - (1-rho^2)*K)/rho;
+            out = SP_Rhythmicity(randn(20000,1));
+            testCase.verifyEqual(out.lavi_median, floorTheory, 'AbsTol', 0.015, ...
+                'The white-noise LAVI floor should match the theoretical value.');
+            testCase.verifyEqual(out.ex_mean, 0, 'AbsTol', 0.01, ...
+                'White noise should sit on its spectral null.');
+        end
+
+        function test_SP_Rhythmicity_LinearGaussianSitsOnNull(testCase)
+            % The spectral null is what a Gaussian process with the same
+            % spectrum gives, so a linear Gaussian process with a strong
+            % spectral peak (a stochastic AR(2) oscillator) has high raw
+            % LAVI at its peak but no excess there.
+            rng(17);
+            y = filter(1, [1 -1.8*cos(2*pi*0.1) 0.81], randn(8000,1));
+            out = SP_Rhythmicity(y);
+            testCase.verifyGreaterThan(out.lavi_atPeakPower, out.lavi_median + 0.1, ...
+                'The spectral peak should raise the raw LAVI.');
+            testCase.verifyEqual(out.ex_atPeakPower, 0, 'AbsTol', 0.03, ...
+                'A linear Gaussian process should show no excess rhythmicity at its peak.');
+            testCase.verifyEqual(out.ex_mean, 0, 'AbsTol', 0.015, ...
+                'A linear Gaussian process should sit on its spectral null overall.');
+        end
+
+        function test_SP_Rhythmicity_RoundoffCoefficientsHaveNoPhase(testCase)
+            % A sparse spike train is constant across the wavelet's support at
+            % many time points, where the coefficients are round-off and
+            % their phase is meaningless. Those coefficients are left out, so
+            % perturbing the input at the level of round-off must not move
+            % any output.
+            rng(3);
+            y = zeros(3000,1);
+            y(randperm(3000, 12)) = 1 + rand(12,1);
+            y = zscore(y);
+            out1 = SP_Rhythmicity(y);
+            out2 = SP_Rhythmicity(y + 1e-15*randn(size(y)));
+            fn = fieldnames(out1);
+            for k = 1:numel(fn)
+                testCase.verifyEqual(out2.(fn{k}), out1.(fn{k}), 'AbsTol', 1e-8, ...
+                    sprintf('%s should not depend on round-off.', fn{k}));
+            end
+        end
+
+        function test_SP_Rhythmicity_SmoothingReducesSpuriousBandCount(testCase)
+            % The smoothWin argument should monotonically (weakly) shrink the
+            % rhythmic-band count on a noisy spectrum: more smoothing, fewer
+            % spurious local maxima.
+            rng(23);
+            y = filter(1, [1 -0.7], randn(3000,1)); % AR(1): jagged LAVI spectrum
+            nUnsmoothed = SP_Rhythmicity(y, [], [], [], [], [], 1).lavi_numPeaks;
+            nSmoothed = SP_Rhythmicity(y, [], [], [], [], [], 9).lavi_numPeaks;
+            testCase.verifyLessThanOrEqual(nSmoothed, nUnsmoothed, ...
+                'A wider Daniell window should not increase the band count.');
+        end
+
+        function test_SP_Rhythmicity_DegenerateInputsReturnNaN(testCase)
+            % Constant series (no phase) and series too short to fit even a
+            % handful of the analysis wavelets should return a scalar NaN,
+            % matching the codebase NaN-vs-error convention.
+            testCase.verifyTrue(isscalar(SP_Rhythmicity(ones(2000,1))) && ...
+                isnan(SP_Rhythmicity(ones(2000,1))), ...
+                'A constant series carries no phase information.');
+            testCase.verifyTrue(isscalar(SP_Rhythmicity(randn(40,1))) && ...
+                isnan(SP_Rhythmicity(randn(40,1))), ...
+                'A too-short series cannot support the rhythmicity spectrum.');
+        end
+
     end
 end
 
@@ -1179,9 +1837,9 @@ function acf = referenceFourierACF(y)
 end
 
 function glscf = refGlscf(y,alpha,beta,tau)
-    % Independent reference implementation of CO_glscf (the original,
+    % Independent reference implementation of CO_GLSCF (the original,
     % uncached algorithm: abs(y) recomputed directly, no caching), used to
-    % verify CO_glscf's cache doesn't cross-contaminate results between
+    % verify CO_GLSCF's cache doesn't cross-contaminate results between
     % different series.
     y1 = abs(y(1:end-tau));
     y2 = abs(y(1+tau:end));

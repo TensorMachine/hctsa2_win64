@@ -1,10 +1,14 @@
 function [Lo_D,Hi_D,Lo_R,Hi_R] = BF_wfilters(wname)
 % BF_wfilters   Toolbox-free replacement for the Wavelet Toolbox's wfilters().
 %
-% Only the two wavelets hctsa actually uses are provided: db3 and sym2.
+% Only the wavelets hctsa uses are provided: haar (db1), db3, sym2 (db2), sym4, sym5.
 % Coefficients are the standard orthonormal scaling filters; the quadrature
 % mirror and reversal conventions match MATLAB's orthfilt().
 
+if isstring(wname) && isscalar(wname), wname = char(wname); end   % (HCTSA2 2.2.1)
+if ~ischar(wname)
+    error('BF_wfilters:badName','The wavelet name must be a character vector.');
+end
 switch lower(wname)
 case 'db3'
     Lo_R = [ 0.3326705529500825,  0.8068915093110924,  0.4598775021184914, ...
@@ -19,14 +23,20 @@ case 'sym5'
              0.0166021057644804,  0.6339789634582119,  0.7234076904024206, ...
              0.1993975339773936, -0.0391342493023831,  0.0295194909257746, ...
              0.0273330683450780];
+case 'sym4'
+    % Symlet-4 (8 taps). Needed by EN_wentropy's default wavelet and by the
+    % MODWT-based wentropy. Identical to MATLAB's wfilters('sym4') (checked in
+    % the licensed run of 2026-09-23) and to PyWavelets.
+    Lo_R = [ 0.0322231006040427, -0.012603967262037833, -0.09921954357684722, ...
+             0.29785779560527736, 0.8037387518059161,    0.49761866763201545, ...
+            -0.02963552764599851, -0.07576571478927333];
 case {'sym2','db2'}
     Lo_R = [ 0.4829629131445341,  0.8365163037378079,  0.2241438680420134, ...
             -0.1294095225512604];
 otherwise
     error('BF_wfilters:unsupported', ...
-          ['Wavelet ''%s'' is not supported. hctsa 2.0 provides haar, db3, sym2 ' ...
-           'and sym5, which are the wavelets used by the default feature ' ...
-           'library.'],wname);
+          ['Wavelet ''%s'' is not supported. HCTSA2 provides haar (db1), sym2 (db2), ' ...
+           'db3, sym4 and sym5, and ''morl'' for BF_cwt, BF_centfrq and BF_scal2frq.'],wname);
 end
 
 % Quadrature mirror: Hi_R(k) = (-1)^(k-1) * Lo_R(end-k+1)

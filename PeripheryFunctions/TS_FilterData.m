@@ -9,6 +9,9 @@ function newFileName = TS_FilterData(whatData,ts_keepIDs,op_keepIDs,newFileName)
 % whatData, the input to TS_LoadData that describes the data to load in
 % ts_keepIDs, a vector of TimeSeries IDs to keep (empty to keep all)
 % op_keepIDs, a vector of Operations IDs to keep (empty to keep all)
+% newFileName, the filename to save the filtered data to (default: the name of the
+%               input file with '_filtered' appended, e.g., 'HCTSA_N_filtered.mat'
+%               for 'norm'; 'HCTSA_filtered.mat' for a pre-loaded structure)
 %
 %---OUTPUT:
 % newFileName, the filename of the .mat file that the new, filtered data is saved to
@@ -18,14 +21,14 @@ function newFileName = TS_FilterData(whatData,ts_keepIDs,op_keepIDs,newFileName)
 % (*) Remove length-dependent features from a raw ('HCTSA.mat') file and save to a
 % new file, 'HCTSA_notLocDep.mat':
 % >>[~,IDs_notlocDep] = TS_GetIDs('lengthdep','raw','ops');
-% >>TS_FilterData('raw',[],ID_notlocDep,'HCTSA_notLocDep.mat');
+% >>TS_FilterData('raw',[],IDs_notlocDep,'HCTSA_notLocDep.mat');
 %
 % (*) Keep only time series with the keyword 'patient' from an hctsa file:
 % >> IDs_patient = TS_GetIDs('patient','raw','ts');
-% >> TS_FilterData('raw',IDs_Patient,[],'HCTSA_noPatient.mat');
+% >> TS_FilterData('raw',IDs_patient,[],'HCTSA_patient.mat');
 %
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -67,11 +70,6 @@ end
 % May be feeding in a loaded data structure:
 TS_Quality = TS_GetFromData(whatData,'TS_Quality');
 MasterOperations = TS_GetFromData(whatData,'MasterOperations');
-% First check that fromDatabase exists (for back-compatability):
-fromDatabase = TS_GetFromData(whatData,'fromDatabase');
-if isempty(fromDatabase)
-    fromDatabase = true; % (set to true if doesn't exist; for legacy compatability)
-end
 % Check that we have the classLabels if already assigned labels:
 if ismember('Group',TimeSeries.Properties.VariableNames)
     classLabels = categories(TimeSeries.Group);
@@ -100,6 +98,11 @@ if ~isempty(ts_keepIDs)
     fprintf(1,'Keeping %u/%u time series from the data in %s\n',...
                         sum(keepRows),length(keepRows),whatDataFile);
     TimeSeries = TimeSeries(keepRows,:);
+    if ismember('Group',TimeSeries.Properties.VariableNames) && iscategorical(TimeSeries.Group)
+        % Drop any group categories that no longer have members
+        TimeSeries.Group = removecats(TimeSeries.Group);
+        classLabels = categories(TimeSeries.Group);
+    end
     TS_DataMat = TS_DataMat(keepRows,:);
     TS_Quality = TS_Quality(keepRows,:);
 end
@@ -136,12 +139,12 @@ if isempty(newFileName)
     if isstruct(whatData)
         newFileName = 'HCTSA_filtered.mat';
     else
-        newFileName = [whatData(1:end-4),'_filtered.mat'];
+        newFileName = regexprep(whatDataFile,'\.mat$','_filtered.mat');
     end
 end
 fprintf(1,'Saving the filtered data to %s...',newFileName);
 save(newFileName,'TS_DataMat','TS_Quality','TimeSeries','Operations', ...
-        'MasterOperations','fromDatabase','classLabels','normalizationInfo',...
+        'MasterOperations','classLabels','normalizationInfo',...
         'ts_clust','op_clust','-v7.3');
 fprintf(1,'Done.\n');
 

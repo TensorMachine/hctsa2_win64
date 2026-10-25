@@ -6,6 +6,9 @@ function coefs = BF_cwt(x,scales,wname,prec)
 % differenced.
 
 if nargin < 4 || isempty(prec), prec = 10; end
+if min(size(x)) > 1
+    error('BF_cwt:badInput','The signal must be a vector.');
+end
 x = x(:)';
 n = numel(x);
 [psiInt,xval] = BF_intwave(wname,prec);
@@ -14,6 +17,9 @@ dx = xval(2) - xval(1);
 xmax = xval(end);
 
 scales = scales(:)';
+if any(~isfinite(scales)) || any(scales <= 0)
+    error('BF_cwt:badScale','Scales must be positive and finite.');
+end
 coefs = zeros(numel(scales),n);
 for k = 1:numel(scales)
     a = scales(k);

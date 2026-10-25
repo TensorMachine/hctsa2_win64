@@ -26,20 +26,35 @@ sql_settings.conf
 *.mexmaci64
 *.mexmaca64
 *.mexa64
+*.mex
 
 # Random stuff
 plugininstall_*.m
 *.log
 
-# TISEAN generates platform-specific files:
-/Toolboxes/Tisean_3.0.1/
+# Octave's crash dump
+octave-workspace
+
+# TISEAN: ./configure and make (the upstream Linux/macOS route) generate these
+# inside the source tree. The sources under source_c/ and source_f/ carry this
+# fork's fixes, so they must not be ignored (HCTSA2 2.2.1: the whole folder was).
+/Toolboxes/Tisean_3.0.1/bin/
+/Toolboxes/Tisean_3.0.1/config.status
+/Toolboxes/Tisean_3.0.1/config.cache
+/Toolboxes/Tisean_3.0.1/**/Makefile
+/Toolboxes/Tisean_3.0.1/**/*.o
+/Toolboxes/Tisean_3.0.1/**/lib*.a
 
 # Build outputs: the TISEAN executables are produced locally by
 # HCTSA2_BuildTisean and are specific to the machine that built them.
 /Toolboxes/Tisean_bin/
+# ...and ripser, when built by upstream's compile_ripser (Linux/macOS).
+/Toolboxes/ripser/bin/
 
 # Generated test/benchmark logs:
 /Tests/*.txt
+# HCTSA2_TestRun's default output folder (HCTSA2 3.0.0):
+/Tests/testrun_output/
 
 # Windows-compiled Physionet file
 sampen_mex.exp

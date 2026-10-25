@@ -2,10 +2,36 @@ function yth = SB_CoarseGrain(y, howtocg, numGroups)
 % SB_CoarseGrain   Coarse-grains a continuous time series to a discrete alphabet.
 %
 % ---INPUTS:
-% howtocg, the method of coarse-graining
+% howtocg, the method of coarse-graining:
+%       (i) 'quantile': an equiprobable alphabet by the value of each point
+%       (ii) 'diff': as 'quantile', but applied to the increments diff(y) --
+%            an equiprobable alphabet by the *value* of each increment, NOT
+%            a literal sign(diff)>0 split (that's 'updown', below). This
+%            method was named 'updown' in earlier hctsa versions.
+%       (iii) 'updown': a true binary up/down split by the raw sign of each
+%            increment (diff(y) > 0), i.e. numGroups is required to be 2 --
+%            unlike every other method here, this is NOT equiprobable, and
+%            its two states can be arbitrarily imbalanced for a
+%            drifting/trending series.
+%       (iv) 'embed2quadrants'/'embed2octants': alphabet by quadrant/octant
+%             of a 2-D time-delay embedding
 %
-% numGroups, either specifies the size of the alphabet for 'quantile' and 'updown'
-%       or sets the time delay for the embedding subroutines
+% numGroups, either specifies the size of the alphabet for 'quantile' and
+%       'diff' (must be 2 for 'updown'), or sets the time delay for the
+%       embedding subroutines: a number of samples, or a string that sets it
+%       from the series:
+%       'ac1e': the floor of the first 1/e crossing of the autocorrelation
+%            function (see BF_GetTau),
+%       'mi': the smaller of the first minimum of the Kraskov automutual
+%            information and the 'ac1e' delay (see BF_GetTau),
+%       'tau': the first zero-crossing of the autocorrelation function (kept for
+%            backward compatibility; the lag can be meaninglessly long, or
+%            absent, for a slowly decorrelating series, and the cap below then
+%            silently sets it).
+%       A numeric or 'tau' delay is capped at floor(N/25). For 'ac1e' the output is
+%       NaN if the autocorrelation function is undefined (a constant series) or
+%       never crosses 1/e (no delay exists); a crossing found at a long lag is
+%       still capped at floor(N/25). For 'tau', an undefined function gives NaN.
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -41,31 +67,58 @@ function yth = SB_CoarseGrain(y, howtocg, numGroups)
 % ------------------------------------------------------------------------------
 
 % Quantile puts an equal number into each bin
-if nargin < 3
+if nargin < 2 || isempty(howtocg)
 	howtocg = 'quantile';
+end
+if nargin < 3 || isempty(numGroups)
+	error('Specify numGroups, the number of symbols to coarse-grain into')
 end
 
 N = length(y); % length of the input sequence
 
-if ~ismember(howtocg, {'updown', 'quantile', 'embed2quadrants', 'embed2octants'})
+if ~ismember(howtocg, {'updown', 'diff', 'quantile', 'embed2quadrants', 'embed2octants'})
 	error('Unknown coarse-graining method ''%s''', howtocg);
+end
+
+if strcmp(howtocg, 'updown') && numGroups ~= 2
+	error('''updown'' is a true binary up/down split -- numGroups must be 2 (got %d). Use ''diff'' for a multi-level equiprobable alphabet of the increments.', numGroups);
 end
 
 % ------------------------------------------------------------------------------
 % Some coarse-graining/symbolization methods require initial processing:
 % ------------------------------------------------------------------------------
 switch howtocg
-	case 'updown'
+	case 'diff'
+		% Equiprobable quantile alphabet of the increments (see 'updown' below
+		% for the literal sign-based split).
 		y = diff(y);
 		N = N - 1; % the time series is one value shorter than the input because of differencing
 		howtocg = 'quantile'; % successive differences and then quantiles
 
+	case 'updown'
+		% True binary up/down split: 2 if the increment is positive, 1
+		% otherwise. Unlike 'diff'/'quantile', this is NOT equiprobable --
+		% the two states can be arbitrarily imbalanced for a drifting series.
+		y = diff(y);
+		N = N - 1;
+		yth = 1 + double(y > 0);
+
 	case {'embed2quadrants', 'embed2octants'}
 		% Construct the embedding
 
-		if strcmp(numGroups, 'tau')
+		if ischar(numGroups) && ismember(numGroups, {'ac1e', 'mi'})
+			% Adaptive delay: see BF_GetTau ('ac1e': floor of the first 1/e crossing
+			% of the autocorrelation function)
+			tau = BF_GetTau(y, numGroups);
+			if isnan(tau) % undefined, or never crosses
+				yth = NaN; return
+			end
+		elseif strcmp(numGroups, 'tau')
 			% First zero-crossing of the autocorrelation function
 			tau = CO_FirstCrossing(y, 'ac', 0, 'discrete');
+			if isnan(tau)
+				yth = NaN; return
+			end
 		else
 			tau = numGroups;
 		end

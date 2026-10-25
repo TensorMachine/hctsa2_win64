@@ -3,15 +3,18 @@ function HCTSA2_ProbeToolchain
 %
 %   HCTSA2_ProbeToolchain
 %
-% hctsa calls six TISEAN programs. Four of them are FORTRAN:
+% hctsa calls eleven TISEAN programs, and ripser:
 %
-%   d2, nstat_z        C
-%   c1, c2d, c2g, c2t  Fortran 77
+%   d2, nstat_z, false_nearest, boxcount,
+%   lyap_r, lyap_spec, nrlazy             C        (gcc)
+%   c1, c2d, c2g, c2t                     Fortran 77 (gfortran)
+%   ripser                                C++      (g++; the Max_Little
+%                                                   steps_bumps MEX needs it too)
 %
 % MATLAB's MinGW-w64 add-on is documented as a C/C++ compiler. Whether the
 % package MathWorks ships also contains gfortran varies by version, and that
-% single fact decides whether TISEAN can be built here at all. This checks,
-% rather than assuming either way.
+% fact decides whether the four Fortran programs can be built here. This checks,
+% rather than assuming either way, and compiles a test file in each language.
 %
 % Run it and send the whole console output.
 
@@ -83,16 +86,26 @@ end
 fprintf('\n--- verdict ---\n');
 haveC = ~isempty(found.gcc);
 haveF = ~isempty(found.gfortran);
-if haveC && haveF
-    fprintf('  gcc AND gfortran are both present.\n');
-    fprintf('  All six TISEAN programs can be built from source on this machine.\n');
-elseif haveC
-    fprintf(2,'  gcc is present but gfortran is NOT.\n');
-    fprintf(2,'  d2 and nstat_z (C) can be built; c1, c2d, c2g and c2t (Fortran)\n');
-    fprintf(2,'  cannot. Those four feed NL_TISEAN_c1 -- worth 132 features.\n');
-    fprintf(2,'  NL_TISEAN_d2 and SY_TISEAN_nstat_z would still work.\n');
-else
+haveX = ~isempty(found.(matlab.lang.makeValidName('g++')));   % field name is g__
+if ~haveC
     fprintf(2,'  No C compiler found. Run "mex -setup C" first.\n');
+else
+    if haveF && haveX
+        fprintf('  gcc, gfortran and g++ are all present.\n');
+        fprintf('  All eleven TISEAN programs, and ripser, can be built from source on\n');
+        fprintf('  this machine -- if the compile tests below pass.\n');
+    end
+    if ~haveF
+        fprintf(2,'  gcc is present but gfortran is NOT.\n');
+        fprintf(2,'  The seven C programs can be built; c1, c2d, c2g and c2t (Fortran)\n');
+        fprintf(2,'  cannot. NL_c1 (c1, c2d) and NL_d2 (c2g, c2t) need them -- 124\n');
+        fprintf(2,'  features. The other TISEAN operations would still work.\n');
+    end
+    if ~haveX
+        % (HCTSA2 2.2.1: g++ used to be located and then ignored.)
+        fprintf(2,'  g++ is NOT present. ripser (NL_PersistentHomology, 8 features) and the\n');
+        fprintf(2,'  Max_Little steps_bumps MEX (28 features) cannot be built.\n');
+    end
 end
 
 % A real compile test is worth more than a version string.
@@ -116,6 +129,15 @@ if haveF
     [st,msg] = runTool(fileparts(found.gfortran), ...
         sprintf('"%s" -std=legacy "%s" -o "%s"',found.gfortran,f,fullfile(td,'tf.exe')));
     fprintf('  F77 : %s\n',verdict(st,msg));
+end
+if haveX
+    f = fullfile(td,'t.cpp');
+    fid = fopen(f,'w');
+    fprintf(fid,'#include <cstdio>\n#include <cmath>\nint main(){std::printf("%%g\\n",std::sqrt(2.0));return 0;}\n');
+    fclose(fid);
+    [st,msg] = runTool(fileparts(found.(matlab.lang.makeValidName('g++'))), ...
+        sprintf('"%s" -std=c++11 "%s" -o "%s"',found.(matlab.lang.makeValidName('g++')),f,fullfile(td,'tx.exe')));
+    fprintf('  C++ : %s\n',verdict(st,msg));
 end
 fprintf('\n======================================\n\n');
 end

@@ -7,9 +7,11 @@ lx = L(end);
 if strcmpi(type,'a')
     a = BF_appcoef(C,L,wname,N);
     d = zeros(size(a));
-else
+elseif strcmpi(type,'d')
     d = BF_detcoef(C,L,N);
     a = zeros(size(d));
+else
+    error('BF_wrcoef:badType','Type must be ''a'' (approximation) or ''d'' (detail).');
 end
 % Cascade back up to full length, zeroing all other branches
 for k = N:-1:1

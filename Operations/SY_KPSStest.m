@@ -1,27 +1,41 @@
-function out = SY_KPSStest(y,lags)
+function out = SY_KPSStest(y, lags)
 % SY_KPSStest   The KPSS stationarity test.
 %
-% The KPSS stationarity test, of Kwiatkowski, Phillips, Schmidt, and Shin:
-% "Testing the null hypothesis of stationarity against the alternative of a
-% unit root: How sure are we that economic time series have a unit root?"
-% Kwiatkowski, Denis and Phillips, Peter C. B. and Schmidt, Peter and Shin, Yongcheol
-% J. Econometrics, 54(1-3) 159 (2002)
+% The KPSS stationarity test, of Kwiatkowski, Phillips, Schmidt, and Shin, using
+% the function kpsstest from MATLAB's Econometrics Toolbox. The null hypothesis is
+% that a univariate time series is trend stationary; the alternative hypothesis
+% is that it is a non-stationary unit-root process. Large test statistics and
+% small p-values reject stationarity.
 %
-% Uses the function kpsstest from Matlab's Econometrics Toolbox. The null
-% hypothesis is that a univariate time series is trend stationary, the
-% alternative hypothesis is that it is a non-stationary unit-root process.
+% For a scalar lag, the test statistic and p-value are returned. If the input is
+% a vector of lags, statistics on how the test statistics and p-values change
+% across these lags are returned instead.
 %
-% The code can implemented for a specific time lag, tau. Alternatively, measures
-% of change in p-values and test statistics will be outputted if the input is a
-% vector of time lags.
-%
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-% lags, can be either a scalar (returns basic test statistic and p-value), or
-%                   vector (returns statistics on changes across these time lags)
+%
+% lags, the number of autocovariance lags used in the long-run variance estimate.
+%       Either a scalar (returns the test statistic and p-value) or a vector
+%       (returns statistics on changes across these lags). Default: 0.
+%
+% ---OUTPUTS:
+% For scalar lags:
+% stat, the KPSS test statistic
+% pValue, the p-value of the test
+% For vector lags:
+% maxpValue, minpValue: the maximum and minimum p-value across lags
+% maxstat, minstat: the maximum and minimum test statistic across lags
+% lagmaxstat, lagminstat: the lag at which the test statistic is largest and
+%       smallest (the first such lag in the case of a tie)
+%
+% ---REFERENCES:
+% Kwiatkowski, Denis and Phillips, Peter C. B. and Schmidt, Peter and Shin,
+% Yongcheol, "Testing the null hypothesis of stationarity against the alternative
+% of a unit root: How sure are we that economic time series have a unit root?",
+% J. Econometrics 54(1-3), 159-178 (1992). DOI: 10.1016/0304-4076(92)90104-Y
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -53,38 +67,40 @@ function out = SY_KPSStest(y,lags)
 %% Check that an Econometrics license is available:
 % ------------------------------------------------------------------------------
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Check inputs
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 if nargin < 2 || isempty(lags)
-    lags = 0;
+	lags = 0;
 end
 
 % ------------------------------------------------------------------------------
 %% (1) Perform the test(s)
 % ------------------------------------------------------------------------------
 % Temporarily turn off warnings for the test statistic being too big or small
-warning('off','econ:kpsstest:StatTooSmall')
-warning('off','econ:kpsstest:StatTooBig')
+warning('off', 'econ:kpsstest:StatTooSmall')
+warning('off', 'econ:kpsstest:StatTooBig')
 [~, pValue, stat] = BF_kpsstest(y,'lags',lags);
-warning('on','econ:kpsstest:StatTooSmall')
-warning('on','econ:kpsstest:StatTooBig')
+warning('on', 'econ:kpsstest:StatTooSmall')
+warning('on', 'econ:kpsstest:StatTooBig')
 
 % ------------------------------------------------------------------------------
 %% (2) Return statistics on outputs of test(s)
 % ------------------------------------------------------------------------------
 if length(lags) > 1
-    % Return statistics on outputs
-    out.maxpValue = max(pValue);
-    out.minpValue = min(pValue);
-    out.maxstat = max(stat);
-    out.minstat = min(stat);
-    out.lagmaxstat = lags(stat == max(stat)); % lag at max test statistic
-    out.lagminstat = lags(stat == min(stat));
+	% Return statistics on outputs
+	out.maxpValue = max(pValue);
+	out.minpValue = min(pValue);
+	out.maxstat = max(stat);
+	out.minstat = min(stat);
+	% (index with the FIRST extremum: an exact tie between two lags would
+	% otherwise make these fields vectors rather than scalars)
+	out.lagmaxstat = lags(find(stat == max(stat), 1, 'first')); % lag at max test statistic
+	out.lagminstat = lags(find(stat == min(stat), 1, 'first'));
 else
-    % return the statistic and pvalue
-    out.stat = stat;
-    out.pValue = pValue;
+	% return the statistic and pvalue
+	out.stat = stat;
+	out.pValue = pValue;
 end
 
 end

@@ -18,6 +18,15 @@
  *   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 /*Author: Rainer Hegger, last modified: Apr 25, 2002 */
+/* hctsa: the neighbors of a reference point are all the points (outside the
+   Theiler window) whose distance to it is within DIST_TOL of the nearest
+   distance, repeated points (closer than DIST_TOL) excluded; each contributes
+   its log-distance curve with weight 1/(number of nearest neighbors), the
+   expected curve if one of them were chosen at random, so the result does not
+   depend on the order in which the neighbors are searched. A pair that merges
+   (comes within DIST_TOL) within the steps followed is left out at every step,
+   so every step averages over the same pairs. With a unique nearest neighbor
+   that never merges, this is the published method. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -28,6 +37,10 @@
 #define WID_STR "Estimates the maximal Lyapunov exponent; Rosenstein et al."
 
 #define NMAX 256
+/* hctsa: distances closer than this (data rescaled to [0,1]) are equal: some
+   10^4 times the rounding error of the rescaled data, and far finer than any
+   measured data resolve. A pair closer than this is a repeated point. */
+#define DIST_TOL 1.0e-12
 
 char *outfile=NULL;
 char *infile=NULL;
@@ -39,7 +52,7 @@ unsigned int column=1;
 unsigned int verbosity=0xff;
 const unsigned int nmax=NMAX-1;
 unsigned long length=ULONG_MAX,exclude=0;
-long *found;
+double *found;
 double eps0=1.e-3,eps,epsinv;
 
 void show_options(char *progname)
@@ -124,13 +137,27 @@ void put_in_boxes(void)
   }
 }
 
+/* the squared distance between the embedding vectors at a and b */
+static double sqdist(long a,long b)
+{
+  int k,del1=dim*delay;
+  double dx=0.0;
+
+  for (k=0;k<del1;k+=delay)
+    dx += (series[a+k]-series[b+k])*(series[a+k]-series[b+k]);
+  return dx;
+}
+
 char make_iterate(long act)
 {
-  char ok=0;
   int x,y,i,j,i1,k,del1=dim*delay;
-  long element,minelement= -1;
-  double dx,mindx=1.0;
+  long element;
+  unsigned long nnear,nkept;
+  double dx,mindx=1.0,lim,*hlyap;
+  char coalesce;
 
+  /* the distance to the nearest neighbor within eps, repeated points
+     (closer than DIST_TOL) excluded */
   x=(int)(series[act]*epsinv)&nmax;
   y=(int)(series[act+delay*(dim-1)]*epsinv)&nmax;
   for (i=x-1;i<=x+1;i++) {
@@ -146,13 +173,47 @@ char make_iterate(long act)
 	    if (dx > eps*eps)
 	      break;
 	  }
-	  if (k==del1) {
-	    if (dx < mindx) {
-	      ok=1;
-	      if (dx > 0.0) {
-		mindx=dx;
-		minelement=element;
+	  if ((k==del1) && (dx < mindx) && (dx > DIST_TOL*DIST_TOL))
+	    mindx=dx;
+	}
+	element=list[element];
+      }
+    }
+  }
+  /* not resolved yet: no neighbor, or neighbors tied with the nearest could
+     lie outside the boxes searched */
+  if ((mindx >= 1.0) || (sqrt(mindx)+DIST_TOL > eps))
+    return 0;
+
+  /* the nearest neighbors: all within DIST_TOL of the nearest distance. Each
+     is followed for steps iterations; a pair that comes within DIST_TOL
+     (merges) is left out at every step, and each reference contributes the
+     mean over its nearest neighbors, weighted by the fraction kept. */
+  lim=sqrt(mindx)+DIST_TOL;
+  lim *= lim;
+  check_alloc(hlyap=(double*)malloc((steps+1)*sizeof(double)));
+  for (i=0;i<=steps;i++)
+    hlyap[i]=0.0;
+  nnear=nkept=0;
+  for (i=x-1;i<=x+1;i++) {
+    i1=i&nmax;
+    for (j=y-1;j<=y+1;j++) {
+      element=box[i1][j&nmax];
+      while (element != -1) {
+	if (labs(act-element) > mindist) {
+	  dx=sqdist(act,element);
+	  if ((dx > DIST_TOL*DIST_TOL) && (dx <= lim)) {
+	    nnear++;
+	    coalesce=0;
+	    for (k=1;k<=steps;k++)
+	      if (sqdist(act+k,element+k) <= DIST_TOL*DIST_TOL) {
+		coalesce=1;
+		break;
 	      }
+	    if (!coalesce) {
+	      nkept++;
+	      for (k=0;k<=steps;k++)
+		hlyap[k] += log(sqdist(act+k,element+k));
 	    }
 	  }
 	}
@@ -160,24 +221,14 @@ char make_iterate(long act)
       }
     }
   }
-  if ((minelement != -1) ) {
-    act--;
-    minelement--;
+  if (nkept > 0) {
     for (i=0;i<=steps;i++) {
-      act++;
-      minelement++;
-      dx=0.0;
-      for (j=0;j<del1;j+=delay) {
-	dx += (series[act+j]-series[minelement+j])*
-	  (series[act+j]-series[minelement+j]);
-      }
-      if (dx > 0.0) {
-	found[i]++;
-	lyap[i] += log(dx);
-      }
+      found[i] += (double)nkept/(double)nnear;
+      lyap[i] += hlyap[i]/(double)nnear;
     }
   }
-  return ok;
+  free(hlyap);
+  return 1;
 }
 
 int main(int argc,char **argv)
@@ -186,7 +237,7 @@ int main(int argc,char **argv)
   int i;
   long n;
   long maxlength;
-  double min,max,epscap;
+  double min,max;
   FILE *file;
   
   if (scan_help(argc,argv))
@@ -240,12 +291,12 @@ int main(int argc,char **argv)
 
   check_alloc(list=(long*)malloc(length*sizeof(long)));
   check_alloc(lyap=(double*)malloc((steps+1)*sizeof(double)));
-  check_alloc(found=(long*)malloc((steps+1)*sizeof(long)));
+  check_alloc(found=(double*)malloc((steps+1)*sizeof(double)));
   check_alloc(done=(char*)malloc(length));
 
   for (i=0;i<=steps;i++) {
     lyap[i]=0.0;
-    found[i]=0;
+    found[i]=0.0;
   }
   for (i=0;i<length;i++)
     done[i]=0;
@@ -255,14 +306,15 @@ int main(int argc,char **argv)
   file=fopen(outfile,"w");
   if (verbosity&VER_INPUT)
     fprintf(stderr,"Opened %s for writing\n",outfile);
-  /* rescale_data put the series in [0,1], so the largest possible distance in
-     dim dimensions is sqrt(dim). Past that every pair is a neighbour and a
-     point that is still not done never will be -- it has no candidate outside
-     the Theiler window. The original loop had no exit for that case and spun
-     forever; measured with hctsa's defaults (-m10 -t40) on 100 points. The
-     test is after the body, so any run that converges is untouched. */
-  epscap=2.0*sqrt((double)dim);
-  for (eps=eps0;!alldone;eps*=1.1) {
+  /* make_iterate() only accepts a neighbour within squared distance 1.0
+     regardless of eps, and the data is rescaled to [0,1], so once eps grows
+     past ~2 the +/-1-box scan already spans that radius in every direction:
+     any reference point still unresolved then can never be resolved. Without
+     the eps<=2.0 bound, eps keeps multiplying by 1.1 until it overflows to
+     +inf and this loop spins forever (observed on sparse / heavily-quantised
+     input, e.g. coarsely-binned series with many identical embedding vectors,
+     or series squashed into one box by a few extreme outliers). */
+  for (eps=eps0;!alldone && eps<=2.0;eps*=1.1) {
     epsinv=1.0/eps;
     put_in_boxes();
     alldone=1;
@@ -272,16 +324,24 @@ int main(int argc,char **argv)
       alldone &= done[n];
     }
     if (verbosity&VER_USR1)
-      fprintf(stderr,"epsilon: %e already found: %ld\n",eps*max,found[0]);
-    if (!alldone && eps >= epscap) {
-      if (verbosity&VER_INPUT)
-	fprintf(stderr,"lyap_r: epsilon reached the data diameter with points "
-		"still unmatched; stopping the scan.\n");
-      break;
-    }
-  } 
+      fprintf(stderr,"epsilon: %e already found: %g\n",eps*max,found[0]);
+  }
+  if (!alldone) {
+    /* Could not find a neighbour within the search radius for every reference
+       point: the Rosenstein construction is not applicable to this series.
+       Exit with a distinct code (matching false_nearest's use of 54) and
+       write no output file, rather than emitting a Lyapunov estimate built
+       from only the fraction of points that happened to resolve. */
+    fprintf(stderr,"lyap_r: could not resolve every reference point within "
+	    "the neighbour-search radius (%g contributed); data too sparse or "
+	    "quantised for the Rosenstein estimator -- no output written.\n",
+	    found[0]);
+    fclose(file);
+    remove(outfile);
+    return 54;
+  }
   for (i=0;i<=steps;i++)
-    if (found[i])
+    if (found[i] > 0.0)
       fprintf(file,"%d %e\n",i,lyap[i]/found[i]/2.0);
   fclose(file);
 

@@ -3,10 +3,10 @@ function HCTSA2_WhyTiseanFails()
 %
 %   >> HCTSA2_WhyTiseanFails
 %
-% Run from the hctsa root, after startup, in the SAME MATLAB session that fails.
+% Run after startup, from any folder, in the SAME MATLAB session that fails.
 %
 %---WHY THIS EXISTS
-% When TISEAN breaks, every one of the ten programs breaks at once and each
+% When TISEAN breaks, every one of its programs breaks at once and each
 % operation reports its own downstream symptom -- "did not produce a .box output
 % file", "not generated?", "Call to TISEAN function failed". None of them names
 % the cause. This walks the call stack from the bottom up and stops at the first
@@ -15,19 +15,34 @@ function HCTSA2_WhyTiseanFails()
 %   1. every executable is reachable and runs
 %   2. BF_RunTisean returns data
 %   3. the operation, called directly
-%   4. the operation through BF_ParEval  (what hctsa evaluates through)
+%   4. the operation as the function handle TS_Compute precompiles from its
+%      code string (str2func('@(x,x_z) ...'), what hctsa evaluates)
 %   5. the operation through TS_ComputeMasterLoop, serially
 %   6. the same on a parallel worker, if a pool is open
 %
 % Layers 3-6 are the same code path with more wrapping around it. If 3 passes
-% and 5 fails, the wrapper is at fault. If 1 fails, nothing above it can work.
+% and 5 fails, the wrapper is at fault. If 1 fails, nothing above it can work --
+% for the seven C programs; the four Fortran programs (a build without gfortran
+% is supported) and ripser (C++) are reported but do not stop the walk.
+% (ripser is not TISEAN, but NL_PersistentHomology runs it the same way, so it
+% is checked alongside.)
 %
 % Layer 1 RUNS each program rather than just looking for it. A name that
 % resolves on the PATH is not the same as a program that executes, and the
-% difference stays invisible until something calls it.
+% difference stays invisible until something calls it. A program that starts
+% and dies at once (a non-zero status on these minimal arguments, which all
+% succeed) is reported as such.
 
-progs = {'d2','nstat_z','false_nearest','boxcount','lyap_r','poincare', ...
-         'c1','c2d','c2g','c2t'};
+progs = {'d2','nstat_z','false_nearest','boxcount','lyap_r', ...
+         'lyap_spec','nrlazy','c1','c2d','c2g','c2t','ripser'};
+% The C programs: if one of these will not run, nothing above layer 1 can work.
+required = {'d2','nstat_z','false_nearest','boxcount','lyap_r', ...
+            'lyap_spec','nrlazy'};
+
+% (HCTSA2 2.2.1: this draws random numbers and re-seeds the global stream with
+% rng(3) below; leave it as the caller had it.)
+rngState = rng;
+restoreRng = onCleanup(@() rng(rngState)); %#ok<NASGU>
 
 fprintf('\n================ why TISEAN fails ================\n');
 
@@ -72,8 +87,10 @@ fprintf('\n--- 1. executables: present, and do they actually run? ---\n');
 % when their input file is missing, which would hang MATLAB rather than fail.
 y = cumsum(randn(300,1)); y = (y-mean(y))/std(y);
 dataFile = BF_WriteTempFile(y);
-cleanupData = onCleanup(@() cleanupFiles(dataFile));
-capture = [tempname '.err'];
+% (HCTSA2 2.2.1: BF_CleanTempFiles removes every hc######[._]* file beside the
+% data file, which is what the programs' -o names produce; the fixed list of
+% suffixes it replaces missed several.)
+cleanupData = onCleanup(@() BF_CleanTempFiles(dataFile));
 
 minimalArgs = struct( ...
     'd2',            {{'-d1','-M1,3','-t1'}}, ...
@@ -81,35 +98,64 @@ minimalArgs = struct( ...
     'false_nearest', {{'-d1','-m1','-M1,3','-t1'}}, ...
     'boxcount',      {{'-M1,3','-d1'}}, ...
     'lyap_r',        {{'-d1','-m2','-t1','-s10'}}, ...
-    'poincare',      {{'-d1','-m2','-q1','-C0'}}, ...
     'c1',            {{'-d1','-m1','-M2','-t1','-n50'}}, ...
     'c2d',           {{'-a2'}}, ...
     'c2g',           {{}}, ...
-    'c2t',           {{}});
+    'c2t',           {{}}, ...
+    'lyap_spec',     {{'-m1,3','-d1','-k30'}}, ...
+    'nrlazy',        {{'-m1,3','-d1','-i1','-v0.5'}}, ...
+    'ripser',        {{'--format','point-cloud','--dim','1'}});
 
 nLoad = 0; firstLoadErr = '';
+runsOK = false(1,numel(progs));
+q = @(f) ['"' f '"'];     % paths are quoted, as the operations quote them
 for i = 1:numel(progs)
-    args = [minimalArgs.(progs{i}), {'-o',[dataFile '.probe'], dataFile}];
+    % A file of its own for every program: BF_RunTisean deletes the temporary
+    % files of a call that RAISES (a program that is not installed), and a shared
+    % file would be gone for every program after it.
+    runFile = BF_WriteTempFile(y);
+    if strcmp(progs{i},'ripser')
+        args = [minimalArgs.(progs{i}), {q(runFile)}];      % ripser has no -o
+    else
+        args = [minimalArgs.(progs{i}), {'-o',q([runFile '.probe']), q(runFile)}];
+    end
     try
         [st,out] = BF_RunTisean(sprintf('%s %s',progs{i}, ...
-                       strjoin(args,' ')),true); %#ok<ASGLU>
-        nLoad = nLoad + 1;
-        fprintf('  %-16s runs (status %d, %u chars back)\n', ...
-                progs{i},st,numel(out));
+                       strjoin(args,' ')),true);
+        if st == 0
+            nLoad = nLoad + 1;
+            runsOK(i) = true;
+            fprintf('  %-16s runs (status %d, %u chars back)\n', ...
+                    progs{i},st,numel(out));
+        else
+            % Started, then died: on Windows a loader failure (a missing DLL)
+            % is a large negative status, a crash a signal number.
+            fprintf(2,'  %-16s *** STARTS BUT DIES (status %d) ***\n',progs{i},st);
+            if ~isempty(out), fprintf(2,'      %s\n',oneLine(out)); end
+        end
     catch err
         if isempty(firstLoadErr), firstLoadErr = err.message; end
         fprintf(2,'  %-16s *** WILL NOT RUN ***\n',progs{i});
         fprintf(2,'      %s\n',oneLine(err.message));
     end
+    BF_CleanTempFiles(runFile);
 end
-cleanupFiles(capture);
-fprintf('  --> %u of 10 run\n',nLoad);
-if nLoad < 10
-    fprintf(2,'\n  STOP. Layer 1 failed, so nothing above it can work.\n');
+fprintf('  --> %u of %u run\n',nLoad,numel(progs));
+% (HCTSA2 2.2.1: only the C programs stop the walk. A build without gfortran or
+% g++ is supported -- the Fortran programs and ripser are then absent -- and
+% layers 3-6 only use nstat_z.)
+failedReq = progs(~runsOK & ismember(progs,required));
+if ~isempty(failedReq)
+    fprintf(2,'\n  STOP. Layer 1 failed (%s), so nothing above it can work.\n', ...
+            strjoin(failedReq,', '));
     fprintf(2,['  The executables are build artifacts and do not travel with the\n' ...
                '  repository. Build them on THIS machine with HCTSA2_BuildTisean,\n' ...
                '  then run startup.\n']);
     return
+elseif nLoad < numel(progs)
+    fprintf(2,['\n  Not running: %s. These are optional (Fortran needs gfortran, ripser\n' ...
+               '  needs g++); only the operations that use them are lost. Continuing.\n'], ...
+            strjoin(progs(~runsOK),', '));
 end
 
 %-------------------------------------------------------------------------------
@@ -119,8 +165,10 @@ fprintf('\n--- 2. BF_RunTisean (the dispatcher hctsa calls) ---\n');
 cmds = { sprintf('d2 -d1 -M1,3 -t1 %s',dataFile),                true
          sprintf('nstat_z -# 2 -d1 -m2 %s',dataFile),            false
          sprintf('false_nearest -d1 -m1 -M1,3 -t1 %s',dataFile), false
-         sprintf('boxcount -M1,3 -d1 -o %s.box %s',dataFile,dataFile), true
-         sprintf('c2g %s.c2',dataFile),                          false };
+         sprintf('boxcount -M1,3 -d1 -o "%s.box" "%s"',dataFile,dataFile), true };
+if runsOK(strcmp(progs,'c2g'))      % c2g is Fortran: only when it exists
+    cmds(end+1,:) = {sprintf('c2g %s.c2',dataFile), false};
+end
 nRun = 0;
 for i = 1:size(cmds,1)
     c = cmds{i,1};
@@ -145,41 +193,39 @@ rng(3);
 t = (1:600)';
 xr  = sin(2*pi*t/17) + 0.5*sin(2*pi*t/5) + 0.3*randn(600,1);
 x_z = (xr-mean(xr))/std(xr);
-code = 'SY_TISEAN_nstat_z(x_z,4,{1,3})';
+code = 'SY_nstat_z(x_z,4,{1,3})';
+fn = str2func(['@(x,x_z) ' code]);   % as TS_Compute builds it
 
 fprintf('\n--- 3. the operation, called directly (what the test script does) ---\n');
 r3 = attempt(@() evalIn(code,xr,x_z));
 
-fprintf('\n--- 4. through BF_ParEval, evalc branch (hctsa''s evaluator) ---\n');
-r4 = attempt(@() BF_ParEval(xr,x_z,code,0));
+fprintf('\n--- 4. as the precompiled function handle (hctsa''s evaluator) ---\n');
+r4 = attempt(@() fn(xr,x_z));
 
-fprintf('\n--- 5. through BF_ParEval, plain eval branch (howVocal = ''full'') ---\n');
-r5 = attempt(@() BF_ParEval(xr,x_z,code,1));
+fprintf('\n--- 5. through TS_ComputeMasterLoop, SERIAL ---\n');
+r5 = attempt(@() TS_ComputeMasterLoop(xr,x_z,fn,code,1,1,'minimal',1,1,true));
 
-fprintf('\n--- 6. through TS_ComputeMasterLoop, SERIAL (line 234) ---\n');
-r6 = attempt(@() TS_ComputeMasterLoop(xr,x_z,code,1,1,'minimal',1,1));
-
-r7 = [];
+r6 = [];
 if ~isempty(currentPool())
-    fprintf('\n--- 7. through TS_ComputeMasterLoop on a WORKER (line 224) ---\n');
+    fprintf('\n--- 6. through TS_ComputeMasterLoop on a WORKER ---\n');
     out = cell(1,1);
     try
         parfor k = 1:1
-            out{k} = TS_ComputeMasterLoop(xr,x_z,code,1,1,'minimal',1,1); %#ok<PFBNS>
+            out{k} = TS_ComputeMasterLoop(xr,x_z,fn,code,1,1,'minimal',1,1,true); %#ok<PFBNS>
         end
-        r7 = ~isempty(out{1});
-        if r7, fprintf('  ok\n'); else, fprintf(2,'  returned empty\n'); end
+        r6 = ~isempty(out{1});
+        if r6, fprintf('  ok\n'); else, fprintf(2,'  returned empty\n'); end
     catch err
-        r7 = false;
+        r6 = false;
         fprintf(2,'  ERROR: %s\n',oneLine(err.message));
     end
 end
 
 %-------------------------------------------------------------------------------
 fprintf('\n===================== verdict =====================\n');
-lbl = {'3 direct','4 evalc','5 eval','6 serial loop'};
-val = [r3 r4 r5 r6];
-if ~isempty(r7), lbl{end+1} = '7 worker'; val(end+1) = r7; end
+lbl = {'3 direct','4 function handle','5 serial loop'};
+val = [r3 r4 r5];
+if ~isempty(r6), lbl{end+1} = '6 worker'; val(end+1) = r6; end
 for i = 1:numel(val)
     fprintf('  %-16s %s\n',lbl{i},ternary(val(i),'ok','FAILED'));
 end
@@ -237,14 +283,4 @@ end
 
 function v = ternary(c,a,b)
 if c, v = a; else, v = b; end
-end
-
-function cleanupFiles(base)
-ws = warning('off','MATLAB:DELETE:FileNotFound');
-restore = onCleanup(@() warning(ws)); %#ok<NASGU>
-for e = {'','.c2','.d2','.h2','.box','.tso','.err','.c1','.stat','.ros', ...
-         '.probe','.probe.tso'}
-    f = [base e{1}];
-    if isfile(f), try delete(f); catch, end, end %#ok<CTCH>
-end
 end

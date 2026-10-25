@@ -5,14 +5,16 @@ function TS_ReIndex(whatData,tsOrOps,overRide)
 % whatData, the hctsa dataset to work with (default: 'norm', cf. TS_LoadData)
 % tsOrOps, whether to re-index TimeSeries IDs (specify 'ts') or
 %           Operation IDs (specify 'ops'), or both (specify 'both': default).
-% overRide, don't check with the user to re-index
+% overRide, don't check with the user to re-index (default: false, which asks for
+%           confirmation for each of the indices to be re-indexed; answering
+%           anything other than 'y' leaves the file unchanged)
 %
 %---EXAMPLE USAGE:
 % Reset index of TimeSeries in HCTSA_N.mat:
 % >> TS_ReIndex('norm','ts');
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -62,12 +64,6 @@ end
 numTimeSeries = height(TimeSeries);
 numOperations = height(Operations);
 
-fromDatabase = TS_GetFromData(dataFile,'fromDatabase');
-if fromDatabase
-    error(['Shouldn''t be re-indexing data from a mySQL database, as it will' ...
-                    ' no longer be matched to the database index']);
-end
-
 %-------------------------------------------------------------------------------
 % Reindex:
 %-------------------------------------------------------------------------------
@@ -77,7 +73,8 @@ if strcmp(tsOrOps,'ts') || strcmp(tsOrOps,'both')
     if ~overRide
         doContinue = input(sprintf('Be careful -- if you press ''y'', the old index system for TimeSeries in %s will be wiped...',dataFile),'s');
         if ~strcmp(doContinue,'y')
-            fprintf(1,'Didn''t think so! Better to be save than sorry\n');
+            fprintf(1,'Didn''t think so! Better to be safe than sorry. Nothing was changed.\n');
+            return
         end
     end
     TimeSeries.ID = (1:numTimeSeries)';
@@ -91,7 +88,8 @@ if strcmp(tsOrOps,'ops') || strcmp(tsOrOps,'both')
     if ~overRide
         doContinue = input(sprintf('Be careful -- if you press ''y'', the old index system for Operations in %s will be wiped...',dataFile),'s');
         if ~strcmp(doContinue,'y')
-            fprintf(1,'Didn''t think so! Better to be save than sorry\n');
+            fprintf(1,'Didn''t think so! Better to be safe than sorry. Nothing was changed.\n');
+            return
         end
     end
     Operations.ID = (1:numOperations)';

@@ -1,70 +1,81 @@
-function out = PP_Compare(y,detrndmeth)
-% PP_Compare    Compare how time-series properties change after pre-processing.
+function out = PP_Compare(y, detrndmeth)
+% PP_Compare   How time-series properties change after a preprocessing step.
 %
-% Applies a given pre-processing transformation to the time series, and returns
-% statistics on how various time-series properties change as a result.
+% Applies a given preprocessing transformation (detrending, differencing,
+% filtering or resampling) to the time series, z-scores the original and the
+% processed series, and returns the change in each of a set of statistics from its
+% value for the original to its value for the processed series. The statistics compare
+% stationarity measures (StatAv, and the variation of the local mean and of the
+% local standard deviation across windows), distributional fits (a Gaussian fit
+% to the kernel-smoothed distribution, and the discrepancy from a fitted normal
+% distribution) and the effect of trimming outliers.
 %
-% Inputs are structured in a clunky way, unfortunately:
+% The change is the difference (processed minus original) for statistics that can be
+% negative or zero, and the normalized difference (processed - original) /
+% (processed + original) for positive statistics. The latter is between -1 and 1, is 0
+% when nothing changes, and equals tanh(log(processed / original) / 2), a bounded
+% version of the log-ratio that stays finite when the original value is near 0, where
+% a plain ratio is unstable.
 %
-%---INPUTS:
+% ---INPUTS:
 % y, the input time series
-% detrndmeth, the method to use for detrending:
-%      (i) 'poly': polynomial detrendings, both linear and quadratic. Can
-%                  be of the following forms:
-%            (a) polynomial of given order: 'poly1', 'poly2', 'poly3',
-%                'poly4', 'poly5', 'poly6', 'poly7', 'poly8', 'poly9'
-%            (b) fit best polynomial: 'polybest' determines 'best' by
-%                            various tests (e.g., whiteness of residuals,
-%                            etc.)
-%            (c) 'fitstrong' only fits if a 'strong' trend.
-%      (ii) 'sin': sinusoidal detrending with either one or two frequency
-%                components,
-%            (a) fit a sine series of a given order
-%               Fits a form like: a1*sin(b1*x+c1) + a2*sin(b2*x+c2) + ...
-%               Additional number determines how many terms to include in the
-%               series: 'sin1', 'sin2', 'sin3', 'sin4', 'sin5', 'sin6', 'sin7',
-%               'sin8'
-%            (b) 'sin_st1': fit only if a strong trend (i.e., if the amplitudes
-%                                           are above a given threshold)
-%      (iii) 'spline': removes a least squares spline using Matlab's
-%                      Spline Toolbox function spap2
-%                      Input of the form 'spline<nknots><interpolant_order>'
-%                      e.g., 'spline45' uses four knots and 5th order
-%                      interpolants (Implements a least squares spline via the
-%                      spline toolbox function spap2)
-%      (iv) 'diff': takes incremental differences of the time series. Of form
-%                 'diff<ndiff>' where ndiff is the number of differencings to
-%                 perform. e.g., 'diff3' performs three recursive differences
-%      (v) 'medianf': a running median filter using a given window lengths
-%                   Of form 'medianf<n>' where n is the window length.
-%                   e.g., 'medianf3' takes a running median using the median of
-%                     every 3 consecutive values as a point in the filtered
-%                     time series. Uses the Signal Processing Toolbox
-%                     function medfilt1
-%      (vi) 'rav': running mean filter of a given window length.
-%                  Uses Matlab's filter function to perform a running
-%                  average of order n. Of form 'rav<n>' where n is the order of
-%                  the running average.
-%      (vii) 'resample': resamples the data by a given ratio using the resample
-%                        function in Matlab.
-%                        Of form 'resample_<p>_<q>', where the ratio p/q is the
-%                        new sampling rate e.g., 'resample_1_2' will downsample
-%                        the signal by one half e.g., resample_10_1' will
-%                        resample the signal to 10 times its original length
-%      (viii) 'logr': takes log returns of the data. Only valid for positive
-%                       data, else returns a NaN.
-%      (ix) 'boxcox': makes a Box-Cox transformation of the data. Only valid for
-%                     positive only data; otherwise returns a NaN.
+% detrndmeth, the preprocessing to apply (default: 'medianf3'):
+%       'poly<n>': remove a polynomial of order n = 1-9 (Curve Fitting Toolbox),
+%           e.g., 'poly1', a linear detrending
+%       'sin<n>': remove a constant plus a sum of n = 1-8 sinusoids
+%           a1*sin(2*pi*f1*t+c1) + ..., fitted jointly by least squares, with frequencies
+%           searched deterministically between 1/N and 1/2 - 1/(2N) cycles per sample
+%           (BF_FitSinusoids), e.g., 'sin1': this removes oscillations, and a component
+%           with less than one full cycle in the series is a trend, not an oscillation
+%           (trends are removed by 'poly' and 'spline')
+%       'spline<npieces><order>': remove a least-squares spline fitted with
+%           spap2 (Spline Toolbox) with the given number of polynomial pieces and
+%           spline order, e.g., 'spline24', a cubic spline with 2 pieces
+%       'diff<n>': take n successive differences, e.g., 'diff3'
+%       'medianf<n>': a running median filter of length n (centered; the end values
+%           are repeated beyond the ends), e.g., 'medianf3'
+%       'rav<n>': a running mean filter of length n (filter), e.g., 'rav5'
+%       'resample_<p>_<q>': resample the series by the ratio p/q (resample); e.g.,
+%           'resample_1_2' halves the length and 'resample_10_1' multiplies it by 10
+%       'logr': log returns (positive data only; otherwise NaN)
+%       'boxcox': a Box-Cox transformation (positive data only; otherwise NaN)
 %
-% If multiple detrending methods are specified, they should be in a cell of
-% strings; the methods will be executed in order, e.g., {'poly1','sin1'} does a
-% linear polynomial then a simple one-frequency seasonal detrend (in that order)
-%
-%---OUTPUTS: include comparisons of stationarity and distributional measures
-% between the original and transformed time series.
+% ---OUTPUTS: the change, from the original to the processed series, of each of these
+% statistics (all of the series are z-scored first):
+% Normalized differences (positive statistics):
+% statav2, StatAv with 2 segments (SY_StatAv)
+% swms2_2, swms5_1, swms10_1, the standard deviation of the window means across
+%       windows (SY_SlidingWindow 'mean'), with 2 windows overlapping by half, and
+%       5 and 10 non-overlapping windows
+% swss2_1, swss5_1, swss10_1, the same for the window standard deviations
+%       (SY_SlidingWindow 'std')
+% kscn_olapint, the overlap integral of the kernel-smoothed distribution with the
+%       best-fitting normal (DN_CompareKSFit)
+% olbt_s5, the standard deviation after trimming the 5% most extreme values at each
+%       end, relative to that of the full series (DN_OutlierTest)
+% Differences (statistics that can be negative or zero):
+% gauss1_kd_r2, gauss1_kd_resAC1, gauss1_kd_resrunsz, the R^2, the lag-1
+%       autocorrelation of the residuals, and the runs-test z-statistic of the residuals
+%       of a Gaussian fit to the kernel-smoothed distribution (DN_SimpleFit)
+% kscn_peaksepy, kscn_peaksepx, kscn_relent, the peak separation in height and in
+%       position, and the relative entropy, of the kernel-smoothed distribution
+%       against the best-fitting normal (DN_CompareKSFit)
+% olbt_m2, olbt_m5, the mean after trimming the 2% and 5% most extreme values at
+%       each end (DN_OutlierTest)
+% A scalar NaN is returned if the processed series has no variation beyond
+% floating-point round-off, as statistics of round-off are not meaningful: this is the
+% case for the residual of an exact fit (e.g., a polynomial or a sum of sinusoids that
+% the series is), or the differences of an exact linear trend. The criterion is a
+% standard deviation of at most 10*N*eps times the root-mean-square of the series the
+% processing acts on (its length N; the log of the series for 'logr', and the
+% transformed series itself for 'boxcox'), a bound on the rounding error of the
+% processing (sums of up to N terms, and the phase of sinusoids evaluated at times up
+% to N). Small but genuine variation, such as the quantization noise left by an exact
+% fit to 24-bit data (about 1e-7 of the amplitude), is computed. NaN is also returned
+% for 'logr' and 'boxcox' if the data are not all positive.
 
 % ------------------------------------------------------------------------------
-% Copyright (C) 2020, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
+% Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
 % <http://www.benfulcher.com>
 %
 % If you use this code for your research, please cite the following two papers:
@@ -95,15 +106,16 @@ function out = PP_Compare(y,detrndmeth)
 % ------------------------------------------------------------------------------
 %% Check inputs, set default:
 if nargin < 2 || isempty(detrndmeth)
-    detrndmeth = 'medianf'; % median filter by default
+	detrndmeth = 'medianf3'; % median filter by default
 end
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Preparation
 N = length(y); % time-series length
 r = (1:N)'; % the time-range over which to fit
+yRef = y; % the series the processing acts on (its magnitude sets the round-off below)
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 %% APPLY PREPROCESSINGS
 % ------------------------------------------------------------------------------
 % DETRENDINGS:
@@ -112,159 +124,215 @@ r = (1:N)'; % the time-range over which to fit
 
 % 1) Polynomial detrend
 % starts with 'poly' and ends with integer from 1--9
-if length(detrndmeth) == 5 && strcmp(detrndmeth(1:4),'poly') && ~isempty(str2double(detrndmeth(5)))
+if length(detrndmeth) == 5 && strcmp(detrndmeth(1:4), 'poly') && ~isnan(str2double(detrndmeth(5)))
 
 
-    [cfun, gof] = BF_fit(r,y,detrndmeth);
-    y_fit = BF_fitEval(cfun,r);
-    y_d = y - y_fit;
+	% (time centered and scaled, so that high orders are well conditioned)
+	[cfun, ~] = BF_fit(r, y, detrndmeth, 'Normalize', 'on');
+	y_fit = BF_fitEval(cfun, r);
+	y_d = y - y_fit;
 
-% 2) Seasonal detrend
-elseif length(detrndmeth) == 4 && strcmp(detrndmeth(1:3),'sin') && ~isempty(str2double(detrndmeth(4))) && ~strcmp(detrndmeth(4),'9')
+	% 2) Seasonal detrend
+elseif length(detrndmeth) == 4 && strcmp(detrndmeth(1:3), 'sin') && ~isnan(str2double(detrndmeth(4))) && ~strcmp(detrndmeth(4), '9')
 
+	% (a constant is fitted jointly, so that a constant plus sinusoids is removed exactly:
+	% the frequencies are bounded away from zero, so the sinusoids cannot absorb a mean)
+	numSin = str2double(detrndmeth(4));
+	if N <= 3*numSin + 1
+		out = NaN; % too short to fit this many sinusoids and a constant
+		return
+	end
+	y_d = y - BF_FitSinusoids(y, numSin, true);
 
-    [cfun, gof] = BF_fit(r,y,detrndmeth);
-    y_fit = BF_fitEval(cfun,r);
-    y_d = y - y_fit;
-
-% 3) Spline detrend
-elseif length(detrndmeth) == 8 && strcmp(detrndmeth(1:6),'spline') && ~isempty(str2double(detrndmeth(7))) && ~isempty(str2double(detrndmeth(8)))
-    nknots = str2double(detrndmeth(7));
-    intp = str2double(detrndmeth(8));
+	% 3) Spline detrend
+elseif length(detrndmeth) == 8 && strcmp(detrndmeth(1:6), 'spline') && ~isnan(str2double(detrndmeth(7))) && ~isnan(str2double(detrndmeth(8)))
+	nknots = str2double(detrndmeth(7));
+	intp = str2double(detrndmeth(8));
 
 
 	spline = BF_spap2(nknots,intp,r,y); % just a single middle knot with cubic interpolants
 	y_spl = BF_fnval(spline,1:N); % evaluate at the 1:N time intervals
-    y_d = y - y_spl';
+	y_d = y - y_spl';
 
-% 4) Differencing
-elseif length(detrndmeth) == 5 && strcmp(detrndmeth(1:4),'diff') && ~isempty(str2double(detrndmeth(5)))
-    ndiffs = str2double(detrndmeth(5));
-    y_d = diff(y,ndiffs); % difference the series n times
+	% 4) Differencing
+elseif length(detrndmeth) == 5 && strcmp(detrndmeth(1:4), 'diff') && ~isnan(str2double(detrndmeth(5)))
+	ndiffs = str2double(detrndmeth(5));
+	y_d = diff(y, ndiffs); % difference the series n times
 
-% 5) Median Filter
-elseif length(detrndmeth) > 7 && strcmp(detrndmeth(1:7),'medianf') && ~isempty(str2double(detrndmeth(8:end)))
-    n = str2double(detrndmeth(8:end)); % order of filtering
-    y_d = medfilt1(y,n);
+	% 5) Median Filter
+elseif length(detrndmeth) > 7 && strcmp(detrndmeth(1:7), 'medianf') && ~isnan(str2double(detrndmeth(8:end)))
+	n = str2double(detrndmeth(8:end)); % order of filtering
+	% (the first and last values are repeated beyond the ends, so the filtered series is
+	% not pulled toward zero there, which would depend on the offset of the data)
+	lo = floor(n / 2); hi = n - 1 - lo;
+	y_d = movmedian([repmat(y(1), lo, 1); y(:); repmat(y(end), hi, 1)], [lo, hi], 'Endpoints', 'discard');
 
-% 6) Running Average
-elseif length(detrndmeth) > 3 && strcmp(detrndmeth(1:3),'rav') && ~isempty(str2double(detrndmeth(4:end)))
-    n = str2double(detrndmeth(4:end)); % the window size
-    y_d = filter(ones(1,n)/n,1,y);
+	% 6) Running Average
+elseif length(detrndmeth) > 3 && strcmp(detrndmeth(1:3), 'rav') && ~isnan(str2double(detrndmeth(4:end)))
+	n = str2double(detrndmeth(4:end)); % the window size
+	y_d = filter(ones(1, n) / n, 1, y);
 
-% 7) Resample
-elseif length(detrndmeth) > 9 && strcmp(detrndmeth(1:9),'resample_')
-    % check a valid structure
-    ss = textscan(detrndmeth,'%s%n%n','delimiter','_');
-    if ~isempty(ss{2})
-        p = ss{2};
-    else
-        return
-    end
-    if ~isempty(ss{3})
-        q = ss{3};
-    else
-        return
-    end
-    y_d = resample(y,p,q);
+	% 7) Resample
+elseif length(detrndmeth) > 9 && strcmp(detrndmeth(1:9), 'resample_')
+	% check a valid structure
+	ss = textscan(detrndmeth, '%s%n%n', 'delimiter', '_');
+	if ~isempty(ss{2})
+		p = ss{2};
+	else
+		error('Invalid ''resample_p_q'' detrending specification: ''%s''', detrndmeth)
+	end
+	if ~isempty(ss{3})
+		q = ss{3};
+	else
+		error('Invalid ''resample_p_q'' detrending specification: ''%s''', detrndmeth)
+	end
+	y_d = resample(y, p, q);
 
-% 8) Log Returns
-elseif strcmp(detrndmeth,'logr')
-    if all(y > 0), y_d = diff(log(y));
-    else
-        out = NaN;
-        return % return all NaNs
-    end
+	% 8) Log Returns
+elseif strcmp(detrndmeth, 'logr')
+	if all(y > 0)
+		yRef = log(y);
+		y_d = diff(yRef);
+	else
+		out = NaN;
+		return % return all NaNs
+	end
 
-% 9) Box-Cox Transformation
-elseif strcmp(detrndmeth,'boxcox')
+	% 9) Box-Cox Transformation
+elseif strcmp(detrndmeth, 'boxcox')
 
-    if all(y > 0), y_d = BF_boxcox(y);
-    else
-        out = NaN;
-        return % return all NaNs
-    end
+	if all(y > 0)
+		y_d = BF_boxcox(y);
+		yRef = y_d; % a transformation, not a residual: only a constant result is degenerate
+	else
+		out = NaN;
+		return % return all NaNs
+	end
 else
-    error('Invalid detrending method ''%s''',detrendmeth)
+	error('Invalid detrending method ''%s''', detrndmeth)
 end
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 %% Quick check that outputs are meaningful
-if all(y_d == 0)
-    out = NaN;
-    return
+% The processed series is round-off if its variation is within the rounding error of the
+% processing, bounded relative to the magnitude (root-mean-square) of the values it acts
+% on: a fitted or filtered value accumulates rounding over sums of up to N terms (at
+% most about N*eps/2), and a sinusoid of frequency up to 1/2 evaluated at times up to N
+% has a rounding error in its phase of up to about 1.5*pi*N*eps (three roundings of
+% 2*pi*f*t), in both the data and the fit. Averaged over the series (the phase error
+% grows with t), these are below about 8*N*eps of the root-mean-square, so 10*N*eps
+% covers them.
+if std(y_d) <= 10 * length(yRef) * eps * sqrt(mean(yRef.^2))
+	out = NaN;
+	return
 end
 
-%-------------------------------------------------------------------------------
+% -------------------------------------------------------------------------------
 % Statistical tests on original and processed time series
 % z-score both (these metrics will need it, and not always done beforehand
 % because of positive-only data, etc.)
 y = zscore(y);
 y_d = zscore(y_d);
 
+% Changes from the original to the processed series: a difference for
+% statistics that can be negative or near 0, and a normalized difference for
+% positive statistics:
+f_diff = @(proc, orig) proc - orig;
+f_normDiff = @(proc, orig) SUB_normDiff(proc, orig);
+
+% The statistics of the original series are the same for every preprocessing, so
+% they are computed once per series (cached, as in BF_GetTau):
+orig = SUB_origStats(y);
+
 % 1) Stationarity
 
 % (a) StatAv
-out.statav2 = SY_StatAv(y_d,'seg',2) / SY_StatAv(y,'seg',2);
-out.statav4 = SY_StatAv(y_d,'seg',4) / SY_StatAv(y,'seg',4);
-out.statav6 = SY_StatAv(y_d,'seg',6) / SY_StatAv(y,'seg',6);
-out.statav8 = SY_StatAv(y_d,'seg',8) / SY_StatAv(y,'seg',8);
-out.statav10 = SY_StatAv(y_d,'seg',10) / SY_StatAv(y,'seg',10);
+out.statav2 = f_normDiff(SY_StatAv(y_d, 'seg', 2), orig.statav2);
 
 % (b) Sliding window mean
-out.swms2_2 = SY_SlidingWindow(y_d,'mean','std',2,2) / SY_SlidingWindow(y,'mean','std',2,2);
-out.swms5_1 = SY_SlidingWindow(y_d,'mean','std',5,1) / SY_SlidingWindow(y,'mean','std',5,1);
-out.swms5_2 = SY_SlidingWindow(y_d,'mean','std',5,2) / SY_SlidingWindow(y,'mean','std',5,2);
-out.swms10_1 = SY_SlidingWindow(y_d,'mean','std',10,1) / SY_SlidingWindow(y,'mean','std',10,1);
-out.swms10_1 = SY_SlidingWindow(y_d,'mean','std',10,2) / SY_SlidingWindow(y,'mean','std',10,2);
+out.swms2_2 = f_normDiff(SY_SlidingWindow(y_d, 'mean', 'std', 2, 2), orig.swms2_2);
+out.swms5_1 = f_normDiff(SY_SlidingWindow(y_d, 'mean', 'std', 5, 1), orig.swms5_1);
+out.swms10_1 = f_normDiff(SY_SlidingWindow(y_d, 'mean', 'std', 10, 1), orig.swms10_1);
 
 % (c) Sliding window std
-out.swss2_1 = SY_SlidingWindow(y_d,'std','std',2,1) / SY_SlidingWindow(y,'std','std',2,1);
-out.swss2_2 = SY_SlidingWindow(y_d,'std','std',2,2) / SY_SlidingWindow(y,'std','std',2,2);
-out.swss5_1 = SY_SlidingWindow(y_d,'std','std',5,1) / SY_SlidingWindow(y,'std','std',5,1);
-out.swss5_2 = SY_SlidingWindow(y_d,'std','std',5,2) / SY_SlidingWindow(y,'std','std',5,2);
-out.swss10_1 = SY_SlidingWindow(y_d,'std','std',10,1) / SY_SlidingWindow(y,'std','std',10,1);
-out.swss10_2 = SY_SlidingWindow(y_d,'std','std',10,2) / SY_SlidingWindow(y,'std','std',10,2);
+out.swss2_1 = f_normDiff(SY_SlidingWindow(y_d, 'std', 'std', 2, 1), orig.swss2_1);
+out.swss5_1 = f_normDiff(SY_SlidingWindow(y_d, 'std', 'std', 5, 1), orig.swss5_1);
+out.swss10_1 = f_normDiff(SY_SlidingWindow(y_d, 'std', 'std', 10, 1), orig.swss10_1);
 
 % 2) Gaussianity
 % (a) kernel density fit
-me1 = DN_SimpleFit(y_d,'gauss1',0); % kernel density fit to 1-peak gaussian
-me2 = DN_SimpleFit(y,'gauss1',0); % kernel density fit to 1-peak gaussian
+me1 = DN_SimpleFit(y_d, 'gauss1', 0); % kernel density fit to 1-peak gaussian
+me2 = orig.simpleFit;
 if (~isstruct(me1) && isnan(me1)) || (~isstruct(me2) && isnan(me2))
-   % fitting gaussian failed -- returns a NaN rather than a structure
-    out.gauss1_kd_r2 = NaN;
-    out.gauss1_kd_adjr2 = NaN;
-    out.gauss1_kd_rmse = NaN;
-    out.gauss1_kd_resAC1 = NaN;
-    out.gauss1_kd_resAC2 = NaN;
-    out.gauss1_kd_resruns = NaN;
+	% fitting gaussian failed -- returns a NaN rather than a structure
+	out.gauss1_kd_r2 = NaN;
+	out.gauss1_kd_resAC1 = NaN;
+	out.gauss1_kd_resrunsz = NaN;
 else
-    out.gauss1_kd_r2 = me1.r2/me2.r2;
-    out.gauss1_kd_adjr2 = me1.adjr2/me2.adjr2;
-    out.gauss1_kd_rmse = me1.rmse/me2.rmse;
-    out.gauss1_kd_resAC1 = me1.resAC1/me2.resAC1;
-    out.gauss1_kd_resAC2 = me1.resAC2/me2.resAC2;
-    out.gauss1_kd_resruns = me1.resruns/me2.resruns;
+	out.gauss1_kd_r2 = f_diff(me1.r2, me2.r2);
+	out.gauss1_kd_resAC1 = f_diff(me1.resAC1, me2.resAC1);
+	out.gauss1_kd_resrunsz = f_diff(me1.resrunsz, me2.resrunsz);
 end
 
-% (c) compare distribution to fitted normal distribution
-me1 = DN_CompareKSFit(y_d,'norm');
-me2 = DN_CompareKSFit(y,'norm');
+% (b) compare distribution to fitted normal distribution
+me1 = DN_CompareKSFit(y_d, 'norm');
+me2 = orig.compareKSFit;
 
-out.kscn_adiff = me1.adiff/me2.adiff;
-out.kscn_peaksepy = me1.peaksepy/me2.peaksepy;
-out.kscn_peaksepx = me1.peaksepx/me2.peaksepx;
-out.kscn_olapint = me1.olapint/me2.olapint;
-out.kscn_relent = me1.relent/me2.relent;
-
-% (d) p-values from gof tests
-out.htdt_chi2n = HT_DistributionTest(y_d,'chi2gof','norm',10) / HT_DistributionTest(y,'chi2gof','norm',10); % chi2
-out.htdt_ksn = HT_DistributionTest(y_d,'ks','norm') / HT_DistributionTest(y,'ks','norm'); % Kolmogorov-Smirnov
+out.kscn_peaksepy = f_diff(me1.peaksepy, me2.peaksepy);
+out.kscn_peaksepx = f_diff(me1.peaksepx, me2.peaksepx);
+out.kscn_olapint = f_normDiff(me1.olapint, me2.olapint);
+out.kscn_relent = f_diff(me1.relent, me2.relent);
 
 % 3) Outliers
-out.olbt_m2 = DN_OutlierTest(y_d,2,'mean') / DN_OutlierTest(y,2,'mean');
-out.olbt_m5 = DN_OutlierTest(y_d,5,'mean') / DN_OutlierTest(y,5,'mean');
-out.olbt_s2 = DN_OutlierTest(y_d,2,'std') / DN_OutlierTest(y,2,'std');
-out.olbt_s5 = DN_OutlierTest(y_d,5,'std') / DN_OutlierTest(y,5,'std');
+out.olbt_m2 = f_diff(DN_OutlierTest(y_d, 2, 'mean'), orig.olbt_m2);
+out.olbt_m5 = f_diff(DN_OutlierTest(y_d, 5, 'mean'), orig.olbt_m5);
+out.olbt_s5 = f_normDiff(DN_OutlierTest(y_d, 5, 'std'), orig.olbt_s5);
+
+% ------------------------------------------------------------------------------
+function orig = SUB_origStats(y)
+	% Statistics of the z-scored original series, shared by all preprocessings:
+	% cache the last few results, keyed on the exact (z-scored) input series
+	persistent cacheY cacheOrig
+	maxCacheEntries = 4;
+	if isempty(cacheY)
+		cacheY = {};
+		cacheOrig = {};
+	end
+	for ci = 1:numel(cacheY)
+		if isequaln(y, cacheY{ci})
+			orig = cacheOrig{ci};
+			return
+		end
+	end
+	orig.statav2 = SY_StatAv(y, 'seg', 2);
+	orig.swms2_2 = SY_SlidingWindow(y, 'mean', 'std', 2, 2);
+	orig.swms5_1 = SY_SlidingWindow(y, 'mean', 'std', 5, 1);
+	orig.swms10_1 = SY_SlidingWindow(y, 'mean', 'std', 10, 1);
+	orig.swss2_1 = SY_SlidingWindow(y, 'std', 'std', 2, 1);
+	orig.swss5_1 = SY_SlidingWindow(y, 'std', 'std', 5, 1);
+	orig.swss10_1 = SY_SlidingWindow(y, 'std', 'std', 10, 1);
+	orig.simpleFit = DN_SimpleFit(y, 'gauss1', 0);
+	orig.compareKSFit = DN_CompareKSFit(y, 'norm');
+	orig.olbt_m2 = DN_OutlierTest(y, 2, 'mean');
+	orig.olbt_m5 = DN_OutlierTest(y, 5, 'mean');
+	orig.olbt_s5 = DN_OutlierTest(y, 5, 'std');
+	cacheY = [{y}, cacheY];
+	cacheOrig = [{orig}, cacheOrig];
+	if numel(cacheY) > maxCacheEntries
+		cacheY(maxCacheEntries+1:end) = [];
+		cacheOrig(maxCacheEntries+1:end) = [];
+	end
+end
+
+% ------------------------------------------------------------------------------
+function nd = SUB_normDiff(proc, orig)
+	% Normalized difference (proc - orig) / (proc + orig) of two positive numbers,
+	% in [-1, 1]; 0 if both are 0
+	if proc + orig == 0
+		nd = 0;
+	else
+		nd = (proc - orig) / (proc + orig);
+	end
+end
 
 end

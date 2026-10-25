@@ -1,13 +1,21 @@
-function out = DN_cv(x, k)
-% DN_cv     Coefficient of variation
+function out = DN_CV(x, k)
+% DN_CV   Coefficient of variation of the values of a data vector.
 %
-% Coefficient of variation of order k is sigma^k / mu^k (for sigma, standard
-% deviation and mu, mean) of a data vector, x
+% The coefficient of variation of order k is (sigma/mu)^k, for sigma the
+% standard deviation and mu the mean of the values: their spread relative to
+% their mean, ignoring their order. k = 1 is the usual coefficient of
+% variation. It is negative (for odd k) when the mean is negative, and
+% undefined when the mean is zero, so NaN is returned when the mean is at the level
+% of rounding error relative to the spread (|mean| < 1e-10*std, as for a centered
+% or z-scored series).
 %
 % ---INPUTS:
-%
 % x, the input data vector
-% k, the order of coefficient of variation (k = 1 is default)
+% k, the order of the coefficient of variation (default: 1). A warning is
+%       raised if k is not a positive integer, but the calculation continues.
+%
+% ---OUTPUTS:
+% a scalar: (std(x)/mean(x))^k, or NaN if the mean is zero up to rounding error
 
 % ------------------------------------------------------------------------------
 % Copyright (C) 2013-2026, Ben D. Fulcher <ben.d.fulcher@gmail.com>,
@@ -52,6 +60,14 @@ end
 
 % Compute the coefficient of variation (of order k) of the data
 
-out = (std(x))^k / (mean(x))^k;
+mu = mean(x);
+sigma = std(x);
+if abs(mu) < 1e-10 * sigma
+	% the mean is zero up to rounding error (e.g., a centered or z-scored series), so
+	% the ratio is rounding noise of order 1e17
+	out = NaN;
+else
+	out = (sigma / mu)^k;
+end
 
 end
